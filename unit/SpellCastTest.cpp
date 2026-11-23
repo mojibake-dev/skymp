@@ -141,6 +141,17 @@ void Leave(PartOne& p)
   DoDisconnect(p, 0);
 }
 
+// the caster's right hand holding a staff, its equipment's worn weapon (the
+// server takes a staff's cast from the hand whose worn weapon is a staff)
+void WearStaff(PartOne& p, uint32_t staff)
+{
+  Equipment eq;
+  Inventory::Entry entry(staff, 1);
+  entry.SetWorn(Inventory::Worn::Right);
+  eq.inv.entries.push_back(entry);
+  p.worldState.GetFormAt<MpActor>(kCaster).SetEquipment(eq);
+}
+
 // the default logger's lines at info and above while the guard lives
 // (PartOneTest's shape), restored at its end
 struct LogCapture
@@ -394,8 +405,10 @@ TEST_CASE("A staff's flames on the other player burn as the staff's cast",
           "[SpellCast][espm]")
 {
   constexpr uint32_t kStaffEnchFlames = 0x0004deda;
+  constexpr uint32_t kStaffFlames = 0x0004dee0;
   PartOne& p = GetPartOne();
   Duel(p, 0);
+  WearStaff(p, kStaffFlames);
 
   Cast(p, kStaffEnchFlames, false);
   std::this_thread::sleep_for(120ms);
@@ -418,8 +431,10 @@ TEST_CASE("The fire a staff's flames leave on the ground burns the other "
 {
   constexpr uint32_t kStaffEnchFlames = 0x0004deda;
   constexpr uint32_t kHazardFireSpell = 0x000153bd;
+  constexpr uint32_t kStaffFlames = 0x0004dee0;
   PartOne& p = GetPartOne();
   Duel(p, 0);
+  WearStaff(p, kStaffFlames);
 
   Cast(p, kStaffEnchFlames, false);
   std::this_thread::sleep_for(60ms);

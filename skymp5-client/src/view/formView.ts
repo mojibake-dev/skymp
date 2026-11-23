@@ -1234,6 +1234,10 @@ export class FormView {
         refr.setDisplayName(look.name, true);
         logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's name shown`);
       }
+      if (look.charge !== undefined) {
+        refr.setItemCharge(look.charge);
+        logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's charge ${look.charge} shown`);
+      }
       model.inventory = undefined;
     }
     if (model.inventory && !isActor && PlayerCharacterDataHolder.getCrosshairRefId() !== this.refrId) {

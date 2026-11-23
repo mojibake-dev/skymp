@@ -15,6 +15,15 @@ test("an enchanted dagger the player named shows its name on the ground", () => 
   assert.deepStrictEqual(itemReferenceLook(tempered, 0x1397e, "Iron Dagger"), { health: 1.1, name: "Wolfbane" });
 });
 
+test("a dropped staff's copy keeps the charge its stack had left", () => {
+  // Skyrim.esm (thuum lab/esm.py): StaffFlames 0x4DEE0, its enchantment's charge 500 when full
+  const spent = [{ baseId: 0x4dee0, count: 1, chargePercent: 350 }];
+  assert.deepStrictEqual(itemReferenceLook(spent, 0x4dee0, "Staff of Flames"), { charge: 350 });
+  // a full staff's stack carries no charge, and its copy is left full
+  const full = [{ baseId: 0x4dee0, count: 1 }];
+  assert.deepStrictEqual(itemReferenceLook(full, 0x4dee0, "Staff of Flames"), {});
+});
+
 test("a plain copy, or one with no row of its base, changes nothing", () => {
   const plain = [{ baseId: 0x1397e, count: 1, health: 1 }];
   const noHealth = [{ baseId: 0x1397e, count: 1 }];

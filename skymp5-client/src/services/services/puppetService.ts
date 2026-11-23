@@ -8,6 +8,8 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
+import { PropService } from "./propService";
+import { placesAtPromote, runsActorHere } from "../../sync/hostPuppet";
 import { RemoteServer } from "./remoteServer";
 import { SceneClaimService } from "./sceneClaimService";
 
@@ -141,7 +143,16 @@ export class PuppetService extends ClientListener {
             this.resurrectInFlightUntil.delete(localId);
         }
         const host = this.controller.lookupListener(HostService);
-        const word = mine ?? host.isMineLocal(localId);
+        const hostedHere = mine ?? host.isMineLocal(localId);
+        // an actor this seat hosts whose knocked body another seat's stream
+        // owns (a grip's or a throw's row) is held as every other seat's copy
+        // is, its AI off until the follow ends (sync/hostPuppet.ts)
+        const bodyOwnedElsewhere = hostedHere && this.controller.lookupListener(PropService).bodyOwnedElsewhere(localId);
+        const word = runsActorHere({ hostedHere, bodyOwnedElsewhere });
+        if (bodyOwnedElsewhere && !this.heldForBody.has(localId)) {
+            this.heldForBody.add(localId);
+            logLab("verb:npc-handoff", `hold ${localId.toString(16)}: another seat's stream owns its body, this hosted copy held as a puppet until the follow ends`);
+        }
         const has3D = ac.is3DLoaded();
         // thuum tracker #121 (ADR-051 decision 1's "its cell unattached";
         // the critic's release rule): a 3D the engine keeps in its buffer for
@@ -293,17 +304,20 @@ export class PuppetService extends ClientListener {
                 const at = `(${ac.getPositionX().toFixed(0)}, ${ac.getPositionY().toFixed(0)}, ${ac.getPositionZ().toFixed(0)}) in ${eCell.toString(16)}`;
                 const from = seat
                     ? `seated here (${seat}), its furniture places it`
+                    : this.heldForBody.has(localId)
+                    ? "held for another seat's stream of its body: the follow's end placed it at the owner's rest"
                     : last
                     ? `placed from the last sample at (${last.pos[0].toFixed(0)}, ${last.pos[1].toFixed(0)}, ${last.pos[2].toFixed(0)}) in ${last.worldOrCell.toString(16)}`
                     : "no sample to place from, the engine's own stands";
                 logLab("verb:npc-handoff", `promote ${localId.toString(16)}: ${from}; the engine had it at ${at}`);
             }
-            if (last && !seat) {
+            if (last && placesAtPromote({ heldForBody: this.heldForBody.has(localId), hasSample: true, seated: !!seat })) {
                 // the record's last point and heading first: the relay stops
                 // at the grant (the native promote leaves the transform alone)
                 ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);
                 ac.setAngle(last.rot[0], last.rot[1], last.rot[2]);
             }
+            this.heldForBody.delete(localId);
             // the puppet's imposed state undone, the inverse of the apply's
             // (movementApply.ts: head tracking on the relayed look-at point);
             // the activation block is the native demote's and the native
@@ -448,7 +462,7 @@ export class PuppetService extends ClientListener {
         // ("demote 1aa69: the engine had it at (-38681, 63455, -13786) in 3c",
         // c2-console 01:46:29Z). Bounded: another game's word, or a package
         // that names no cell this game hosts, demotes as before
-        if (!flagged && this.headsForHostedCell(localId, host)) {
+        if (!flagged && !bodyOwnedElsewhere && this.headsForHostedCell(localId, host)) {
             return;
         }
         if (!flagged) {
@@ -1227,6 +1241,9 @@ export class PuppetService extends ClientListener {
     // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
+    // hosted actors held as puppets while another seat's stream owns their body
+    // (reconcile): their promote places nothing (sync/hostPuppet.ts)
+    private readonly heldForBody = new Set<number>();
     // tracker #130: the host's combat target per actor (by server id, none
     // kept for none); the moment a held start is free again (by server id);
     // the puppets this seat put in combat on its player (the aggro mark, by

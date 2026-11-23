@@ -164,8 +164,13 @@ wire-fuzz:
 # skymp-wire, every canon push (each merge judged as merged), the schedule, a
 # milestone branch's pipeline started by the API, by hand or by a trigger, and
 # a milestone branch's push that changes, against canon, a file the build reads.
+# needs: [] because the build uses nothing an earlier job makes (it builds the
+# wire inside its own docker build), so a cancelled or failed wire job no
+# longer skips it; the sky tag's one-job lane still runs it after or before
+# the wire jobs, never beside them.
 server-build:
   stage: server
+  needs: []
   tags: [sky]
   image: docker:27
   variables:
@@ -259,9 +264,12 @@ server-build:
 # download (cmake/download_skyrim_data.cmake), so DOWNLOAD_SKYRIM_DATA stays
 # off and UNIT_DATA_DIR points at the fetched files. The generator is pinned:
 # CMakeLists.txt accepts only Visual Studio 17 2022, and cmake's default is
-# the newest Visual Studio on the machine.
+# the newest Visual Studio on the machine. needs: [] because the build uses
+# nothing an earlier job makes (it builds the wire's client library from the
+# tree), so a cancelled or failed wire job no longer skips it.
 client-build:
   stage: server
+  needs: []
   tags: [windows]
   # a cold vcpkg build of the client's 59 ports on sky-build's 8 cores will not fit the project's hour (the
   # first run, job 8859, was on port 13 of 59 at 49 min when it failed with no_updates_running, the runner's

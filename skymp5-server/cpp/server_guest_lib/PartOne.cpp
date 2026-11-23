@@ -1673,6 +1673,9 @@ void PartOne::Init()
   worldState.propLiveOwnerOf = [this](uint32_t refr) {
     return pImpl->props->prop_live_owner(refr);
   };
+  worldState.propHeldOf = [this](uint32_t refr) {
+    return pImpl->props->prop_held(refr);
+  };
   // physics rung 5a (ADR-071 decision 5): and a body's row, the prop
   // table's, from its death to its stand-up, so the one owner table names
   // whose samples move a corpse

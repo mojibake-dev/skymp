@@ -12005,7 +12005,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                  "claimed as a spell its cast reaches",
                  aggressor->GetFormId(), targetRef->GetFormId(),
                  hitData.source);
-    OnSpellHit(aggressor, targetRef, hitData, claim.scale, claim.dual);
+    OnSpellHit(aggressor, targetRef, hitData, claim.scale, claim.dual, true);
     return;
   }
 
@@ -12563,7 +12563,7 @@ bool MovesServerValue(WorldState* worldState,
 void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData, float magnitudeScale,
-                                bool dualCast)
+                                bool dualCast, bool reached)
 {
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
@@ -12614,7 +12614,8 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                               effects);
   }
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
-                               aggressor->GetFormId(), stream, dualCast);
+                               aggressor->GetFormId(), stream, dualCast, 0.f,
+                               reached);
   // thuum docs/verbs/npc-fate.md (ADR-048's B): the hit the server
   // numbered, a death report's evidence (a self cast is no hit taken)
   if (aggressor != targetActorPtr) {

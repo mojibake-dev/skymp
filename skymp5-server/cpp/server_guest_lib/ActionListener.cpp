@@ -3090,8 +3090,15 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!msg.data.isSecondActivation) {
     NoteActivation(*targetPtr, std::chrono::steady_clock::now());
   }
-  if (msg.data.caster == 0x14 && !msg.data.isSecondActivation) {
-    RelayActivationToHost(*ac, *targetPtr);
+  // the activation goes to the object's owner: a player's own, and an
+  // actor's the reporter simulates (its report, checked above)
+  if (!msg.data.isSecondActivation) {
+    if (msg.data.caster == 0x14) {
+      RelayActivationToHost(*ac, *targetPtr);
+    } else if (MpActor* casterActor = caster.AsActor()) {
+      constexpr bool kActorOfTheReporter = false;
+      RelayActivationToHost(*casterActor, *targetPtr, kActorOfTheReporter);
+    }
   }
 
   constexpr bool kDefaultProcessingOnlyFalse = false;
@@ -8217,8 +8224,9 @@ void ActionListener::SweepHeldTriggerEntries(uint64_t nowMs)
   }
 }
 
-void ActionListener::RelayActivationToHost(MpActor& player,
-                                           MpObjectReference& target)
+void ActionListener::RelayActivationToHost(MpActor& caster,
+                                           MpObjectReference& target,
+                                           bool player)
 {
   const auto& baseType = target.GetBaseType();
   if (baseType != "ACTI" && baseType != "FURN") {
@@ -8245,7 +8253,7 @@ void ActionListener::RelayActivationToHost(MpActor& player,
   // sender's own engine ran it already
   RelayedActivationMessage relay;
   relay.target = target.GetFormId();
-  relay.caster = player.GetFormId();
+  relay.caster = caster.GetFormId();
   // thuum tracker #117 (Eli's design B, "go with b for 117"): the host's
   // engine runs a guest's press for the guest inside its acting scope (the
   // client's ArmActivation), and a script there that counts an item on
@@ -8257,11 +8265,11 @@ void ActionListener::RelayActivationToHost(MpActor& player,
   // travels with the press it serves; no other game gets it, and a host's own
   // press sends it nowhere (the host's engine counts its own player)
   RelayedActivationMessage hostRelay = relay;
-  hostRelay.presserInventory = player.GetInventory();
+  hostRelay.presserInventory = caster.GetInventory();
   size_t sent = 0;
   bool toHost = false;
   for (auto listener : target.GetActorListeners()) {
-    if (listener == &player) {
+    if (!player || listener == &caster) {
       continue;
     }
     if (partOne.serverState.UserByActor(listener) !=
@@ -8275,8 +8283,11 @@ void ActionListener::RelayActivationToHost(MpActor& player,
       ++sent;
     }
   }
-  // the owner out of the object's listeners (its player across the cell)
-  if (!toHost && host.player != player.GetFormId()) {
+  // the owner out of the object's listeners (its player across the cell);
+  // an actor's activation reported by its owner is the owner's run already
+  if (!toHost && host.player != caster.GetFormId() &&
+      (player || partOne.worldState.HostOf(caster) == nullptr ||
+       partOne.worldState.HostOf(caster)->GetFormId() != host.player)) {
     const auto& hostForm =
       partOne.worldState.LookupFormByIdNoLoad(host.player);
     MpActor* hostActor = hostForm ? hostForm->AsActor() : nullptr;
@@ -8291,7 +8302,7 @@ void ActionListener::RelayActivationToHost(MpActor& player,
   spdlog::info(
     "[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x}): "
     "relayed to {} other game(s){}",
-    player.GetFormId(), target.GetFormId(), *cell, host.player, sent,
+    caster.GetFormId(), target.GetFormId(), *cell, host.player, sent,
     toHost ? fmt::format(", the presser's record ({} stack(s)) to its host",
                          hostRelay.presserInventory->entries.size())
            : std::string());

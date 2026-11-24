@@ -311,13 +311,16 @@ public:
   void OnLinkedActivation(const RawMessageData& rawMsgData, MpActor& reporter,
                           uint32_t casterId, MpObjectReference* casterRef,
                           uint32_t targetId);
-  // ADR-059 decision 2: a player's activation of a scripted world object (an
-  // ACTI or FURN whose record or base carries a script) goes to every other
-  // game in the cell as a RelayedActivation with the player's actor as the
-  // activator: the host's engine, so the cell's simulation counts it (a
-  // puzzle pillar's turn on its lever), and the guests' while the layer
-  // admits the scripts everywhere
-  void RelayActivationToHost(MpActor& player, MpObjectReference& target);
+  // ADR-059 decision 2: an activation of a scripted world object (an ACTI or
+  // FURN whose record or base carries a script) goes to its owner, the
+  // cell's host, wherever the host's player stands, as a RelayedActivation
+  // with the caster as the activator, so the engine that runs the object's
+  // script runs it (a puzzle pillar's turn, its lever's pull). A player's
+  // own goes to the object's other listeners too, while the layer admits
+  // the scripts everywhere; an actor's the reporter simulates (`player`
+  // false) goes to the owner alone
+  void RelayActivationToHost(MpActor& caster, MpObjectReference& target,
+                             bool player = true);
   bool IsScriptedWorldObject(const MpObjectReference& target);
   // thuum docs/verbs/prop-physics.md (ADR-071 decision 2's table): a pickup
   // is a take. True when `picker`'s activation of the item `target` is

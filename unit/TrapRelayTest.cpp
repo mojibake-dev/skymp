@@ -454,6 +454,63 @@ TEST_CASE("A guest's press of a scripted world object goes to the cell's "
   Leave(p);
 }
 
+// an actor's press goes to the object's owner too: the draugr the guest
+// simulates (its claim, as the case above has it) turns the pillar on the
+// guest's game, a run of the pillar's script only the cell's host owns; the
+// host alone gets it, never another listener, and the host's own simulated
+// actor's press is the owner's run already
+TEST_CASE("An actor's press reported by the game that simulates it goes to "
+          "the cell's host alone",
+          "[Traps][espm]")
+{
+  constexpr uint32_t kDraugr = 0x380b3;
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kPillar);
+  p.worldState.npcEnabled = true;
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  draugr.SetPos(kByThePillar);
+  guest.SetPos(kByThePillar);
+  guest.ForceSubscriptionsUpdate();
+  // the host's own actor: its press is the owner's run, relayed nowhere
+  REQUIRE(p.worldState.HostOf(draugr) ==
+          &p.worldState.GetFormAt<MpActor>(kHostActor));
+  p.Messages().clear();
+  Linked(p, 0, kDraugr, kPillar);
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  // the guest loads the temple and claims the draugr
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kTemple;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  {
+    static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+    RawMessageData raw;
+    raw.userId = 1;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    ActorClaimMessage claim;
+    claim.idx = draugr.GetIdx();
+    claim.claim = true;
+    p.GetActionListener().OnActorClaim(raw, claim);
+  }
+  REQUIRE(p.worldState.HostOf(draugr) == &guest);
+  p.Messages().clear();
+  Linked(p, 1, kDraugr, kPillar);
+  const auto toHost = RelayedTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kPillar);
+  REQUIRE(toHost[0].caster == kDraugr);
+  REQUIRE(RelayedTo(p, 1).empty());
+  Leave(p);
+}
+
 // thuum tracker #117 (playtest 53's Sanctum door; Eli's design B, "go with b
 // for 117"): the host's engine runs a guest's press for the guest inside its
 // acting scope, and the Sanctum keyhole's HallofStoriesKeyholeScript counts

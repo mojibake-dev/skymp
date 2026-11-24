@@ -137,6 +137,7 @@ export class HostService extends ClientListener {
     hostedActorRemoteIds(): number[] {
         const world = this.controller.lookupListener(RemoteServer).getWorldModel();
         const out: number[] = [];
+        const seen = new Set<number>();
         world.forms.forEach((form, i) => {
             if (form === undefined || i === world.playerCharacterFormIdx) {
                 return;
@@ -155,11 +156,75 @@ export class HostService extends ClientListener {
             }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(remoteId)));
             if (refr && this.sp.Actor.from(refr) && this.isMine(form, refr)) {
-                out.push(remoteId);
+                seen.add(remoteId);
+                if (this.keepsReporting(remoteId, refr)) {
+                    out.push(remoteId);
+                }
             }
         });
+        for (const id of Array.from(this.unwatchedFirst.keys())) {
+            if (!seen.has(id)) {
+                this.unwatchedFirst.delete(id);
+                this.unwatchedLeft.delete(id);
+            }
+        }
         return out;
     }
+
+    // Whether the report list keeps an actor this game's word names. Where
+    // the engine says its cell is not attached here (another worldspace than
+    // the player's, an exterior while the player stands in an interior, a
+    // detached interior) and this game does not host it, only while it
+    // stands in the first square it stood in there: the door's far side,
+    // whose report carries its record through the door and in which the
+    // server's follow takes its moves. Past that square the server refuses
+    // every move of it (a follow vouches for a square its follower has
+    // loaded), so it is not reported and its record stays where the server
+    // has it until a game that loads its cell takes it. In the player's own
+    // worldspace the engine cannot say (cellAttachedFor), and every square
+    // is reported as before: a crossing into another host's square passes
+    // on that report
+    private keepsReporting(remoteId: number, refr: ObjectReference): boolean {
+        if (this.hostsRef(refr) || this.cellAttachedFor(refr) !== false) {
+            if (this.unwatchedLeft.has(remoteId)) {
+                logLab("verb:npc-handoff", `report list: ${remoteId.toString(16)} stands in a cell this game hosts or has loaded again; its reports resume`);
+            }
+            this.unwatchedFirst.delete(remoteId);
+            this.unwatchedLeft.delete(remoteId);
+            return true;
+        }
+        const here = HostService.squareKey(refr);
+        const first = this.unwatchedFirst.get(remoteId);
+        if (first === undefined) {
+            this.unwatchedFirst.set(remoteId, here);
+            return true;
+        }
+        if (first === here) {
+            return true;
+        }
+        if (!this.unwatchedLeft.has(remoteId)) {
+            this.unwatchedLeft.add(remoteId);
+            logLab("verb:npc-handoff", `report list: ${remoteId.toString(16)} walked on from ${first} to ${here}, where this game neither hosts nor has loaded a cell; not reported, its record stays where the server has it`);
+        }
+        return false;
+    }
+
+    // the square a reference stands in: an interior by its cell, an exterior
+    // by its worldspace and 4096-unit grid square
+    private static squareKey(refr: ObjectReference): string {
+        const cell = refr.getParentCell();
+        if (cell && cell.isInterior()) {
+            return `interior ${cell.getFormID().toString(16)}`;
+        }
+        const world = refr.getWorldSpace();
+        const w = world ? world.getFormID().toString(16) : "0";
+        return `${w} (${Math.floor(refr.getPositionX() / 4096)}, ${Math.floor(refr.getPositionY() / 4096)})`;
+    }
+
+    // the report list's first square for each actor standing where its cell
+    // is not attached here, and those it has left out since walking on from it
+    private unwatchedFirst = new Map<number, string>();
+    private unwatchedLeft = new Set<number>();
 
     // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set in the fork's
     // Skyrim Platform mirrors the word per actor (setHosted), so the hook on

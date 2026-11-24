@@ -16,7 +16,8 @@ import { holdPcInventoryBase } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
 import { TrapResultService } from "./trapResultService";
 import { noteSpellAddedSinceLogin } from "../../sync/spell";
-import { forwardMark } from "../../sync/scriptForward";
+import { forwardMark, keepsForward } from "../../sync/scriptForward";
+import { QuestStageService } from "./questStageService";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
 // scripts-one-system-2026-11-05.md 6.2 to 6.4): the platform's one hook on the
@@ -229,7 +230,12 @@ export class ScriptCallService extends ClientListener {
             // a state call this seat's engine skipped on another seat's
             // subject, sent on for that owner to run
             if (call.kind === "forward") {
-                this.queue({ call, record: false, key: undefined, dropped: false });
+                const quests = this.controller.lookupListener(QuestStageService);
+                if (keepsForward(call.rootQuest, (quest) => quests.relays(quest))) {
+                    this.queue({ call, record: false, key: undefined, dropped: false });
+                } else {
+                    logLab("verb:scripts", `forward of ${call.cls}.${call.fn} on ${call.self.toString(16)} left to its owner: quest ${(call.rootQuest ?? 0).toString(16)}'s stages relay`);
+                }
             }
         }
     }

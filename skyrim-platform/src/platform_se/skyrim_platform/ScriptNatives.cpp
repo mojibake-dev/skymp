@@ -1088,6 +1088,10 @@ struct QueuedCall
   // from a stack only this seat runs (ForwardsFrom), raised as kind
   // "forward" for the server to send to that owner
   bool forward = false;
+  // a forward from a quest stage's fragment (StageRootWorld): the quest,
+  // raised as `rootQuest`, which the client reads to keep a forward whose
+  // quest's stages it does not relay; 0 for any other root
+  std::uint32_t rootQuest = 0;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1168,6 +1172,9 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
                    : call.forward ? "forward"
                                   : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
+  if (call.rootQuest != 0) {
+    AddObjProperty(&obj, "rootQuest", call.rootQuest);
+  }
   auto args = Napi::Array::New(env, call.argCount);
   for (uint32_t i = 0; i < call.argCount; ++i) {
     args.Set(i, ArgToJs(env, call.args[i]));
@@ -2996,6 +3003,31 @@ constexpr bool ForwardsFrom(StagedRoot root)
   return root == kRootRelayed || root == kRootTrigger || root == kRootWorld;
 }
 
+// a quest stage's fragment's stack, whether a world cause set its stage: the
+// stack's joined verdict, else the quest's live arm joined here as
+// MarkQuestCause joins it; the quest named in `quest`. Such a stage's
+// fragment runs on every seat only when its quest's stages relay; a quest the
+// server shares no stage of (the client's settings) runs it on this seat
+// alone, so its call on another seat's subject is forwarded, and the client
+// keeps the forward only for a quest whose stages it does not relay
+bool StageRootWorld(const RE::BSScript::Stack* stack, std::uint32_t& quest)
+{
+  if (const auto joined = QuestCause::Of(stack->stackID)) {
+    quest = joined->rootSelf;
+    return joined->world;
+  }
+  const RE::BSScript::StackFrame* frame = RootFrameOf(stack);
+  std::string script;
+  std::string function;
+  NameCaller(frame, script, function);
+  const std::string root = script.empty() && function.empty()
+    ? std::string()
+    : script + "." + function;
+  quest = SubjectOfFrame(frame);
+  const auto joined = QuestCause::Join(stack->stackID, quest, root);
+  return joined && joined->world;
+}
+
 // a staged call's root kind: the acting scope's root first (ScopeRootOf),
 // else the root frame's class (QuestCause::Classify, MarkQuestCause's one
 // rule, over the frame's script and function names, read without a copy,
@@ -3957,11 +3989,16 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
       // queued for the subject's owner to run (a latent row is never
       // forwarded: the owner's game would wait in it; this seat's own player
       // and its created references are its own, never forwarded)
+      const StagedRoot root = StagedRootOf(stack, scope, policy);
+      std::uint32_t rootQuest = 0;
+      const bool forwards = ForwardsFrom(root) ||
+        (root == kRootStage && StageRootWorld(stack, rootQuest));
       if (!info.latent && ref->formID != 0x14 && ref->formID < 0xff000000 &&
-          ForwardsFrom(StagedRootOf(stack, scope, policy))) {
+          forwards) {
         if (auto call =
               CallFromFrame(row, info, stack, top, page, ref->formID)) {
           call->forward = true;
+          call->rootQuest = rootQuest;
           QueueCall(std::move(*call));
           Count(row, kCountForwarded);
           LogForwarded(row, ref->formID);

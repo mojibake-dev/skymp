@@ -1767,6 +1767,12 @@ export class QuestStageService extends ClientListener {
     // `allowed` list and the server's own-start refusal (W1 B). A quest of a
     // plugin the server does not serve is skipped after this, once the
     // connection's plugin list came (skipClientOnly)
+    // whether this seat relays the quest's stages to the other seats (a
+    // forward from its stage fragment is then left to the owner's own run)
+    public relays(questId: number): boolean {
+        return this.reports(questId);
+    }
+
     private reports(questId: number): boolean {
         if (this.mode === undefined || this.playerQuests.indexOf(questId) >= 0) {
             return false; // nothing before the login's list; a player-class quest never

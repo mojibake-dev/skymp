@@ -249,6 +249,8 @@ declare module "skyrimPlatform" {
         fn: string;
         kind: "action" | "state" | "everyone" | "touch" | "look" | "created" | "forward";
         self: number;
+        // a forward from a quest stage's fragment: that quest's form id
+        rootQuest?: number;
         callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];
         caller: string;

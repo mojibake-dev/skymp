@@ -14,3 +14,10 @@ export const isSent = (kind: CallKind): boolean => kind === "action" || kind ===
 
 // the message's forward mark: present, as true, on a forward alone
 export const forwardMark = (kind: CallKind): { forward?: true } => (kind === "forward" ? { forward: true } : {});
+
+// whether a forward is sent: one from a quest stage's fragment (rootQuest)
+// is kept only when this seat does not relay that quest's stages, since a
+// relayed stage's fragment runs on the subject's owner too and makes the call
+// there itself; a forward from any other root is always sent
+export const keepsForward = (rootQuest: number | undefined, relays: (quest: number) => boolean): boolean =>
+  rootQuest === undefined || rootQuest === 0 || !relays(rootQuest);

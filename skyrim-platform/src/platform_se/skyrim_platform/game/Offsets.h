@@ -23,6 +23,14 @@ inline REL::Relocation<std::uintptr_t> FrameUpdate{
 // and offset are unread, and the hook installs on AE runtimes only.
 inline REL::Relocation<std::uintptr_t> QuitShutdownCall{ REL::ID(36544),
                                                          0x1ae };
+// CalculateDetection (Address Library 37774, 0x690870 on 1.6.1170) and the
+// Actor::GetHostileToActor (37537, 0x679f10; CommonLibSSE-NG
+// include/RE/Offsets.h:13's AE id) its noise gate calls, both by `just
+// addr`; the hearing hooks' sites in it are FigureNoise.h's, read on sky-re
+// through REA. AE only: the SE ids are unread, and the hooks install on AE
+// runtimes only.
+inline REL::Relocation<std::uintptr_t> CalculateDetection{ REL::ID(37774) };
+inline REL::Relocation<std::uintptr_t> GetHostileToActor{ REL::ID(37537) };
 inline REL::Relocation<std::uintptr_t> SendEvent{ RELOCATION_ID(98077,
                                                                 104800) };
 // thuum docs/DECISIONS.md ADR-062 decision 2 (docs/verbs/papyrus-events.md,

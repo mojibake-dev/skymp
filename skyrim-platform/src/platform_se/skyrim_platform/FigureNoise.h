@@ -13,7 +13,8 @@
 // fDetectEventDistancePlayer (1536) where another actor's carries
 // fDetectEventDistanceNPC (512); and the player's projectiles in flight are
 // watched out of combat at the player's distance, another actor's only in
-// combat.
+// combat. Another player's figure is that player on this game, so its noise
+// and its arrows reach this game's actors as the player's do.
 namespace FigureNoise {
 
 struct Target
@@ -25,10 +26,10 @@ struct Target
 };
 
 // whether detection reads the target as it reads its own player: the
-// engine's own player alone
+// engine's own player, and another player's figure
 inline bool CountsAsPlayer(const Target& t)
 {
-  return t.isEnginePlayer;
+  return t.isEnginePlayer || t.isPlayerFigure;
 }
 
 // what the engine's `cmp r14, rcx` compares the target with at the noise's

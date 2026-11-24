@@ -1152,6 +1152,11 @@ fn check_sp_snippet(m: &skymp::SpSnippet) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
+    // since SCHEMA_VERSION 68: a question names the receiver's own player
+    // (0x14 in the low 32 bits) and carries no answer; an answer no question
+    if m.question == Some(false) || (m.question.is_some() && (m.self_id & 0xffff_ffff != u64::from(OWN_PLAYER) || m.answer.is_some())) {
+        return Err(Reject::Range);
+    }
     match m.keep {
         None => Ok(()),
         Some(k) if (1..=5).contains(&k) && m.seq.is_some() => Ok(()),
@@ -1994,7 +1999,8 @@ fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
 /// row, the arguments its count and kinds, the subject the sender's at the
 /// epoch and the sender within its budget is the server's rule (wire-rules
 /// natives); a value is never judged. Since SCHEMA_VERSION 44 a call may
-/// carry `landed`, its leveled roll's landings ([`check_landed`]).
+/// carry `landed`, its leveled roll's landings ([`check_landed`]), and since
+/// SCHEMA_VERSION 68 `forward` ([`check_forward`]).
 fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -2018,6 +2024,35 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
         check_placed(m, placed)?;
     }
     check_local_args(m)?;
+    if let Some(forward) = m.forward {
+        check_forward(m, forward)?;
+    }
+    if let Some(cause) = &m.cause {
+        if !(1..=6).contains(&cause.kind) || cause.form == 0 || cause.form >= PLAYER_FORMS {
+            return Err(Reject::Range);
+        }
+    }
+    if m.acting.is_some_and(|player| player < PLAYER_FORMS) {
+        return Err(Reject::Range);
+    }
+    if m.answer.is_some() && (m.self_id != OWN_PLAYER || m.forward.is_some() || m.acting.is_some() || m.landed.is_some() || m.placed.is_some()) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A forward's mark (SCHEMA_VERSION 68, the one script channel), structural
+/// only: present only as true; on a load-order subject (another seat's
+/// object), or on 0x14 with `acting` another player (a question about that
+/// player); never on a reference the sender's own game created (0xff000000
+/// and up), and never beside a landing or a creation's result, which are the
+/// sender's own calls (`E_VAL_RANGE` otherwise). Whether the row may be
+/// forwarded and to whom is the server's rule (wire-rules natives).
+fn check_forward(m: &skymp::ScriptCall, forward: bool) -> Result<(), Reject> {
+    let question = m.self_id == OWN_PLAYER && m.acting.is_some();
+    if !forward || (m.self_id == OWN_PLAYER && !question) || m.self_id >= PLAYER_FORMS || m.landed.is_some() || m.placed.is_some() {
+        return Err(Reject::Range);
+    }
     Ok(())
 }
 
@@ -5838,6 +5873,56 @@ mod script_call_tests {
         assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player.clone(), None, Some(1))), Err(Reject::Range));
         assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player, None, Some(2))), Err(Reject::Range));
         assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { local_args: Some(4), ..play })), Err(Reject::Range));
+    }
+
+    // the forward (SCHEMA_VERSION 68): a guest's
+    // dialogue fragment unlocking Whiterun's gate (Skyrim.esm 0x1b1f1), which
+    // the host's game owns
+    #[test]
+    fn a_forward_is_true_on_a_load_order_subject_and_nothing_else() {
+        let Message::ScriptCall(lock) = call(0x1b1f1, "ObjectReference", "Lock", vec![Some(SnippetArg::Bool(false)), Some(SnippetArg::Bool(false))]) else {
+            return;
+        };
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), ..lock.clone() })), Ok(()));
+        assert_eq!(validate_server(&Message::ScriptCall(lock.clone())), Ok(()), "absent: no forward");
+        // present only as true
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(false), ..lock.clone() })), Err(Reject::Range));
+        // the sender's own player and its own created reference are its own
+        // seat's, never forwarded
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), self_id: 0x14, ..lock.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), self_id: 0xff00_08fa, ..lock.clone() })), Err(Reject::Range));
+        // never beside a landing or a creation's result
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), landed: Some(Default::default()), ..lock.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), placed: Some(0xff00_08fa), ..lock })), Err(Reject::Range));
+    }
+
+    // the one script channel (SCHEMA_VERSION 68): the host's wall script asks
+    // whether the guest (actor ff000001) sees the wall's look marker 0x709d4;
+    // the guest's game answers about its own player; each call names its
+    // cause and the player who acted
+    #[test]
+    fn a_question_an_answer_a_cause_and_an_acting_player_have_their_shapes() {
+        use wire_schema::skymp::ScriptCause;
+        let Message::ScriptCall(look) = call(0x14, "Actor", "HasLOS", vec![object(0x709d4, "ObjectReference")]) else {
+            return;
+        };
+        let ask = ScriptCall { forward: Some(true), acting: Some(0xff00_0001), ..look.clone() };
+        assert_eq!(validate_server(&Message::ScriptCall(ask.clone())), Ok(()));
+        // a question on 0x14 needs its acting player; one naming no player is out of range
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { acting: None, ..ask.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { acting: Some(0x14), ..ask.clone() })), Err(Reject::Range));
+        // the answer: on 0x14, no forward, no acting
+        let answer = ScriptCall { answer: Some(SnippetArg::Bool(true)), ..look.clone() };
+        assert_eq!(validate_server(&Message::ScriptCall(answer.clone())), Ok(()));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), ..answer.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { acting: Some(0xff00_0001), ..answer.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { self_id: 0x709d4, ..answer })), Err(Reject::Range));
+        // a cause: kinds 1 to 6 on a load-order form (stage 10 of the gate quest 0xd1984)
+        let stage = Some(ScriptCause { kind: 1, form: 0xd1984, n: 10 });
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { cause: stage.clone(), ..ask.clone() })), Ok(()));
+        for bad in [ScriptCause { kind: 0, form: 0xd1984, n: 10 }, ScriptCause { kind: 7, form: 0xd1984, n: 10 }, ScriptCause { kind: 1, form: 0, n: 10 }, ScriptCause { kind: 1, form: 0xff00_0001, n: 10 }] {
+            assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { cause: Some(bad.clone()), ..ask.clone() })), Err(Reject::Range), "{bad:?}");
+        }
     }
 
     #[test]

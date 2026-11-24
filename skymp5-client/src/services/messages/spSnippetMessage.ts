@@ -26,4 +26,13 @@ export interface SpSnippetMessage {
     // Actor.SetEyeTexture); absent on every other snippet, and only with seq.
     // ObjectAnimationService's 3D keep takes a look by it
     keep?: number;
+    // since SCHEMA_VERSION 68 (the one script channel): on a relayed call the
+    // player who acted (0x14 for this game's own), whose act the receiver
+    // runs it as; a question about this game's own player (selfId 0x14),
+    // which it watches and answers with a ScriptCall's answer; another
+    // player's game's answer to a question this game asked about that player
+    // (selfId that player's actor)
+    acting?: number;
+    question?: boolean;
+    answer?: SpSnippetArgument;
 };

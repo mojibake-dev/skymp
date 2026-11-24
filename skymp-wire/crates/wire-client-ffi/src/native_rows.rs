@@ -74,6 +74,12 @@ pub const SKYMP_NATIVE_AUDIENCE_EVERYONE: u8 = 1;
 pub const SKYMP_NATIVE_AUDIENCE_NOBODY: u8 = 2;
 /// Audience: the subject's cell's host alone.
 pub const SKYMP_NATIVE_AUDIENCE_HOST: u8 = 3;
+/// Audience: the acting player's own game alone (a question about that
+/// player); a route the server's rule gives, never a row's column.
+pub const SKYMP_NATIVE_AUDIENCE_PLAYER: u8 = 4;
+/// Audience: the seats that asked a question (its answer); a route the
+/// server's rule gives, never a row's column.
+pub const SKYMP_NATIVE_AUDIENCE_ASKERS: u8 = 5;
 
 /// Keep: nothing.
 pub const SKYMP_NATIVE_KEEP_NOTHING: u8 = 0;
@@ -164,9 +170,13 @@ pub const SKYMP_NATIVE_HOOK_ACTING_INVENTORY: u8 = 15;
 /// Hook: a push onto another player's figure, skipped on the caller's seat
 /// (thuum tracker #178).
 pub const SKYMP_NATIVE_HOOK_PUSH_FIGURE: u8 = 16;
+/// Hook: Actor.HasLOS on the acting player's figure inside another player's
+/// acting scope, answered from that player's own game's look (a question on
+/// the script channel).
+pub const SKYMP_NATIVE_HOOK_ACTING_LOOK: u8 = 17;
 /// The largest hook code: a row with a larger one is a table this build does
 /// not read.
-pub const SKYMP_NATIVE_HOOK_LAST: u8 = 16;
+pub const SKYMP_NATIVE_HOOK_LAST: u8 = 17;
 
 /// One row of the table, every string NUL-terminated and valid for the
 /// process's life.
@@ -250,6 +260,8 @@ fn audience_code(audience: Audience) -> u8 {
         Audience::Everyone => SKYMP_NATIVE_AUDIENCE_EVERYONE,
         Audience::Nobody => SKYMP_NATIVE_AUDIENCE_NOBODY,
         Audience::Host => SKYMP_NATIVE_AUDIENCE_HOST,
+        Audience::Player => SKYMP_NATIVE_AUDIENCE_PLAYER,
+        Audience::Askers => SKYMP_NATIVE_AUDIENCE_ASKERS,
     }
 }
 
@@ -457,6 +469,7 @@ mod tests {
             SKYMP_NATIVE_HOOK_SCENE_START,
             SKYMP_NATIVE_HOOK_ACTING_INVENTORY,
             SKYMP_NATIVE_HOOK_PUSH_FIGURE,
+            SKYMP_NATIVE_HOOK_ACTING_LOOK,
         ];
         assert_eq!(codes.map(usize::from), std::array::from_fn(|i| i));
         assert_eq!(Hook::ALL.map(Hook::code), codes);

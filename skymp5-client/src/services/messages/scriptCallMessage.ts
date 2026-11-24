@@ -46,4 +46,18 @@ export interface ScriptCallMessage {
     // 0xff000000 and up stays a player's figure by its server id (rung 5)
     placed?: number;
     localArgs?: number;
+    // since SCHEMA_VERSION 68: true on a state call this game's engine
+    // skipped on a subject another seat owns, which the server sends to that
+    // owner alone to run; absent on every other call
+    forward?: boolean;
+    // since SCHEMA_VERSION 68 (the one script channel): what started the call
+    // (kind 1 a quest stage, 2 a conversation line, 3 a scene, 4 a package,
+    // 5 an interaction event, 6 another player's relayed entry or press; the
+    // form at its root; the kind's number, a stage or a relay's sequence),
+    // which the server delivers once; the player who acted, by its actor's
+    // server id; and this game's answer to a question about its own player
+    // (selfId 0x14, a read only this game can make)
+    cause?: { kind: number; form: number; n: number };
+    acting?: number;
+    answer?: SpSnippetArgument;
 }

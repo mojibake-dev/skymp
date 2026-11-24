@@ -1,0 +1,21 @@
+{
+  "acting": 4278190081,
+  "args": [
+    false,
+    false
+  ],
+  "caller": "",
+  "cause": {
+    "form": 858500,
+    "kind": 1,
+    "n": 10
+  },
+  "cls": "ObjectReference",
+  "epoch": 1,
+  "fn": "Lock",
+  "forward": true,
+  "handler": "",
+  "latent": false,
+  "selfId": 110065,
+  "t": 75
+}

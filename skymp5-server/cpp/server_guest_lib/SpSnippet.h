@@ -34,7 +34,17 @@ public:
   // relay must not land behind the object's later record or relay)
   // and a look row's keep code (thuum #52, SpSnippetMessage's `keep`), 0
   // for none
-  void Relay(MpActor* listener, uint32_t seq, uint8_t keep = 0);
+  void Relay(MpActor* listener, uint32_t seq, uint8_t keep = 0,
+             uint32_t acting = 0);
+
+  // the one script channel: a question about `player`'s own player, sent to
+  // that player's game alone (the snippet's self its own 0x14 there), which
+  // watches the read and answers; and an answer, another player's game's
+  // read of its own player, sent to a seat that asked
+  void Ask(MpActor* player);
+  void Answer(MpActor* asker,
+              const std::variant<bool, double, std::string,
+                                 SpSnippetObjectArgument>& answer);
 
   // thuum ADR-068 rung 4 (the standing's serve): a recorded state's applier
   // to one listener's game behind a create word, at once, no answer and no

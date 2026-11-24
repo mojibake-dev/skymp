@@ -53,6 +53,25 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
     int32_t count = 0;
   };
 
+  // what started the call (wire-schema ScriptCause): its kind (1 a quest
+  // stage, 2 a conversation line, 3 a scene, 4 a package, 5 an interaction
+  // event, 6 another player's relayed entry or press), the form at its root
+  // and the kind's number (a stage, a relay's sequence, else 0)
+  struct Cause
+  {
+    template <class Archive>
+    void Serialize(Archive& archive)
+    {
+      archive.Serialize("kind", kind)
+        .Serialize("form", form)
+        .Serialize("n", n);
+    }
+
+    uint32_t kind = 0;
+    uint32_t form = 0;
+    uint32_t n = 0;
+  };
+
   template <class Archive>
   void Serialize(Archive& archive)
   {
@@ -67,7 +86,11 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
       .Serialize("latent", latent)
       .Serialize("landed", landed)
       .Serialize("placed", placed)
-      .Serialize("localArgs", localArgs);
+      .Serialize("localArgs", localArgs)
+      .Serialize("forward", forward)
+      .Serialize("cause", cause)
+      .Serialize("acting", acting)
+      .Serialize("answer", answer);
   }
 
   // the subject's owner epoch the sender holds (the cell's host epoch;
@@ -96,4 +119,16 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
   // reference by that id, which the server maps to its own copy
   std::optional<uint32_t> placed;
   std::optional<uint32_t> localArgs; // 16 bits on the wire (wire-schema)
+  // since SCHEMA_VERSION 68 (the forward): true on
+  // a state call the sender's engine skipped on a subject it does not own,
+  // which the server sends to that subject's owner alone; absent otherwise
+  std::optional<bool> forward;
+  // since SCHEMA_VERSION 68 (the one script channel): what started the call,
+  // delivered once; the player who acted, by its actor's id; and a player's
+  // game's answer to a question about its own player
+  std::optional<Cause> cause;
+  std::optional<uint32_t> acting;
+  std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>
+    answer;
 };

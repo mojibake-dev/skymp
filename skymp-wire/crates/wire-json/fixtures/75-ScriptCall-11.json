@@ -1,0 +1,17 @@
+{
+  "answer": true,
+  "args": [
+    {
+      "formId": 461268,
+      "type": "ObjectReference"
+    }
+  ],
+  "caller": "",
+  "cls": "Actor",
+  "epoch": 0,
+  "fn": "HasLOS",
+  "handler": "",
+  "latent": false,
+  "selfId": 20,
+  "t": 75
+}

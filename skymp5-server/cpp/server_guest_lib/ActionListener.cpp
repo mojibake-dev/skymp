@@ -7013,6 +7013,44 @@ void ActionListener::OnCreatedCall(MpActor& reporter,
                msg.handler, verdict.seq, relayed);
 }
 
+namespace {
+// a digest of a script call's argument values (FNV-1a over each one's kind
+// and value), which the rule folds one cause's call by: the same native on
+// the same subject with other values is another call
+uint64_t ArgsDigest(
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>& args)
+{
+  uint64_t h = 1469598103934665603ull;
+  const auto mix = [&h](const void* data, size_t n) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < n; ++i) {
+      h ^= bytes[i];
+      h *= 1099511628211ull;
+    }
+  };
+  for (const auto& arg : args) {
+    const unsigned char kind =
+      arg ? static_cast<unsigned char>(arg->index() + 1) : 0;
+    mix(&kind, 1);
+    if (!arg) {
+      continue;
+    }
+    if (const bool* b = std::get_if<bool>(&*arg)) {
+      const unsigned char v = *b ? 1 : 0;
+      mix(&v, 1);
+    } else if (const double* d = std::get_if<double>(&*arg)) {
+      mix(d, sizeof(*d));
+    } else if (const std::string* s = std::get_if<std::string>(&*arg)) {
+      mix(s->data(), s->size());
+    } else if (const auto* o = std::get_if<SpSnippetObjectArgument>(&*arg)) {
+      mix(&o->formId, sizeof(o->formId));
+    }
+  }
+  return h;
+}
+}
+
 void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                                   const ScriptCallMessage& msg)
 {
@@ -7046,7 +7084,8 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // a refusal's line, either step's: one a minute per reporter and code, the
   // rest counted (OnChangeForm's shape): a script repeats its call at every
   // turn
-  const auto refused = [&](const skymp::rules::ScriptCallVerdict& verdict) {
+  const auto refused = [&](const skymp::rules::ScriptCallVerdict& verdict,
+                           const char* outcome = "refused") {
     const auto now = std::chrono::steady_clock::now();
     auto& [since, count] = scriptCallRefusals[{
       reporter->GetFormId(), static_cast<uint8_t>(verdict.code) }];
@@ -7056,10 +7095,10 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
       return;
     }
     spdlog::info("[verb:scripts] {}: {:x} reports {}.{} on {:x} (epoch {}, "
-                 "from {}.{}): {}; refused, {} since the last line",
+                 "from {}.{}): {}; {}, {} since the last line",
                  std::string(verdict.name), reporter->GetFormId(), msg.cls,
                  msg.fn, msg.selfId, msg.epoch, msg.caller, msg.handler,
-                 std::string(verdict.why), count);
+                 std::string(verdict.why), outcome, count);
     since = now;
     count = 0;
   };
@@ -7068,8 +7107,20 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // a row or arguments the table refuses, a subject the reporter may not
   // name; a refusal here costs no lookup
   auto& scriptCalls = partOne.GetScriptCalls();
-  const auto shape = scriptCalls.shape(at.row, argSlice, reporter->GetFormId(),
-                                       msg.selfId, MonotonicMs());
+  // the forward: a state call the reporter's engine skipped on
+  // a subject it does not own, for that subject's owner to run
+  const bool forward = msg.forward.value_or(false);
+  // the one script channel: a player's game's answer to a question about its
+  // own player, for the seats that asked
+  const bool answering = msg.answer.has_value();
+  const auto shape = answering
+    ? scriptCalls.shape_answer(at.row, argSlice, reporter->GetFormId(),
+                               msg.selfId, MonotonicMs())
+    : forward
+    ? scriptCalls.shape_forward(at.row, argSlice, reporter->GetFormId(),
+                                msg.selfId, MonotonicMs())
+    : scriptCalls.shape(at.row, argSlice, reporter->GetFormId(), msg.selfId,
+                        MonotonicMs());
   if (shape.code != skymp::rules::ScriptCallCode::Accepted) {
     refused(shape);
     return;
@@ -7184,7 +7235,9 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     } else if (subject->GetBaseType() == "DOOR" ||
                subject->GetBaseType() == "CONT") {
       facts.subject_kind = 2;
-      if (recordRow) {
+      // a forward to a door's or a container's owner reads its cell's host
+      // as a record row does (a guest's unlock of a gate the host owns)
+      if (recordRow || forward) {
         place.emplace(
           subject->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
           subject->GetPos());
@@ -7263,11 +7316,38 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     facts.cause_live = markerCause.live;
   }
 
+  // the one script channel's facts: the player who acted (a question's
+  // audience), what started the call, the argument values a cause's call is
+  // folded by, and whether a quest stage cause reached every seat
+  facts.acting = msg.acting.value_or(0);
+  if (facts.acting != 0) {
+    auto* actingActor = dynamic_cast<MpActor*>(
+      partOne.worldState.LookupFormById(facts.acting).get());
+    facts.acting_other = actingActor && actingActor != reporter &&
+      partOne.serverState.UserByActor(actingActor) !=
+        Networking::InvalidUserId;
+  }
+  if (msg.cause) {
+    facts.origin_kind = static_cast<uint8_t>(msg.cause->kind);
+    facts.origin_form = msg.cause->form;
+    facts.origin_n = msg.cause->n;
+    if (msg.cause->kind == 1) {
+      facts.origin_relayed =
+        partOne.CheckSharedQuest(FormDesc::FromFormId(
+          msg.cause->form, partOne.worldState.espmFiles)) == 0;
+    }
+  }
+  facts.args_digest = ArgsDigest(msg.args);
+
   // the owner step on the shaped call, over its subject's facts
   const auto verdict = scriptCalls.owner(facts);
   if (verdict.code == skymp::rules::ScriptCallCode::Skipped) {
     // a door's open is isOpen's (Activate's path), not an animation; so is a
-    // container's lid (OnObjectAnimation's rule, thuum playtest 40's F8)
+    // container's lid (OnObjectAnimation's rule, thuum playtest 40's F8). A
+    // forward folded by its cause says why, one line a minute
+    if (!std::string(verdict.why).empty()) {
+      refused(verdict, "folded, not delivered");
+    }
     return;
   }
   if (verdict.code != skymp::rules::ScriptCallCode::Accepted) {
@@ -7280,6 +7360,52 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // `akTarget.ProcessTrapHit(self, ...)`) hit an actor it simulates, noted
   // as that actor's death evidence (NoteTrapHit; R2, recorded, the numbers
   // never judged)
+  // the one script channel's question and answer: a read only a player's
+  // own game can answer (its camera's look), asked by a script another seat
+  // runs for that player, goes to that player's game alone as the same
+  // native on its own player (audience 4); that game's answer goes to the
+  // seats that asked (audience 5). Neither names a reference of the
+  // server's: the subject is a player's own
+  if (verdict.audience == 4 || verdict.audience == 5) {
+    std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      askArgs;
+    for (uint8_t i : verdict.relay_args) {
+      if (i < msg.args.size()) {
+        askArgs.push_back(msg.args[i]);
+      }
+    }
+    const std::string askCls(verdict.relay_cls);
+    const std::string askFn(verdict.relay_fn);
+    SpSnippet ask(askCls.c_str(), askFn.c_str(), askArgs, verdict.relay_self);
+    if (verdict.audience == 4) {
+      const auto& form = partOne.worldState.LookupFormByIdNoLoad(facts.acting);
+      if (MpActor* player = form ? form->AsActor() : nullptr) {
+        ask.Ask(player);
+        spdlog::info("[verb:scripts] {:x} asks {:x}'s own game {}.{} (from "
+                     "{}.{}): sent",
+                     reporter->GetFormId(), facts.acting, msg.cls, msg.fn,
+                     msg.caller, msg.handler);
+      }
+      return;
+    }
+    size_t answered = 0;
+    if (msg.answer) {
+      const auto askers = scriptCalls.askers(reporter->GetFormId(), at.row,
+                                             facts.args_digest, MonotonicMs());
+      for (const uint32_t asker : askers) {
+        const auto& form = partOne.worldState.LookupFormByIdNoLoad(asker);
+        if (MpActor* seat = form ? form->AsActor() : nullptr) {
+          ask.Answer(seat, *msg.answer);
+          ++answered;
+        }
+      }
+    }
+    spdlog::info("[verb:scripts] {:x}'s own game answers {}.{}: sent to {} "
+                 "seat(s) that asked",
+                 reporter->GetFormId(), msg.cls, msg.fn, answered);
+    return;
+  }
   if (verdict.keep_evidence) {
     MpActor* hit = subject ? subject->AsActor() : nullptr;
     if (!hit) {
@@ -7425,7 +7551,8 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     if (verdict.look && verdict.seq == 0) {
       relay.Serve(listener);
     } else {
-      relay.Relay(listener, verdict.seq, verdict.keep_look);
+      relay.Relay(listener, verdict.seq, verdict.keep_look,
+                  forward ? msg.acting.value_or(reporter->GetFormId()) : 0);
     }
     ++relayed;
   };
@@ -7461,6 +7588,15 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                  reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
                  facts.cell, msg.epoch, msg.caller, msg.handler, seqWord,
                  relayed, whose, relayCls, relayFn);
+    return;
+  }
+  if (forward) {
+    spdlog::info("[verb:scripts] {:x} forwards {}.{} on {:x} in cell {:x} "
+                 "(from {}.{}): the call its own engine skipped, sent to the "
+                 "owner {:x}, seq {}, relayed to {} game(s)",
+                 reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
+                 facts.cell, msg.caller, msg.handler, facts.owner, verdict.seq,
+                 relayed);
     return;
   }
   if (verdict.event_arg >= 0) {

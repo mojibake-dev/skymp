@@ -36,6 +36,15 @@ inline REL::Relocation<std::uintptr_t> SendEvent{ RELOCATION_ID(98077,
 // are CommonLib's, as SendEvent's.
 inline REL::Relocation<std::uintptr_t> NativeFunctionCall{ RELOCATION_ID(
   97923, 104651) };
+// the VM's comparator of two values, `int32 (CodeTasklet*, const Variable*
+// lhs, const Variable* rhs)`: 0 for equal objects (the same Object, or two
+// with one handle), -1 for unequal ones; its callers are the interpreter's
+// kCMP_EQ to kCMP_GTE handlers (105196 to 105200; the four ordering ones
+// refuse objects before it) and the array finds (105211), and it recurses
+// for arrays with the same tasklet. Address Library 105220 on 1.6.1170
+// (`just addr` 0x1469f00), HYPOTHESIS until a trace reads it. Not in
+// CommonLibSSE-NG, the SE id unread: AE only
+inline REL::Relocation<std::uintptr_t> ObjectCompare{ REL::ID(105220) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponPC{ RELOCATION_ID(
   40232, 41235) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponActor{ RELOCATION_ID(

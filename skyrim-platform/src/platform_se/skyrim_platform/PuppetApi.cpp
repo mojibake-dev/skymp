@@ -508,6 +508,18 @@ Napi::Value PuppetApi::IsHosted(const Napi::CallbackInfo& info)
 // base id and count pairs, at most kMaxItemStacks of them, each base and
 // count above 0; the scope answers an item count on the figure from it. False,
 // nothing stored, for items on any other stage or items of another shape
+Napi::Value PuppetApi::SetPlayerLook(const Napi::CallbackInfo& info)
+{
+  const auto player = NapiHelper::ExtractUInt32(info[0], "player");
+  const auto target = NapiHelper::ExtractUInt32(info[1], "target");
+  const bool los = NapiHelper::ExtractBoolean(info[2], "los");
+  if (player < 0xff000000 || target == 0 || target >= 0xff000000) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  ActingScope::Looks::Set(player, target, los);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
 {
   const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");

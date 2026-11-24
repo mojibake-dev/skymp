@@ -113,6 +113,18 @@
 #define SKYMP_NATIVE_AUDIENCE_HOST 3
 
 /**
+ * Audience: the acting player's own game alone (a question about that
+ * player); a route the server's rule gives, never a row's column.
+ */
+#define SKYMP_NATIVE_AUDIENCE_PLAYER 4
+
+/**
+ * Audience: the seats that asked a question (its answer); a route the
+ * server's rule gives, never a row's column.
+ */
+#define SKYMP_NATIVE_AUDIENCE_ASKERS 5
+
+/**
  * Keep: nothing.
  */
 #define SKYMP_NATIVE_KEEP_NOTHING 0
@@ -312,10 +324,17 @@
 #define SKYMP_NATIVE_HOOK_PUSH_FIGURE 16
 
 /**
+ * Hook: Actor.HasLOS on the acting player's figure inside another player's
+ * acting scope, answered from that player's own game's look (a question on
+ * the script channel).
+ */
+#define SKYMP_NATIVE_HOOK_ACTING_LOOK 17
+
+/**
  * The largest hook code: a row with a larger one is a table this build does
  * not read.
  */
-#define SKYMP_NATIVE_HOOK_LAST 16
+#define SKYMP_NATIVE_HOOK_LAST 17
 
 /**
  * The callback `Tick` calls once per event: packet type, content and its

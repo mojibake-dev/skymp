@@ -19,6 +19,7 @@
 #include "skymp_wire.h"
 #include <RE/A/Actor.h>
 #include <RE/B/BGSListForm.h>
+#include <RE/C/CodeTasklet.h>
 #include <RE/F/FormTypes.h>
 #include <RE/I/IFunction.h>
 #include <RE/I/IObjectHandlePolicy.h>
@@ -388,6 +389,9 @@ struct RowInfo
   bool lookOnly = false;
   // the Undead FX build: an actor's look row (its columns, ReadRow)
   bool actorLook = false;
+  // the acting-look hook (Actor.HasLOS): a look another player's own game
+  // answers
+  bool actingLook = false;
   // rung 5: the acting-return hook (Game.GetPlayer), and the row's quest
   // hook, None for every other row
   bool getPlayer = false;
@@ -484,6 +488,7 @@ enum CountKind : std::size_t
   kCountHelper,
   kCountEffectEnded,
   kCountCreated,
+  kCountForwarded,
   kCountKinds
 };
 
@@ -502,7 +507,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (effect)",
                                                     " (helper)",
                                                     " (effect ended)",
-                                                    " (created)" };
+                                                    " (created)",
+                                                    " (forwarded)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -575,13 +581,17 @@ enum StagedPlain : std::size_t
   kStagedFrame,
   kStagedUnresolved,
   kStagedFigurePush,
+  kStagedActingLook,
   kStagedPlains
 };
 
 constexpr const char* kStagedPlainName[kStagedPlains] = {
-  "staged local (R3, never sent)", "staged (platform)",
-  "staged (frame mismatch)", "staged (unresolved)",
-  "staged skipped (a push its pusher's own game throws)"
+  "staged local (R3, never sent)",
+  "staged (platform)",
+  "staged (frame mismatch)",
+  "staged (unresolved)",
+  "staged skipped (a push its pusher's own game throws)",
+  "staged answered (a look its player's own game answers)"
 };
 
 // thuum tracker #178: another player's figure on this seat, a dynamic form
@@ -1074,6 +1084,27 @@ struct QueuedCall
   bool created = false;
   std::optional<std::uint32_t> placed;
   std::uint16_t localArgs = 0;
+  // a state row's call this seat skipped on a subject another seat owns,
+  // from a stack only this seat runs (ForwardsFrom), raised as kind
+  // "forward" for the server to send to that owner
+  bool forward = false;
+  // a read only another player's own game can make (OnActingLook), raised as
+  // kind "question" for the server to ask that game
+  bool question = false;
+  // the player who acted, by its server id (the acting scope's), raised as
+  // `acting`; 0 for none (this seat's own player)
+  std::uint32_t acting = 0;
+  // what started the call (CauseOf), raised as `cause`: its kind (1 a quest
+  // stage, 2 a conversation line, 3 a scene, 4 a package, 5 a perk's or an
+  // interaction's event, 6 another player's relayed entry or press), the
+  // form at its root and the kind's number
+  struct Cause
+  {
+    std::uint8_t kind = 0;
+    std::uint32_t form = 0;
+    std::uint32_t n = 0;
+  };
+  std::optional<Cause> cause;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1148,10 +1179,12 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   AddObjProperty(&obj, "cls", native.cls);
   AddObjProperty(&obj, "fn", native.fn);
   AddObjProperty(&obj, "kind",
-                 call.touch       ? "touch"
-                   : call.look    ? "look"
-                   : call.created ? "created"
-                                  : KindName(native.kind));
+                 call.touch        ? "touch"
+                   : call.look     ? "look"
+                   : call.created  ? "created"
+                   : call.question ? "question"
+                   : call.forward  ? "forward"
+                                   : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
   for (uint32_t i = 0; i < call.argCount; ++i) {
@@ -1171,6 +1204,16 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   }
   if (call.localArgs != 0) {
     AddObjProperty(&obj, "localArgs", static_cast<int>(call.localArgs));
+  }
+  if (call.acting != 0) {
+    AddObjProperty(&obj, "acting", call.acting);
+  }
+  if (call.cause) {
+    auto cause = Napi::Object::New(env);
+    AddObjProperty(&cause, "kind", static_cast<int>(call.cause->kind));
+    AddObjProperty(&cause, "form", call.cause->form);
+    AddObjProperty(&cause, "n", call.cause->n);
+    obj.Set("cause", cause);
   }
   if (call.landed) {
     auto landed = Napi::Array::New(env, call.landed->size());
@@ -1348,6 +1391,18 @@ void LogSkipped(std::size_t row, std::uint32_t selfId)
   if (SelfLineDue(g_skipLines[row], selfId)) {
     logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
                  "({})",
+                 g_natives[row].cls, g_natives[row].fn, selfId,
+                 LeverName(g_nonOwnerSkip));
+  }
+}
+
+// a skipped call queued for its subject's owner, its first selves logged as
+// the skip's are (the same window's slots)
+void LogForwarded(std::size_t row, std::uint32_t selfId)
+{
+  if (SelfLineDue(g_skipLines[row], selfId)) {
+    logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
+                 "({}), and forwarded to its owner",
                  g_natives[row].cls, g_natives[row].fn, selfId,
                  LeverName(g_nonOwnerSkip));
   }
@@ -1559,6 +1614,11 @@ struct Marks
   // kCompleted (SwapCount), the counted item's form beside it
   bool swapCount = false;
   std::uint32_t countItem = 0;
+  // the acting look (OnActingLook): Actor.HasLOS on the acting player's
+  // figure, its body skipped and its result the look that player's own game
+  // answered (ActingScope::Looks)
+  bool swapLook = false;
+  bool lookAnswer = false;
   ActingScope::Scope scope{};
   bool line = false;
   std::string caller;
@@ -2276,8 +2336,30 @@ std::string ScopeText(const ActingScope::Scope& scope)
 // first, its live test before a join (a latent call the platform dispatched
 // roots at the very quest the client applies); the frame must be the
 // native's own, step (c)'s test, before its frame is read
+std::optional<ActingScope::Scope> ScopeOfStack(
+  const RE::BSScript::Stack* stack);
+
 std::optional<ActingScope::Scope> ScopeOfCall(
   const RE::BSScript::IFunction* fn, const RE::BSScript::Stack* stack)
+{
+  if (!ActingScope::Any() || !stack) {
+    return std::nullopt;
+  }
+  const RE::BSScript::StackFrame* top = stack->top;
+  if (!top || top->owningFunction.get() != fn) {
+    return std::nullopt;
+  }
+  return ScopeOfStack(stack);
+}
+
+// a stack's scope, the one ScopeOfCall reads for a native's own frame and
+// the object compare reads for an instruction's: the stack's own once it
+// joined one, else, inside an armed window, the arm's for its root subject,
+// joined here. A stack whose first instruction compares its activator with
+// a property holding the player has made no native call yet, so the
+// compare joins it as a native's call would
+std::optional<ActingScope::Scope> ScopeOfStack(
+  const RE::BSScript::Stack* stack)
 {
   if (!ActingScope::Any() || !stack) {
     return std::nullopt;
@@ -2285,10 +2367,6 @@ std::optional<ActingScope::Scope> ScopeOfCall(
   if (PlatformCall::Active() ||
       (g_nativeCallRequirements.stackId != 0 &&
        stack->stackID == g_nativeCallRequirements.stackId)) {
-    return std::nullopt;
-  }
-  const RE::BSScript::StackFrame* top = stack->top;
-  if (!top || top->owningFunction.get() != fn) {
     return std::nullopt;
   }
   if (auto scope = ActingScope::Of(stack->stackID)) {
@@ -2933,6 +3011,21 @@ QuestCause::Self SelfKindOfObject(RE::BSScript::IObjectHandlePolicy* policy,
   return QuestCause::Self::kNone;
 }
 
+// whether a skipped call's stack can be one only this seat runs, so its
+// state call on another seat's subject goes to that owner instead of
+// nowhere: a relay applied here for another player (the acting scope),
+// another player's relayed trigger entry, a world root (a dialogue, scene,
+// package or perk fragment, an interaction's event; QuestCause::Classify)
+// and a quest stage's fragment. Each names its cause (CauseOf), and the
+// server delivers a cause's call once: never when the stage reached the
+// owner too, whose own run makes the call. A seat-own root (a lifecycle or
+// cell-load handler on this seat's copy) stays skipped
+constexpr bool ForwardsFrom(StagedRoot root)
+{
+  return root == kRootRelayed || root == kRootTrigger || root == kRootWorld ||
+    root == kRootStage;
+}
+
 // a staged call's root kind: the acting scope's root first (ScopeRootOf),
 // else the root frame's class (QuestCause::Classify, MarkQuestCause's one
 // rule, over the frame's script and function names, read without a copy,
@@ -2969,6 +3062,67 @@ StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
   return kRootNone;
 }
 
+// what started a forwarded call, by its stack's root frame: a quest stage's
+// fragment (kind 1, its quest and the fragment's number, one per stage), a
+// world root by its self's kind (2 a topic info's fragment, 3 a scene's, 4 a
+// package's, 5 a perk's fragment or an interaction's event), else inside an
+// acting scope another player's relayed entry or press (6, the root's self
+// and the scope's arm). None when the root names no load-order form. Read
+// through the handle policy and the frame's names alone, as StagedRootOf
+std::optional<QueuedCall::Cause> CauseOf(
+  const RE::BSScript::Stack* stack,
+  const std::optional<ActingScope::Scope>& scope,
+  RE::BSScript::IObjectHandlePolicy* policy)
+{
+  const RE::BSScript::StackFrame* root = stack ? RootFrameOf(stack) : nullptr;
+  if (!root) {
+    return std::nullopt;
+  }
+  const std::uint32_t form = SubjectOfFrame(root);
+  if (form == 0 || form >= 0xff000000) {
+    return std::nullopt;
+  }
+  const RE::BSScript::ObjectTypeInfo* type = root->owningObjectType.get();
+  const RE::BSScript::IFunction* function = root->owningFunction.get();
+  const std::string_view script = type ? type->GetName() : "";
+  const std::string_view name =
+    function ? std::string_view(function->GetName().c_str()) : "";
+  const QuestCause::Self self = SelfKindOfObject(policy, ObjectOf(root->self));
+  QueuedCall::Cause cause;
+  cause.form = form;
+  switch (QuestCause::Classify(script, name, self)) {
+    case QuestCause::Root::kStageFragment: {
+      cause.kind = 1;
+      constexpr std::string_view kFragment = "Fragment_";
+      if (name.size() > kFragment.size()) {
+        std::uint32_t n = 0;
+        for (const char c : name.substr(kFragment.size())) {
+          if (c < '0' || c > '9') {
+            break;
+          }
+          n = n * 10 + static_cast<std::uint32_t>(c - '0');
+        }
+        cause.n = n;
+      }
+      return cause;
+    }
+    case QuestCause::Root::kWorld:
+      cause.kind = self == QuestCause::Self::kInfo ? 2
+        : self == QuestCause::Self::kScene         ? 3
+        : self == QuestCause::Self::kPackage       ? 4
+                                                   : 5;
+      return cause;
+    default:
+      break;
+  }
+  if (scope) {
+    cause.kind = 6;
+    cause.n = static_cast<std::uint32_t>(scope->seq);
+    return cause;
+  }
+  return std::nullopt;
+}
+
 Marks OnCreatedCall(std::size_t row, const RowInfo& info,
                     const RE::BSScript::Stack* stack,
                     const RE::BSScript::StackFrame* top, std::uint32_t page,
@@ -2992,6 +3146,77 @@ Marks OnCreatedCall(std::size_t row, const RowInfo& info,
 // counted by their scope alone (ScopeRootOf), and an owned subject's
 // reference and its root frame's self are read through the VM's handle
 // policy (RefOfObject without its cross-check, SelfKindOfObject)
+// the acting look: Actor.HasLOS whose self is the acting player's figure
+// inside that player's scope (a word wall's look test the host runs for a
+// guest who entered its trigger). The engine's test refuses a subject that
+// is not its own player when the target is no actor, so the look is the
+// player's own game's: the body is skipped and the call answers that game's
+// last look at the target (ActingScope::Looks), false while none stands, and
+// when the pair is due an ask the call is queued as a question (kind
+// "question", self 0x14, the target, acting the player) for the server to
+// ask that game. True when the call is answered so; false leaves it
+// to the staged count as before (a self that is no figure, a frame not the
+// native's own, a target that names no load-order reference)
+bool OnActingLook(std::size_t row, const RowInfo& info,
+                  const RE::BSScript::IFunction* fn,
+                  const RE::BSScript::Stack* stack,
+                  const ActingScope::Scope& scope, Marks& marks)
+{
+  if (!stack || scope.player.figure == 0 || scope.player.serverId == 0 ||
+      info.params == 0) {
+    return false;
+  }
+  const RE::BSScript::StackFrame* top = stack->top;
+  if (!top || top->owningFunction.get() != fn) {
+    return false;
+  }
+  const RE::BSScript::Object* self = ObjectOf(top->self);
+  const RE::VMHandle handle = self ? self->GetHandle() : 0;
+  if (!self || !IsPlainFormHandle(handle) ||
+      FormIdOfHandle(handle) != scope.player.figure) {
+    return false;
+  }
+  const std::uint32_t page = top->GetPageForFrame();
+  if (page == kNoPage) {
+    return false;
+  }
+  auto* vm = VM::GetSingleton();
+  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+  const RE::TESObjectREFR* target =
+    RefOfObject(policy, ObjectOf(top->GetStackFrameVariable(0, page)), false);
+  if (!target || target->formID == 0 || target->formID >= 0xff000000) {
+    return false;
+  }
+  bool ask = false;
+  const std::uint32_t player = scope.player.serverId;
+  const std::uint32_t looked = target->formID;
+  marks.skip = true;
+  marks.result = info.result;
+  marks.swapLook = true;
+  marks.lookAnswer = ActingScope::Looks::Answer(player, looked, ask);
+  CountStagedPlain(row, kStagedActingLook);
+  if (ask) {
+    logger::info("[verb:look] Actor.HasLOS on acting player {:x}'s figure "
+                 "{:x} at {:x}: answered {} from its own game's look, which "
+                 "is asked of it again",
+                 player, scope.player.figure, looked,
+                 marks.lookAnswer ? "yes" : "no");
+    QueuedCall call;
+    call.row = row;
+    call.self = 0x14;
+    call.argCount = 1;
+    call.args[0].kind = CallArg::Kind::Form;
+    call.args[0].formId = looked;
+    call.latent = info.latent;
+    call.stackId = stack->stackID;
+    call.question = true;
+    call.acting = player;
+    NameCaller(top->previousFrame, call.caller, call.handler);
+    QueueCall(std::move(call));
+  }
+  return true;
+}
+
 Marks OnStaged(std::size_t row, const RowInfo& info,
                const RE::BSScript::IFunction* fn,
                const RE::BSScript::Stack* stack,
@@ -3007,6 +3232,10 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
   const bool actingSeatAlone =
     native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE && scope &&
     ActingScope::Swaps(*scope);
+  if (info.actingLook && scope && ActingScope::Swaps(*scope) &&
+      OnActingLook(row, info, fn, stack, *scope, marks)) {
+    return marks;
+  }
   if (native.kind == NativeKind::Local && !actingSeatAlone) {
     CountStagedPlain(row, kStagedLocal);
     return marks;
@@ -3820,6 +4049,25 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     if (native.kind == NativeKind::State && SkipsBody(info)) {
       marks.skip = true;
       marks.result = info.result;
+      // forward, never drop: a stack only this seat runs made it, so it is
+      // queued for the subject's owner to run (a latent row is never
+      // forwarded: the owner's game would wait in it; this seat's own player
+      // and its created references are its own, never forwarded)
+      if (!info.latent && ref->formID != 0x14 && ref->formID < 0xff000000 &&
+          ForwardsFrom(StagedRootOf(stack, scope, policy))) {
+        if (auto call =
+              CallFromFrame(row, info, stack, top, page, ref->formID)) {
+          call->forward = true;
+          call->cause = CauseOf(stack, scope, policy);
+          if (scope && ActingScope::Swaps(*scope)) {
+            call->acting = scope->player.serverId;
+          }
+          QueueCall(std::move(*call));
+          Count(row, kCountForwarded);
+          LogForwarded(row, ref->formID);
+          return marks;
+        }
+      }
       Count(row, kCountSkipped);
       LogSkipped(row, ref->formID);
       return marks;
@@ -3963,6 +4211,7 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   info.itemCount = columns.hook == SKYMP_NATIVE_HOOK_ACTING_INVENTORY;
   info.globalSet = columns.hook == SKYMP_NATIVE_HOOK_PLAYER_GLOBAL;
   info.pushFigure = columns.hook == SKYMP_NATIVE_HOOK_PUSH_FIGURE;
+  info.actingLook = columns.hook == SKYMP_NATIVE_HOOK_ACTING_LOOK;
   info.placeAtMe = columns.hook == SKYMP_NATIVE_HOOK_EFFECT_HELPER;
   info.deletes = columns.hook == SKYMP_NATIVE_HOOK_HELPER_DELETE;
   info.addItem = columns.hook == SKYMP_NATIVE_HOOK_LEVELED_LANDING;
@@ -4694,8 +4943,12 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
   PlatformCall::PopStrandedCalls(sp);
   const Marks marks = OnCall(self, stack.get());
   if (marks.skip) {
-    // the body never runs: the call completes with the row's empty result
+    // the body never runs: the call completes with the row's empty result,
+    // or an acting look's answer
     SetEmptyResult(stack->returnValue, marks.result);
+    if (marks.swapLook) {
+      stack->returnValue.SetBool(marks.lookAnswer);
+    }
     return RE::BSScript::IFunction::CallResult::kCompleted;
   }
   // the level is left when the call returns or a C++ exception unwinds
@@ -4737,6 +4990,69 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
     DropParked(stack->stackID, "the native completed with no functor");
   }
   return result;
+}
+
+// The acting scope's object compare. A script's property that holds the
+// player (a trigger's triggerActor, a PlayerRef) is read inline by the
+// interpreter and compared through the VM's comparator
+// (Offsets::Hooks::ObjectCompare) with no native call between, so the
+// seam's swap of the player for the acting player's figure never reaches
+// `akActionRef == triggerActor`: the figure is another object and the
+// compare is unequal. Inside a stack joined to a scope that swaps, the
+// player's object and that scope's figure compare equal: the original
+// answers first, and only its unequal answer on that one pair, both plain
+// form handles, becomes equal. The ordering compares never reach here with
+// objects, and an array's Find inside the scope finds the figure where the
+// player is asked for, as the swap reads it elsewhere. HYPOTHESIS until the
+// first lines below are read beside the trigger's own effect
+using ObjectCompareFn = std::int32_t (*)(
+  RE::BSScript::Internal::CodeTasklet* tasklet,
+  const RE::BSScript::Variable* lhs, const RE::BSScript::Variable* rhs);
+ObjectCompareFn g_objectCompareOriginal = nullptr;
+std::atomic<std::uint64_t> g_actingCompares{ 0 };
+
+constexpr std::uint32_t kPlayerFormId = 0x14;
+
+std::int32_t ActingObjectCompare(RE::BSScript::Internal::CodeTasklet* tasklet,
+                                 const RE::BSScript::Variable* lhs,
+                                 const RE::BSScript::Variable* rhs)
+{
+  const std::int32_t result = g_objectCompareOriginal(tasklet, lhs, rhs);
+  if (result == 0 || !ActingScope::Any() || !tasklet || !lhs || !rhs) {
+    return result;
+  }
+  const RE::BSScript::Object* left = ObjectOf(*lhs);
+  const RE::BSScript::Object* right = ObjectOf(*rhs);
+  if (!left || !right) {
+    return result;
+  }
+  const RE::VMHandle leftHandle = left->GetHandle();
+  const RE::VMHandle rightHandle = right->GetHandle();
+  if (!IsPlainFormHandle(leftHandle) || !IsPlainFormHandle(rightHandle)) {
+    return result;
+  }
+  const std::uint32_t leftId = FormIdOfHandle(leftHandle);
+  const std::uint32_t rightId = FormIdOfHandle(rightHandle);
+  if (leftId != kPlayerFormId && rightId != kPlayerFormId) {
+    return result;
+  }
+  const std::uint32_t other = leftId == kPlayerFormId ? rightId : leftId;
+  if (other == 0 || other == kPlayerFormId) {
+    return result;
+  }
+  const RE::BSScript::Stack* stack = tasklet->stack;
+  const auto scope = ScopeOfStack(stack);
+  if (!scope || !ActingScope::Swaps(*scope) || scope->player.figure != other) {
+    return result;
+  }
+  const std::uint64_t n =
+    g_actingCompares.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n <= 3 || n % 100 == 0) {
+    logger::info("[verb:quests] acting player {:x}: the player and its "
+                 "figure {:x} compared equal in stack {} ({} so far)",
+                 scope->player.serverId, other, stack->stackID, n);
+  }
+  return 0;
 }
 }
 
@@ -5145,5 +5461,22 @@ void ScriptNatives::InstallHooks()
                   "refused the replacement; no table row is judged and "
                   "every body runs",
                   callAddress - gameBase);
+  }
+  // the acting scope's object compare, AE only as its id
+  if (REL::Module::IsAE()) {
+    const auto compareAddress = Offsets::Hooks::ObjectCompare.address();
+    if (Frida::HookHandler::GetSingleton()->Replace(
+          compareAddress, reinterpret_cast<void*>(&ActingObjectCompare),
+          reinterpret_cast<void**>(&g_objectCompareOriginal))) {
+      logger::info("[verb:quests] the VM's object compare replaced at +{:x} "
+                   "(Address Library 105220): inside an acting scope's "
+                   "stack the player and the scope's figure compare equal",
+                   compareAddress - gameBase);
+    } else {
+      logger::error("[verb:quests] the VM's object compare at +{:x}: Gum "
+                    "refused the replacement; a property holding the player "
+                    "still compares unequal to an acting player's figure",
+                    compareAddress - gameBase);
+    }
   }
 }

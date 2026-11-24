@@ -226,6 +226,11 @@ pub enum Audience {
     /// (thuum ADR-068 D-W2 A: a trigger's CreateDetectionEvent during its
     /// firing, so a guest's bone alarm wakes the NPCs the host simulates).
     Host,
+    /// The acting player's own game alone: a question about that player.
+    Player,
+    /// The seats that asked a question about the reporter's own player: its
+    /// answer.
+    Askers,
 }
 
 /// What a receiver runs for an accepted call.
@@ -499,14 +504,19 @@ pub enum Hook {
     /// ObjectReference.PushActorAway onto another player's figure, skipped on
     /// the seat whose script calls it: the figure is thrown by its player's
     /// own game alone, and every other screen follows that throw's stream
-    /// (thuum tracker #178; ADR-063: a player's body is its own game's). The
-    /// one hook on a staged row, read by the platform's OnStaged.
+    /// (thuum tracker #178; ADR-063: a player's body is its own game's). A
+    /// hook on a staged row, read by the platform's OnStaged.
     PushFigure,
+    /// Actor.HasLOS on the acting player's figure inside another player's
+    /// acting scope: answered from that player's own game's look, asked of
+    /// it through the server as a question on ScriptCall and answered on
+    /// the same message; a staged row's, read by the platform's OnStaged.
+    ActingLook,
 }
 
 impl Hook {
     /// Every code, in the order of its number.
-    pub const ALL: [Hook; 17] = [
+    pub const ALL: [Hook; 18] = [
         Hook::None,
         Hook::DeathReport,
         Hook::TrapDestroyed,
@@ -524,6 +534,7 @@ impl Hook {
         Hook::SceneStart,
         Hook::ActingInventory,
         Hook::PushFigure,
+        Hook::ActingLook,
     ];
 
     /// The code's number, skymp_wire.h's `SKYMP_NATIVE_HOOK_*`.
@@ -547,6 +558,7 @@ impl Hook {
             Hook::SceneStart => 14,
             Hook::ActingInventory => 15,
             Hook::PushFigure => 16,
+            Hook::ActingLook => 17,
         }
     }
 
@@ -571,6 +583,7 @@ impl Hook {
             Hook::SceneStart => "scene-start",
             Hook::ActingInventory => "acting-inventory",
             Hook::PushFigure => "push-figure",
+            Hook::ActingLook => "acting-look",
         }
     }
 
@@ -587,6 +600,7 @@ impl Hook {
             Hook::EffectHelper | Hook::HelperDelete => "second-hand.md",
             Hook::LeveledLanding => "papyrus-events.md",
             Hook::PushFigure => "push.md",
+            Hook::ActingLook => "player-look.md",
         }
     }
 
@@ -613,6 +627,7 @@ impl Hook {
             Hook::SceneStart => "Scene.Start and ForceStart are counted and run inside a scope rooted at a relay (train 53's V-scene, ADR-073 D-A2 C): a stopgap (decision 5 (c)), replaced by step 5a's scene row (decision 6, D-L2 B: the starting seat, the stage's cause seat, claims the scene's actors); deletes at 5a's scene row",
             Hook::ActingInventory => "ObjectReference.GetItemCount on the acting player's figure inside another player's acting scope answers the server's record of that player's inventory, carried in by the relayed press (thuum tracker #117, Eli's design B; ADR-063: one owner per inventory, no figure inventory): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory travels by its change form, every seat reading the one record); deletes when a figure's inventory reads take the player's record from that change form",
             Hook::PushFigure => "ObjectReference.PushActorAway onto another player's figure (an actor with a dynamic form id on base 0x7, the server's IsCreatedAsPlayer) runs on the seat whose own player pushes and is skipped on every other, and a push onto a seat's own player by another player's figure is skipped there, so the pusher's own game throws its copy and claims the body for the flight while every other screen follows that throw's live-body stream until its rest hands the body back (a player's body is its pusher's for the throw, as its gripper's for a grip): a stopgap (decision 5 (c)), replaced by the row's subject the pushed actor (Subject::Arg0Method) with its owner asked (decision 6), a player's figure answered by its pusher's seat for the throw and a knocked NPC by the seat whose cause moved it; deletes when owner_of answers a knock's cause seat and the row is unstaged with its target the subject",
+            Hook::ActingLook => "Actor.HasLOS on the acting player's figure inside another player's acting scope answers that player's own game's look at the target (the engine's test refuses a subject that is not its own player when the target is no actor): the seam asks that game through the server (a question on ScriptCall) and keeps its answers (ScriptCall's answer, setPlayerLook), and answers false while none stands; decision 5 (a), a player's own camera (R3), its own game's",
         }
     }
 }
@@ -1100,7 +1115,37 @@ pub struct Facts {
     /// Enabled one it records no stop of; a quest the scope classes the
     /// player's (a quest marker's facts; false otherwise).
     pub cause_live: bool,
+    /// The call's acting player (ScriptCall's `acting`), 0 for none.
+    pub acting: u32,
+    /// The acting player is a connected player other than the reporter.
+    pub acting_other: bool,
+    /// What started the call (ScriptCall's `cause`), kind 0 for none.
+    pub origin: Origin,
+    /// A digest of the call's argument values: one cause's call is folded
+    /// by its native, its subject and these.
+    pub args_digest: u64,
+    /// The cause is a quest stage the server relays to every seat, the
+    /// subject's owner among them, whose own run of the stage makes the call.
+    pub origin_relayed: bool,
 }
+
+/// What started a script call (ScriptCall's `cause`): its kind (1 a quest
+/// stage, 2 a conversation line, 3 a scene, 4 a package, 5 an interaction
+/// event, 6 another player's relayed entry or press; 0 none), the form at
+/// its root and the kind's number (a stage, a relay's sequence, else 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Origin {
+    /// The kind, 0 for none.
+    pub kind: u8,
+    /// The form at the cause's root.
+    pub form: u32,
+    /// The kind's number.
+    pub n: u32,
+}
+
+/// How long one cause's call is folded after its first delivery,
+/// milliseconds: every seat that runs the same root reports within it.
+pub const FOLD_MS: u64 = 10_000;
 
 /// Why a reported call is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1218,6 +1263,12 @@ pub enum Verdict {
     },
     /// Dropped quietly: a door's or a container's call.
     Skip,
+    /// Not delivered, said: a forward whose cause was delivered already, or
+    /// whose cause's quest stage reached the owner, whose own run makes it.
+    Folded {
+        /// Why, for the core's line.
+        why: &'static str,
+    },
     /// Refused, logged by the code's name.
     Refuse(Refusal),
 }
@@ -1254,6 +1305,39 @@ enum Channel {
         /// The relay native's name.
         func: &'static str,
     },
+    /// A forwarded state call ([`ScriptCalls::shape_forward`]), run by the
+    /// subject's owner.
+    Forward,
+    /// A question about the acting player, a read only that player's own
+    /// game can answer ([`Hook::ActingLook`]), sent to that game.
+    Question,
+    /// A player's game's answer to a question about its own player, sent to
+    /// the seats that asked.
+    Answer,
+}
+
+/// The channel a forwarded call of `row` leaves by ("forward, never
+/// drop"): a live, non-latent state row's call the
+/// sender's engine skipped on a subject it does not own, which the subject's
+/// owner runs. A staged row is counted on its seat until its batch unstages,
+/// an action row relays from its owner, and a latent row would leave the
+/// owner's game waiting in a call no stack of its own made; each is refused
+/// by its row (`E_SCRIPTCALL_ROW`).
+fn forward_channel_of(row: &Row) -> Result<Channel, Refusal> {
+    // a read only the player's own game can answer, asked of that game
+    if row.hook == Hook::ActingLook {
+        return Ok(Channel::Question);
+    }
+    if row.staged {
+        return Err(refusal(Code::Row, "a staged row: counted on its seat, never forwarded until its batch unstages".to_owned()));
+    }
+    if row.kind != Kind::State {
+        return Err(refusal(Code::Row, "not a state row: a forward carries a state call the sender's engine skipped".to_owned()));
+    }
+    if row.latent {
+        return Err(refusal(Code::Row, "a latent row: its owner's game would wait in a call no stack of its own made".to_owned()));
+    }
+    Ok(Channel::Forward)
 }
 
 /// The channel a call of `row` leaves by: an action row the table relays to
@@ -1675,6 +1759,52 @@ impl Bucket {
     }
 }
 
+/// The owner step on a question (a read only the acting player's own game
+/// can answer, asked by a script another seat runs for that player): the
+/// acting player is a connected player other than the reporter; sent to that
+/// player's game alone ([`Audience::Player`]) as the same native on its own
+/// player, every argument, no sequence and nothing kept. The reporter hears
+/// the question's answers for QUESTION_MS ([`ScriptCalls::askers`]).
+fn question_accept(row: Row, facts: &Facts) -> Verdict {
+    if facts.acting == 0 || !facts.acting_other {
+        return refuse(Code::Owner, format!("a question about {:x}: no other connected player acts", facts.acting));
+    }
+    Verdict::Accept(Accept {
+        subject: OWN_PLAYER,
+        seq: 0,
+        relay_cls: row.cls,
+        relay_fn: row.func,
+        relay_args: EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
+        relay_self: facts.acting,
+        audience: Audience::Player,
+        keep: Keep::Nothing,
+        graph_event_arg: None,
+        variable_kind: None,
+        look: false,
+        figure_args: false,
+    })
+}
+
+/// The owner step on an answer: the reporter answers about its own player,
+/// sent to the seats that asked ([`Audience::Askers`]) as the same native on
+/// the reporter's actor, every argument, no sequence and nothing kept.
+fn answer(row: Row, facts: &Facts) -> Verdict {
+    Verdict::Accept(Accept {
+        subject: OWN_PLAYER,
+        seq: 0,
+        relay_cls: row.cls,
+        relay_fn: row.func,
+        relay_args: EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
+        relay_self: facts.sender,
+        audience: Audience::Askers,
+        keep: Keep::Nothing,
+        graph_event_arg: None,
+        variable_kind: None,
+        look: false,
+        figure_args: false,
+    })
+}
+
 /// The server's script-call state: every reporter's budget and every
 /// subject's sequence, by form id. Runtime only: a restart starts every
 /// budget full and every sequence at 0, and an object's stored record (rung
@@ -1691,7 +1821,18 @@ pub struct ScriptCalls {
     /// Each subject's look cap (thuum ADR-068 D-W2 A), by its form id.
     look_budgets: HashMap<u32, Bucket>,
     seqs: HashMap<u32, u32>,
+    /// Each cause's forwarded call, by its cause, native, subject and
+    /// arguments' digest, to the time it was delivered (FOLD_MS).
+    folds: HashMap<(Origin, &'static str, &'static str, u32, u64), u64>,
+    /// Each open question, by the player asked, its native and its
+    /// arguments' digest, to the seats that asked it and until when
+    /// (QUESTION_MS after each ask).
+    questions: HashMap<(u32, &'static str, &'static str, u64), HashMap<u32, u64>>,
 }
+
+/// How long an asking seat hears a question's answers after its ask,
+/// milliseconds: the wire's LOOK_WATCH_MS, the asked game's watch.
+pub const QUESTION_MS: u64 = 10_000;
 
 impl ScriptCalls {
     /// The shape step on one reported call of `row` (none for a pair the
@@ -1704,7 +1845,34 @@ impl ScriptCalls {
     /// arguments and the subject's form. A call refused here costs the core
     /// no lookup.
     pub fn shape(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
-        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)) && !r.staged);
+        self.shape_with(row, args, sender, self_id, now_ms, false)
+    }
+
+    /// The shape step on a forwarded call: as
+    /// [`ScriptCalls::shape`], from the actions' budget, its row a live,
+    /// non-latent state row ([`forward_channel_of`]) whatever the row keeps.
+    pub fn shape_forward(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
+        self.shape_with(row, args, sender, self_id, now_ms, true)
+    }
+
+    /// The shape step on a player's game's answer to a question about its
+    /// own player (ScriptCall's `answer`): a row a question asks
+    /// ([`Hook::ActingLook`]) on the reporter's own player, from the
+    /// actions' budget.
+    pub fn shape_answer(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
+        if row.is_some_and(|r| r.hook != Hook::ActingLook) {
+            return Err(refusal(Code::Row, "an answer to no question: the row asks nothing of a player's own game".to_owned()));
+        }
+        if self_id != OWN_PLAYER {
+            return Err(refusal(Code::Args, format!("an answer about {self_id:x}: a player's game answers about its own player alone")));
+        }
+        let mut shaped = self.shape_with(row, args, sender, self_id, now_ms, true)?;
+        shaped.channel = Channel::Answer;
+        Ok(shaped)
+    }
+
+    fn shape_with(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64, forward: bool) -> Result<Shaped, Refusal> {
+        let record = !forward && row.is_some_and(|r| matches!(r.keep, Keep::Record(_)) && !r.staged);
         let (budgets, burst, per_second, whose) =
             if record { (&mut self.record_budgets, BURST_RECORD, PER_SECOND_RECORD, " (its record rows' own budget)") } else { (&mut self.budgets, BURST, PER_SECOND, "") };
         if !budgets.entry(sender).or_insert_with(|| Bucket::full(burst, now_ms)).take(burst, per_second, now_ms) {
@@ -1713,7 +1881,7 @@ impl ScriptCalls {
         let Some(row) = row else {
             return Err(refusal(Code::Row, "the pair has no row in the table".to_owned()));
         };
-        let channel = channel_of(row)?;
+        let channel = if forward { forward_channel_of(row)? } else { channel_of(row)? };
         if args.len() != row.params.len() {
             return Err(refusal(Code::Args, format!("{} argument(s), the row's {}", args.len(), row.params.len())));
         }
@@ -1755,6 +1923,9 @@ impl ScriptCalls {
         let Shaped { row, subject, channel, method_self, now_ms } = shaped;
         let (relay_cls, relay_fn) = match channel {
             Channel::Relay { cls, func } => (cls, func),
+            Channel::Forward => return self.forward(row, subject, facts, now_ms),
+            Channel::Question => return self.question(row, facts, now_ms),
+            Channel::Answer => return answer(row, facts),
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
@@ -1826,6 +1997,88 @@ impl ScriptCalls {
             variable_kind: row.variable_kind(),
             look: false,
             figure_args: false,
+        })
+    }
+
+    /// A forwarded call after its shape: its
+    /// subject a world object, a door or a container, a placement's record or
+    /// an actor, which some seat owns and the reporter does not
+    /// (`facts.owner`: a world object's cell host, an actor's simulator),
+    /// never the reporter's own player; relayed as the same native with every
+    /// argument to that owner alone ([`Audience::Host`]) with the subject's
+    /// next sequence, the reporter's own player among its object arguments
+    /// named as its figure, and kept nowhere: the owner's own run carries its
+    /// consequence as the object's change form or record. The epoch is not
+    /// read: the reporter claims no authority, and the owner standing now
+    /// runs it. A subject nobody owns is refused until the frozen cell's
+    /// record takes forwards.
+    fn question(&mut self, row: Row, facts: &Facts, now_ms: u64) -> Verdict {
+        let verdict = question_accept(row, facts);
+        if matches!(verdict, Verdict::Accept(_)) {
+            let askers = self.questions.entry((facts.acting, row.cls, row.func, facts.args_digest)).or_default();
+            askers.insert(facts.sender, now_ms.saturating_add(QUESTION_MS));
+        }
+        verdict
+    }
+
+    /// The seats that asked `player`'s game the question its answer of
+    /// `row` with these arguments (their digest) answers, each within
+    /// QUESTION_MS of its last ask; the expired ones dropped.
+    pub fn askers(&mut self, player: u32, row: Option<&Row>, args_digest: u64, now_ms: u64) -> Vec<u32> {
+        let Some(row) = row else {
+            return Vec::new();
+        };
+        let key = (player, row.cls, row.func, args_digest);
+        let Some(askers) = self.questions.get_mut(&key) else {
+            return Vec::new();
+        };
+        askers.retain(|_, until| *until > now_ms);
+        let mut out: Vec<u32> = askers.keys().copied().collect();
+        out.sort_unstable();
+        if askers.is_empty() {
+            self.questions.remove(&key);
+        }
+        out
+    }
+
+    fn forward(&mut self, row: Row, subject: u32, facts: &Facts, now_ms: u64) -> Verdict {
+        if facts.kind == SubjectKind::Unknown {
+            return refuse(Code::Owner, "the server holds no such reference".to_owned());
+        }
+        if subject == OWN_PLAYER {
+            return refuse(Code::Owner, "the reporter's own player: its calls are its own seat's".to_owned());
+        }
+        if facts.owner == 0 {
+            return refuse(Code::Owner, format!("nobody owns {subject:x}: a forward waits for a seat that hosts its cell"));
+        }
+        if facts.owner == facts.sender {
+            return refuse(Code::Owner, format!("the reporter owns {subject:x}: its own call runs on its own game"));
+        }
+        if facts.origin.kind != 0 {
+            if facts.origin_relayed {
+                return Verdict::Folded { why: "its cause's quest stage reached the owner, whose own run makes the call" };
+            }
+            let key = (facts.origin, row.cls, row.func, subject, facts.args_digest);
+            self.folds.retain(|_, at| now_ms.saturating_sub(*at) < FOLD_MS);
+            if self.folds.contains_key(&key) {
+                return Verdict::Folded { why: "its cause's call was delivered already" };
+            }
+            self.folds.insert(key, now_ms);
+        }
+        let seq = self.next_seq(subject);
+        Verdict::Accept(Accept {
+            subject,
+            seq,
+            relay_cls: row.cls,
+            relay_fn: row.func,
+            relay_args: EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
+            relay_self: if row.subject == Subject::SelfRef { subject } else { 0 },
+            audience: Audience::Host,
+            keep: Keep::Nothing,
+            graph_event_arg: None,
+            variable_kind: None,
+            look: false,
+            figure_args: true,
         })
     }
 
@@ -1949,7 +2202,7 @@ mod tests {
     const GUEST: u32 = 0xff00_0001;
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0, acting_other: false, origin: Origin::default(), args_digest: 0, origin_relayed: false }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -1989,6 +2242,109 @@ mod tests {
         // the sequence is per object: another subject starts at 1
         assert_eq!(accepted(&s.judge(row, &[Arg::String], &hosted(0xaa8cc), 20)).seq, 1);
         assert_eq!(s.seq_of(0xaa8cd), 0);
+    }
+
+    // the forward: a guest's dialogue fragment
+    // unlocking Whiterun's gate (Skyrim.esm 0x1b1f1, a door) in a cell the
+    // host's game hosts; the guest's engine skipped the call and forwards it
+    fn forwarded(s: &mut ScriptCalls, row: Option<&Row>, args: &[Arg], facts: &Facts) -> Verdict {
+        match s.shape_forward(row, args, facts.sender, facts.self_id, 0) {
+            Ok(shaped) => s.owner(shaped, facts),
+            Err(r) => Verdict::Refuse(r),
+        }
+    }
+
+    #[test]
+    fn a_guests_forwarded_state_call_goes_to_the_subjects_owner_alone() {
+        const GATE: u32 = 0x1b1f1;
+        let lock = row("ObjectReference", "Lock");
+        let args = [Arg::Bool, Arg::Bool];
+        let gate = Facts { sender: GUEST, kind: SubjectKind::DoorOrContainer, epoch: 0, ..hosted(GATE) };
+        let mut s = ScriptCalls::default();
+        let a = accepted(&forwarded(&mut s, lock, &args, &gate));
+        assert_eq!((a.subject, a.relay_self, a.seq), (GATE, GATE, 1));
+        assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("ObjectReference", "Lock", &[0u8, 1][..]));
+        assert_eq!((a.audience, a.keep, a.look, a.figure_args), (Audience::Host, Keep::Nothing, false, true));
+        // not as an action: the state row has no channel of its own
+        assert_eq!(code(&s.judge(lock, &args, &gate, 0)), Some(Code::Row));
+        // the owner's own call runs on its own game; nobody owning it, the
+        // server holding no such reference, and the reporter's own player
+        assert_eq!(code(&forwarded(&mut s, lock, &args, &Facts { sender: HOST, ..gate })), Some(Code::Owner));
+        assert_eq!(code(&forwarded(&mut s, lock, &args, &Facts { owner: 0, ..gate })), Some(Code::Owner));
+        assert_eq!(code(&forwarded(&mut s, lock, &args, &Facts { kind: SubjectKind::Unknown, ..gate })), Some(Code::Owner));
+        // an actor's owner is its simulator
+        let npc = Facts { kind: SubjectKind::Actor, ..gate };
+        assert_eq!(accepted(&forwarded(&mut s, lock, &args, &npc)).audience, Audience::Host);
+        // an action row relays from its owner, never forwarded
+        assert_eq!(code(&forwarded(&mut s, row("ObjectReference", "PlayAnimation"), &[Arg::String], &gate)), Some(Code::Row));
+        // a staged row and a latent state row are refused by their rows
+        if let Some(staged) = TABLE.iter().find(|r| r.staged && r.kind == Kind::State) {
+            let none = vec![Arg::Absent; staged.params.len()];
+            assert_eq!(refused_by(s.shape_forward(Some(staged), &none, GUEST, GATE, 0)), Some(Code::Row), "{}.{}", staged.cls, staged.func);
+        }
+        if let Some(latent) = live().find(|r| r.latent && r.kind == Kind::State) {
+            let none = vec![Arg::Absent; latent.params.len()];
+            assert_eq!(refused_by(s.shape_forward(Some(latent), &none, GUEST, GATE, 0)), Some(Code::Row), "{}.{}", latent.cls, latent.func);
+        }
+        // the arguments are the row's
+        assert_eq!(code(&forwarded(&mut s, lock, &[Arg::Bool], &gate)), Some(Code::Args));
+    }
+
+    // the one script channel: the host's word wall script asks whether the
+    // guest sees the wall's look marker, a read only the guest's own game can
+    // answer; the guest's game answers about its own player
+    #[test]
+    fn a_question_goes_to_the_acting_players_own_game_and_its_answer_to_the_askers() {
+        const MARKER: u64 = 0x709d4;
+        let look = row("Actor", "HasLOS");
+        let args = [Arg::Object(MARKER)];
+        let mut s = ScriptCalls::default();
+        let asked = Facts { kind: SubjectKind::Actor, acting: GUEST, acting_other: true, ..hosted(OWN_PLAYER) };
+        let q = accepted(&forwarded(&mut s, look, &args, &asked));
+        assert_eq!((q.audience, q.relay_self, q.relay_cls, q.relay_fn, q.relay_args), (Audience::Player, GUEST, "Actor", "HasLOS", &[0u8][..]));
+        assert_eq!((q.seq, q.keep, q.figure_args), (0, Keep::Nothing, false));
+        // no other connected player acting: nobody to ask
+        assert_eq!(code(&forwarded(&mut s, look, &args, &Facts { acting_other: false, ..asked })), Some(Code::Owner));
+        // the guest's game answers about its own player
+        let answered = Facts { sender: GUEST, kind: SubjectKind::Actor, ..hosted(OWN_PLAYER) };
+        let a = match s.shape_answer(look, &args, GUEST, OWN_PLAYER, 0) {
+            Ok(shaped) => accepted(&s.owner(shaped, &answered)),
+            Err(r) => panic!("{r:?}"),
+        };
+        assert_eq!((a.audience, a.relay_self, a.relay_fn), (Audience::Askers, GUEST, "HasLOS"));
+        // the host asked within the window: it hears the answer; past it, nobody
+        assert_eq!(s.askers(GUEST, look, 0, 1_000), vec![HOST]);
+        assert_eq!(s.askers(GUEST, look, 0, QUESTION_MS + 1), Vec::<u32>::new());
+        // an answer to no question, or about another subject
+        assert_eq!(refused_by(s.shape_answer(row("ObjectReference", "Lock"), &[Arg::Bool, Arg::Bool], GUEST, OWN_PLAYER, 0)), Some(Code::Row));
+        assert_eq!(refused_by(s.shape_answer(look, &args, GUEST, 0x1b1f1, 0)), Some(Code::Args));
+    }
+
+    // one cause, delivered once: the gate's unlock from stage 10 of the gate
+    // quest, reported by two seats running the same stage
+    #[test]
+    fn a_forward_is_delivered_once_per_cause_and_never_when_its_stage_reached_the_owner() {
+        const GATE: u32 = 0x1b1f1;
+        let lock = row("ObjectReference", "Lock");
+        let args = [Arg::Bool, Arg::Bool];
+        let stage = Origin { kind: 1, form: 0xd1984, n: 10 };
+        let gate = Facts { sender: GUEST, kind: SubjectKind::DoorOrContainer, epoch: 0, origin: stage, args_digest: 7, ..hosted(GATE) };
+        let mut s = ScriptCalls::default();
+        let forward = |s: &mut ScriptCalls, facts: &Facts, now: u64| match s.shape_forward(lock, &args, facts.sender, facts.self_id, now) {
+            Ok(shaped) => s.owner(shaped, facts),
+            Err(r) => Verdict::Refuse(r),
+        };
+        assert!(matches!(forward(&mut s, &gate, 0), Verdict::Accept(_)));
+        // the same cause's same call from another seat inside the window
+        let third = 0xff00_0002;
+        assert!(matches!(forward(&mut s, &Facts { sender: third, ..gate }, 500), Verdict::Folded { .. }));
+        // another value is another call; past the window the cause is new
+        assert!(matches!(forward(&mut s, &Facts { args_digest: 8, ..gate }, 600), Verdict::Accept(_)));
+        assert!(matches!(forward(&mut s, &gate, FOLD_MS + 1), Verdict::Accept(_)));
+        // a stage the server relays to the owner: the owner's own run makes it
+        assert!(matches!(forward(&mut s, &Facts { origin_relayed: true, origin: Origin { n: 20, ..stage }, ..gate }, 0), Verdict::Folded { .. }));
+        // no cause read: delivered as before
+        assert!(matches!(forward(&mut s, &Facts { origin: Origin::default(), ..gate }, 700), Verdict::Accept(_)));
     }
 
     #[test]
@@ -2515,10 +2871,14 @@ mod tests {
         assert_eq!(hooked(Hook::EffectHelper), ["ObjectReference.PlaceAtMe"]);
         assert_eq!(hooked(Hook::HelperDelete), ["ObjectReference.Delete"]);
         assert_eq!(hooked(Hook::LeveledLanding), ["ObjectReference.AddItem"]);
+        // the look hook rides a staged row, as the push figure's does
+        let staged_hooked = |hook: Hook| -> Vec<String> { TABLE.iter().filter(|r| r.hook == hook).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        assert_eq!(staged_hooked(Hook::ActingLook), ["Actor.HasLOS"]);
         assert_eq!(hooked(Hook::SceneStart), ["Scene.Start", "Scene.ForceStart"]);
-        // #178's push-figure, the one hook on a staged row (OnStaged's skip)
+        // the two hooks on staged rows, both read by the platform's OnStaged:
+        // the acting look and the push figure
         let staged_hooked: Vec<String> = TABLE.iter().filter(|r| r.staged && r.hook != Hook::None).map(|r| format!("{}.{}", r.cls, r.func)).collect();
-        assert_eq!(staged_hooked, ["ObjectReference.PushActorAway"]);
+        assert_eq!(staged_hooked, ["Actor.HasLOS", "ObjectReference.PushActorAway"]);
         for (i, hook) in Hook::ALL.iter().enumerate() {
             assert_eq!(usize::from(hook.code()), i, "{hook:?}");
             assert_eq!((hook.name().is_empty(), hook.verb().is_empty(), hook.line().is_empty()), (*hook == Hook::None, *hook == Hook::None, *hook == Hook::None), "{hook:?}");
@@ -2657,7 +3017,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0, acting_other: false, origin: Origin::default(), args_digest: 0, origin_relayed: false }
     }
 
     #[test]
@@ -2883,7 +3243,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0, acting_other: false, origin: Origin::default(), args_digest: 0, origin_relayed: false }
     }
 
     #[test]

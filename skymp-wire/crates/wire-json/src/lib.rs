@@ -454,11 +454,22 @@ mod tests {
     /// x-spell-calls 20261115-034842: the PlaceAtMe of the wall 0x1a098529 on
     /// the player, its result the caster's ff0008fa (`placed`), and the
     /// wall's shader 0x1a0735e7 played on that reference, marked as the
-    /// sender's created one (`localArgs` bit 0).
+    /// sender's created one (`localArgs` bit 0). 9 (SCHEMA_VERSION 68, the
+    /// forward) is a guest's dialogue fragment's
+    /// unlock of Whiterun's gate, Skyrim.esm 0x1b1f1, which the host's game
+    /// owns: Lock(false, false) as the guest's engine skipped it, sent on to
+    /// the gate's owner (`forward`); the fragment's script is unread, so
+    /// `caller` and `handler` are empty. 10 to 12 (SCHEMA_VERSION 68, the one
+    /// script channel): the host's word wall script asking whether the guest
+    /// (actor ff000001) sees the wall's look marker 0x709d4 (a question: 0x14
+    /// with `acting`, its cause the guest's relayed entry of the wall's
+    /// trigger 0x709d2), the guest's game's answer about its own player, and
+    /// the gate's unlock with its cause, stage 10 of the gate quest 0xd1984,
+    /// and the guest as its acting player.
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 9] = [
+        let verdicts: [(&str, Result<(), Reject>); 13] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
             ("75-ScriptCall-2.json", Ok(())),
@@ -468,6 +479,10 @@ mod tests {
             ("75-ScriptCall-6.json", Ok(())),
             ("75-ScriptCall-7.json", Ok(())),
             ("75-ScriptCall-8.json", Ok(())),
+            ("75-ScriptCall-9.json", Ok(())),
+            ("75-ScriptCall-10.json", Ok(())),
+            ("75-ScriptCall-11.json", Ok(())),
+            ("75-ScriptCall-12.json", Ok(())),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();

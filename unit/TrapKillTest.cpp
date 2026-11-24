@@ -364,6 +364,42 @@ TEST_CASE("A host's linked report notes its target as a trap, kept the trap "
   Leave(p);
 }
 
+TEST_CASE("A report naming the dying actor as its own killer reads as naming "
+          "none, so a trap beside the body decides it",
+          "[TrapKill][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& draugr = Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kBoxTrigger);
+  auto& blade = p.worldState.GetFormAt<MpObjectReference>(kBlade);
+  {
+    ActivateMessage msg;
+    msg.data.caster = kBoxTrigger;
+    msg.data.target = kBlade;
+    msg.data.isSecondActivation = false;
+    RawMessageData raw;
+    raw.userId = 0;
+    p.GetActionListener().OnActivate(raw, msg);
+  }
+  const NiPoint3 body = blade.GetPos() + NiPoint3{ 100.f, 0.f, 0.f };
+  draugr.SetPos(body);
+  {
+    LogCapture log;
+    ActorDeathMessage msg;
+    msg.refrId = kDraugr;
+    msg.cause = 4;
+    msg.killer = kDraugr;
+    msg.pos = { body.x, body.y, body.z };
+    RawMessageData raw;
+    raw.userId = 0;
+    p.GetActionListener().OnActorDeath(raw, msg);
+    REQUIRE(log.Count("E_DEATH_UNCHECKED") == 0);
+    REQUIRE(log.Count("a trap's evidence beside the body (3ac33, ") == 1);
+  }
+  REQUIRE(draugr.IsDead());
+  Leave(p);
+}
+
 TEST_CASE("A trigger's firing notes its activation children two levels down",
           "[TrapKill][espm]")
 {

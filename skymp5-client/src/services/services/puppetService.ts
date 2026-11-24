@@ -10,6 +10,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { PropService } from "./propService";
 import { placesAtPromote, runsActorHere } from "../../sync/hostPuppet";
+import { SEAT_WAIT_MS, seatVerdict, seated } from "../../sync/seatWait";
 import { RemoteServer } from "./remoteServer";
 import { SceneClaimService } from "./sceneClaimService";
 
@@ -465,6 +466,9 @@ export class PuppetService extends ClientListener {
         if (!flagged && !bodyOwnedElsewhere && this.headsForHostedCell(localId, host)) {
             return;
         }
+        if (!flagged && this.waitsForSeat(localId, refr, ac, now)) {
+            return;
+        }
         if (!flagged) {
             if (!this.sp.setPuppet(localId, true)) {
                 logError(this, `setPuppet(${localId.toString(16)}, true) found no actor`);
@@ -755,6 +759,45 @@ export class PuppetService extends ClientListener {
 
     // tracker #121: the actors kept live on their way here, by destination
     private readonly walkingHere = new Map<number, number>();
+
+    // A copy the game file ties to a furniture is its engine's to seat at the
+    // load (sync/seatWait.ts): while one stands near its linked furniture
+    // unseated, within SEAT_WAIT_MS of its first 3D here, the demote waits
+    // and its AI runs to seat it; then it is frozen as every copy is, seated
+    // or where it stands. One line when the wait starts and one at its end
+    private waitsForSeat(localId: number, refr: ObjectReference | null, ac: Actor, now: number): boolean {
+        const linked = refr ? refr.getLinkedRef(null) : null;
+        const furniture = linked && this.sp.Furniture.from(linked.getBaseObject()) ? linked : null;
+        if (!furniture) {
+            this.seatWaitSince.delete(localId);
+            return false;
+        }
+        const dx = ac.getPositionX() - furniture.getPositionX();
+        const dy = ac.getPositionY() - furniture.getPositionY();
+        const dz = ac.getPositionZ() - furniture.getPositionZ();
+        const units = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const held = ac.getFurnitureReference();
+        const sitState = ac.getSitState();
+        const isSeated = seated({ sitState, furnitureIsLinked: !!held && held.getFormID() === furniture.getFormID(), unitsFromFurniture: units });
+        const since = this.seatWaitSince.get(localId);
+        const verdict = seatVerdict({ linkedFurniture: true, seated: isSeated, unitsFromFurniture: units, sinceMs: since === undefined ? 0 : now - since });
+        const at = `${units.toFixed(0)} units from furniture ${furniture.getFormID().toString(16)}, sit state ${sitState}`;
+        if (verdict === "wait") {
+            if (since === undefined) {
+                this.seatWaitSince.set(localId, now);
+                logLab("verb:npc-handoff", `seat wait ${localId.toString(16)}: its engine seats it at the load (${at}); not frozen until seated or ${SEAT_WAIT_MS} ms`);
+            }
+            return true;
+        }
+        if (since !== undefined) {
+            this.seatWaitSince.delete(localId);
+            logLab("verb:npc-handoff", `seat wait ${localId.toString(16)}: ${isSeated ? `seated after ${now - since} ms` : `not seated within ${SEAT_WAIT_MS} ms`} (${at}); frozen ${isSeated ? "seated" : "where it stands"}`);
+        }
+        return false;
+    }
+
+    // the first 3D here of each copy waiting for its seat
+    private readonly seatWaitSince = new Map<number, number>();
 
     private stopLocalScene(localId: number, ac: Actor): void {
         const scene = ac.getCurrentScene();

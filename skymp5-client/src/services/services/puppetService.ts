@@ -702,6 +702,14 @@ export class PuppetService extends ClientListener {
             return;
         }
         const now = Date.now();
+        // a copy waiting for its seat is frozen at the bound every frame, whether or not anything reconciles it
+        // again: reconcile runs on a copy's events and the poll, and a quiet copy's wait outlasted SEAT_WAIT_MS by
+        // tens of seconds with its AI on
+        for (const [localId, since] of Array.from(this.seatWaitSince)) {
+            if (now - since >= SEAT_WAIT_MS) {
+                this.reconcile(localId);
+            }
+        }
         if (now - this.lastPoll < PuppetService.pollMs) {
             return;
         }

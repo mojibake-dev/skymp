@@ -127,13 +127,16 @@ const service = () => {
     { get: (t, k) => (k in t ? (t as any)[k] : anything) },
   );
   const props = new Proxy({ bodyOwnedElsewhere: () => false }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
+  const handlers: Record<string, () => void> = {};
   const controller: any = {
-    on: () => {},
+    on: (name: string, fn: () => void) => {
+      handlers[name] = fn;
+    },
     emitter: { on: () => {}, emit: () => {} },
     lookupListener: (cls: { name: string }) => (cls.name === 'PropService' ? props : cls.name === 'HostService' ? host : anything),
   };
   const s = new PuppetService(sp, controller) as any;
-  return { s, arvel, puppetCalls };
+  return { s, arvel, puppetCalls, handlers };
 };
 
 test("Arvel's copy, under his web and not yet seated at its first 3D, is not frozen until his engine seats him, then frozen seated", () => {
@@ -159,5 +162,15 @@ test('a copy its engine does not seat within SEAT_WAIT_MS is frozen where it sta
   assert.deepEqual(puppetCalls, []);
   s.seatWaitSince.set(ARVEL, Date.now() - SEAT_WAIT_MS);
   s.reconcile(ARVEL, false);
+  assert.deepEqual(puppetCalls, [[ARVEL, true]]);
+});
+
+
+test("a copy waiting for its seat is frozen at the bound by the update, though nothing reconciles it again", () => {
+  const { s, puppetCalls, handlers } = service();
+  s.reconcile(ARVEL, false);
+  assert.deepEqual(puppetCalls, []);
+  s.seatWaitSince.set(ARVEL, Date.now() - SEAT_WAIT_MS);
+  handlers.update();
   assert.deepEqual(puppetCalls, [[ARVEL, true]]);
 });

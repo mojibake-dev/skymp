@@ -63,6 +63,7 @@ void EventManager::InitCustom()
   // a script's PushActorAway onto an actor another seat simulates, skipped
   // in this game and reported for that actor's simulator (ScriptNatives.cpp)
   manager->EmplaceEvent("pushReported");
+  manager->EmplaceEvent("lookAsked");
   // this game's player's arrest, its asked serve of the sentence (never run)
   // and a change of its crime gold (EventHandler.cpp, from PlayerCharacter's
   // own virtuals, Hooks.cpp)

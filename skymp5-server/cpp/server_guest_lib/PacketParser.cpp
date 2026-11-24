@@ -379,6 +379,18 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnCrimeGold(rawMsgData, *message);
         return;
       }
+      case MsgType::PlayerLookAsk: {
+        auto message =
+          reinterpret_cast<PlayerLookAskMessage*>(result->message.get());
+        actionListener.OnPlayerLookAsk(rawMsgData, *message);
+        return;
+      }
+      case MsgType::PlayerLook: {
+        auto message =
+          reinterpret_cast<PlayerLookMessage*>(result->message.get());
+        actionListener.OnPlayerLook(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

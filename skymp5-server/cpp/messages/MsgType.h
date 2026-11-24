@@ -156,5 +156,9 @@ enum class MsgType : uint8_t
                         // jail term the server's record
   CrimeGold = 87,       // one hold's bounty as the player's own game
                         // holds it, the server's record (R0)
+  PlayerLookAsk = 88,   // a look a seat's script asks of another player's
+                        // own game, sent on to that game
+  PlayerLook = 89,      // that game's answer, sent on to the seat that
+                        // hosts the target's cell
   Max
 };

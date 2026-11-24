@@ -72,6 +72,8 @@ const ACTOR_LOOK_KEPT: &str = "ADR-060's amendment of 2026-11-12 and thuum #52 (
 const PUSH_FIGURE: &str = "ADR-073 decision 6's owner asked of the pushed actor (the row's subject its target, Subject::Arg0Method): a player's figure answered by its pusher's seat for the throw, a knocked NPC by the seat whose cause moved it (the live-body kind's claim)";
 /// Its deleting condition.
 const PUSH_FIGURE_DELETES: &str = "when owner_of answers a knock's cause seat and the row is unstaged with its target the subject";
+/// Cited by Actor.HasLOS.
+const PLAYER_LOOK: &str = "Eli's pick A of 2026-11-23 (tracker #254, note 5077): a player's look is its own game's camera (R3), so a script another seat runs for that player asks that game through the server and answers from its reply";
 
 /// Every overlay entry: the live table's sixty-one rows in its order (rung
 /// 5's fifty, the two scene starts, AddToMap's quest marker, then the Undead
@@ -765,5 +767,18 @@ pub const OVERLAY: &[Entry] = &[
         live: false,
         note: &[],
         cells: &[Cell::Hook(Hook::PushFigure)],
+    },
+    // a word wall's look test (WordWallTriggerScript.isLooking: the player's
+    // Actor.HasLOS to the wall's look marker) run by the host for a guest who
+    // entered the wall's trigger asks the guest's figure, and the engine's
+    // test refuses a subject that is not its own player when the target is
+    // no actor; the hook answers it from the guest's own game's look. A
+    // derived row's hook, so no live row's place moves
+    Entry {
+        native: "Actor.HasLOS",
+        class: Class::Decided { cites: PLAYER_LOOK },
+        live: false,
+        note: &[],
+        cells: &[Cell::Hook(Hook::ActingLook)],
     },
 ];

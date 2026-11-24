@@ -73,6 +73,8 @@ import { CraftReportMessage } from "./craftReportMessage";
 import { PushActorMessage } from "./pushActorMessage";
 import { ArrestMessage } from "./arrestMessage";
 import { CrimeGoldMessage } from "./crimeGoldMessage";
+import { PlayerLookAskMessage } from "./playerLookAskMessage";
+import { PlayerLookMessage } from "./playerLookMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
@@ -168,6 +170,8 @@ export type AnyMessage = ActivateMessage
     | PushActorMessage
     | ArrestMessage
     | CrimeGoldMessage
+    | PlayerLookAskMessage
+    | PlayerLookMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

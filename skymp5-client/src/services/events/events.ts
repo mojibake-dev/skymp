@@ -35,6 +35,8 @@ import { PropTransformMessage } from "../messages/propTransformMessage";
 import { PropOwnerMessage } from "../messages/propOwnerMessage";
 import { PlacedRequestMessage } from "../messages/placedRequestMessage";
 import { LockPromptMessage } from "../messages/lockPromptMessage";
+import { PlayerLookAskMessage } from "../messages/playerLookAskMessage";
+import { PlayerLookMessage } from "../messages/playerLookMessage";
 import { RelayedActivationMessage } from "../messages/relayedActivationMessage";
 import { ObjectAnimationMessage } from "../messages/objectAnimationMessage";
 import { SetWeatherMessage } from "../messages/setWeatherMessage";
@@ -125,6 +127,8 @@ type EventTypes = {
     'propOwnerMessage': [ConnectionMessage<PropOwnerMessage>],
     'placedRequestMessage': [ConnectionMessage<PlacedRequestMessage>],
     'lockPromptMessage': [ConnectionMessage<LockPromptMessage>],
+    'playerLookAskMessage': [ConnectionMessage<PlayerLookAskMessage>],
+    'playerLookMessage': [ConnectionMessage<PlayerLookMessage>],
     'relayedActivationMessage': [ConnectionMessage<RelayedActivationMessage>],
     'objectAnimationMessage': [ConnectionMessage<ObjectAnimationMessage>],
     'setWeatherMessage': [ConnectionMessage<SetWeatherMessage>],

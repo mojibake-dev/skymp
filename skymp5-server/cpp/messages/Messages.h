@@ -52,6 +52,8 @@
 #include "PlacedRequestMessage.h"
 #include "PlayerBowShotMessage.h"
 #include "PlayerGlobalsMessage.h"
+#include "PlayerLookAskMessage.h"
+#include "PlayerLookMessage.h"
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
@@ -174,4 +176,6 @@
   REGISTER_MESSAGE(CraftReportMessage)                                        \
   REGISTER_MESSAGE(PushActorMessage)                                          \
   REGISTER_MESSAGE(ArrestMessage)                                             \
-  REGISTER_MESSAGE(CrimeGoldMessage)
+  REGISTER_MESSAGE(CrimeGoldMessage)                                          \
+  REGISTER_MESSAGE(PlayerLookAskMessage)                                      \
+  REGISTER_MESSAGE(PlayerLookMessage)

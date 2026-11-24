@@ -192,6 +192,19 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
     function once(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
+    // a look a script this seat runs for another player asked of that
+    // player's figure, which only that player's own game can answer: the
+    // looking player by its server id and the target (LookAskedEvent,
+    // Definitions.txt); and that game's answer written into the platform's
+    // look table, false when nothing is stored. An older platform has
+    // neither, and every use is guarded
+    interface LookAskedEvent {
+        player: number;
+        target: number;
+    }
+    function on(eventName: 'lookAsked', callback: (event: LookAskedEvent) => void): EventHandle;
+    function once(eventName: 'lookAsked', callback: (event: LookAskedEvent) => void): EventHandle;
+    function setPlayerLook(player: number, target: number, los: boolean): boolean;
 
     // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on
     // PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next

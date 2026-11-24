@@ -1994,7 +1994,8 @@ fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
 /// row, the arguments its count and kinds, the subject the sender's at the
 /// epoch and the sender within its budget is the server's rule (wire-rules
 /// natives); a value is never judged. Since SCHEMA_VERSION 44 a call may
-/// carry `landed`, its leveled roll's landings ([`check_landed`]).
+/// carry `landed`, its leveled roll's landings ([`check_landed`]), and since
+/// SCHEMA_VERSION 68 `forward` ([`check_forward`]).
 fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -2018,6 +2019,23 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
         check_placed(m, placed)?;
     }
     check_local_args(m)?;
+    if let Some(forward) = m.forward {
+        check_forward(m, forward)?;
+    }
+    Ok(())
+}
+
+/// A forward's mark (SCHEMA_VERSION 68),
+/// structural only: present only as true; never on the sender's own player
+/// (0x14) or a reference its own game created (0xff000000 and up), both its
+/// own seat's; and never beside a landing or a creation's result, which are
+/// the sender's own calls (`E_VAL_RANGE` otherwise). Whether the row is a
+/// live state row and the subject another seat's is the server's rule
+/// (wire-rules natives, the forward channel).
+fn check_forward(m: &skymp::ScriptCall, forward: bool) -> Result<(), Reject> {
+    if !forward || m.self_id == OWN_PLAYER || m.self_id >= PLAYER_FORMS || m.landed.is_some() || m.placed.is_some() {
+        return Err(Reject::Range);
+    }
     Ok(())
 }
 
@@ -5838,6 +5856,27 @@ mod script_call_tests {
         assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player.clone(), None, Some(1))), Err(Reject::Range));
         assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player, None, Some(2))), Err(Reject::Range));
         assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { local_args: Some(4), ..play })), Err(Reject::Range));
+    }
+
+    // the forward (SCHEMA_VERSION 68): a guest's
+    // dialogue fragment unlocking Whiterun's gate (Skyrim.esm 0x1b1f1), which
+    // the host's game owns
+    #[test]
+    fn a_forward_is_true_on_a_load_order_subject_and_nothing_else() {
+        let Message::ScriptCall(lock) = call(0x1b1f1, "ObjectReference", "Lock", vec![Some(SnippetArg::Bool(false)), Some(SnippetArg::Bool(false))]) else {
+            return;
+        };
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), ..lock.clone() })), Ok(()));
+        assert_eq!(validate_server(&Message::ScriptCall(lock.clone())), Ok(()), "absent: no forward");
+        // present only as true
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(false), ..lock.clone() })), Err(Reject::Range));
+        // the sender's own player and its own created reference are its own
+        // seat's, never forwarded
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), self_id: 0x14, ..lock.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), self_id: 0xff00_08fa, ..lock.clone() })), Err(Reject::Range));
+        // never beside a landing or a creation's result
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), landed: Some(Default::default()), ..lock.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { forward: Some(true), placed: Some(0xff00_08fa), ..lock })), Err(Reject::Range));
     }
 
     #[test]

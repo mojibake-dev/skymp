@@ -641,6 +641,115 @@ TEST_CASE("A question about the guest's player goes to the guest's own game "
   Leave(p);
 }
 
+// an act: what a script the host runs for the guest does to the guest's
+// player, skipped on the host and forwarded with the guest as its acting
+// player. The word wall's trigger 0x709d2 teaches WordFus (Skyrim.esm WOOP
+// 0x13e22) and fades the screen (IMAD 0x4e77b, LearnWordFadeLoop02;
+// lab/esm.py, 2026-11-24); the cause is the guest's relayed entry (kind 6, the
+// trigger, the scope's arm)
+constexpr uint32_t kWallTrigger = 0x709d2;
+constexpr uint32_t kWordFus = 0x13e22;
+constexpr uint32_t kLearnWordFade = 0x4e77b;
+
+void Act(PartOne& p, Networking::UserId user, uint32_t selfId, const char* cls,
+         const char* fn, std::vector<Arg> args, uint32_t acting,
+         uint32_t causeKind = 6, uint32_t causeForm = kWallTrigger,
+         uint32_t causeN = 1)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = selfId;
+  msg.cls = cls;
+  msg.fn = fn;
+  msg.args = std::move(args);
+  msg.caller = "WordWallTriggerScript";
+  msg.handler = "OnTriggerEnter";
+  msg.forward = true;
+  msg.cause = ScriptCallMessage::Cause{ causeKind, causeForm, causeN };
+  msg.acting = acting;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+Arg WordFus()
+{
+  return Arg(SpSnippetObjectArgument{ kWordFus, "WordOfPower" });
+}
+
+TEST_CASE("An act on the guest's player a script the host runs for it goes "
+          "to the guest's own game alone, on that game's own player",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  // the teach, a static on no object: the guest's game runs it as its own
+  Act(p, 0, 0x14, "Game", "TeachWord", { WordFus() }, kGuestActor);
+  auto toGuest = SnippetsTo(p, 1);
+  REQUIRE(toGuest.size() == 1);
+  REQUIRE(toGuest[0]["class"] == "Game");
+  REQUIRE(toGuest[0]["function"] == "TeachWord");
+  REQUIRE(toGuest[0]["selfId"] == 0);
+  REQUIRE(toGuest[0]["arguments"][0]["formId"] == kWordFus);
+  REQUIRE(!toGuest[0].contains("question"));
+  REQUIRE(SnippetsTo(p, 0).empty());
+  // the fade, a method on a form: the form stays its self
+  p.Messages().clear();
+  Act(p, 0, kLearnWordFade, "ImageSpaceModifier", "Apply", { Arg(1.0) },
+      kGuestActor);
+  toGuest = SnippetsTo(p, 1);
+  REQUIRE(toGuest.size() == 1);
+  REQUIRE(toGuest[0]["function"] == "Apply");
+  REQUIRE(toGuest[0]["selfId"] == kLearnWordFade);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  // a method on the player (the host's script named it, the host's game
+  // reports it as 0x14): the guest's own player, as its game names it
+  p.Messages().clear();
+  Act(p, 0, 0x14, "Actor", "SetPlayerResistingArrest", {}, kGuestActor);
+  toGuest = SnippetsTo(p, 1);
+  REQUIRE(toGuest.size() == 1);
+  REQUIRE(toGuest[0]["function"] == "SetPlayerResistingArrest");
+  REQUIRE(toGuest[0]["selfId"] == 0x14);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  Leave(p);
+}
+
+TEST_CASE("An act reaches the acting player's game once: never when its cause "
+          "is a quest stage every game ran, nor with no other player acting, "
+          "nor a quit",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  // every quest's stages are the world's but the gate quest's
+  // (DialogueWhiterunGuardGateStop 0xd1984), which stays each player's own
+  p.SetSharedQuestsSettings(
+    R"({"mode": "all", "denied": ["d1984:Skyrim.esm"]})");
+  Enter(p);
+  // a stage of the denied quest ran on the host's game alone: delivered
+  Act(p, 0, 0x14, "Game", "TeachWord", { WordFus() }, kGuestActor, 1, 0xd1984,
+      10);
+  REQUIRE(SnippetsTo(p, 1).size() == 1);
+  // a stage of a relayed quest (Skyrim.esm QUST 0x39645 MS13,
+  // QuestStageTest's, stage 10): the guest's own game ran it and made the act
+  // itself
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Act(p, 0, 0x14, "Game", "TeachWord", { WordFus() }, kGuestActor, 1,
+        0x39645, 10);
+    REQUIRE(SnippetsTo(p, 1).empty());
+    REQUIRE(log.Count("folded, not delivered") == 1);
+  }
+  // the reporter's own player acting: its own game ran it
+  Act(p, 0, 0x14, "Game", "TeachWord", { WordFus() }, kHostActor);
+  // a quit is the seat's own
+  Act(p, 0, 0x14, "Debug", "QuitGame", {}, kGuestActor);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(SnippetsTo(p, 1).empty());
+  Leave(p);
+  p.SetSharedQuestsSettings("[]");
+}
+
 TEST_CASE("A reporter's script calls past its budget are refused and relayed "
           "to nobody",
           "[ScriptCall][espm]")

@@ -5429,21 +5429,26 @@ size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,
   word.refr = refr;
   word.player = player;
   word.epoch = epoch;
+  const MpActor* except = nullptr;
+  if (exceptActor != 0) {
+    const auto& exceptForm = worldState.LookupFormByIdNoLoad(exceptActor);
+    except = exceptForm ? exceptForm->AsActor() : nullptr;
+  }
+  // the prop's owner, the cell's host whose engine simulates the props it
+  // hears no other owner for, wherever its player stands, and its other
+  // listeners
   size_t told = 0;
-  for (auto listener : prop->GetActorListeners()) {
-    if (exceptActor != 0 && listener->GetFormId() == exceptActor) {
-      continue;
-    }
-    const auto userId = serverState.UserByActor(listener);
+  prop->SendToOwnerAndActorListeners(except, true, [&](MpActor& to, bool) {
+    const auto userId = to.GetUserId();
     // a game mid-departure hears nothing (physics rung 5: a thrall the
     // departure kills is worded at its death, and its leaving commander is
-    // still its listener; the departure's own returns skip it by exceptActor)
-    if (userId != Networking::InvalidUserId &&
-        userId != serverState.disconnectingUserId) {
+    // still its listener; the departure's own returns skip it by
+    // exceptActor)
+    if (userId != serverState.disconnectingUserId) {
       GetSendTarget().Send(userId, word, true);
       ++told;
     }
-  }
+  });
   return told;
 }
 

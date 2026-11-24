@@ -789,6 +789,11 @@ void MpObjectReference::SetOpen(bool open)
       [&](MpChangeFormREFR& changeForm) { changeForm.isOpen = open; });
     SendMessageToActorListeners(
       CreatePropertyMessage_(this, "isOpen", open ? "true" : "false"), true);
+    // a door's owner out of its listeners opens or shuts its own copy by the
+    // call (a container's open is its menu, the opener's alone)
+    if (baseType == "DOOR") {
+      CallOwnerOutOfRange("SetOpen", { open });
+    }
     const bool container = baseType == "CONT" || IsCorpse();
     // thuum docs/verbs/containers.md (ADR-067 decision 1, Eli after playtest
     // 42: "fuck live updates of containers"): a container's contents sync at
@@ -954,6 +959,9 @@ void MpObjectReference::SetLock(const MpChangeFormREFR::Lock& lock)
       pairRef->SendMessageToActorListeners(
         pairRef->CreatePropertyMessage_(pairRef, "lock", dump), true);
     }
+    // the owner out of the listeners locks or unlocks its own copy by the
+    // call (Lock(abLock, abAsOwner false), the pair following on its engine)
+    CallOwnerOutOfRange("Lock", { lock.locked, false });
     spdlog::info(
       "[verb:locks] {:x} {} (level {}, key {:x}, {} broken){}", GetFormId(),
       lock.locked ? "locked" : "unlocked", lock.level, lock.key, lock.broken,
@@ -3949,6 +3957,67 @@ void MpObjectReference::SendMessageToActorListeners(const IMessageBase& msg,
   for (auto listener : GetActorListeners()) {
     listener->GetActorToSendTo().SendToUser(msg, true);
   }
+}
+
+MpObjectReference::OwnerSend MpObjectReference::SendToOwnerAndActorListeners(
+  const MpActor* except, bool listeners,
+  const std::function<void(MpActor& to, bool owner)>& send) const
+{
+  OwnerSend out;
+  MpActor* owner = nullptr;
+  if (auto* world = GetParent()) {
+    owner = world->HostOf(*this);
+  }
+  if (owner && owner->GetUserId() == Networking::InvalidUserId) {
+    owner = nullptr;
+  }
+  out.owner = owner ? owner->GetFormId() : 0;
+  if (listeners) {
+    for (auto listener : GetActorListeners()) {
+      if (listener == except ||
+          listener->GetUserId() == Networking::InvalidUserId) {
+        continue;
+      }
+      const bool isOwner = listener == owner;
+      send(*listener, isOwner);
+      out.toOwner = out.toOwner || isOwner;
+      ++out.sent;
+    }
+  }
+  // the owner out of the reference's listeners: its player elsewhere in the
+  // cell, its engine running the reference's scripts all the same
+  if (owner && !out.toOwner && owner != except) {
+    send(*owner, true);
+    out.toOwner = true;
+    ++out.sent;
+  }
+  return out;
+}
+
+void MpObjectReference::CallOwnerOutOfRange(
+  const char* function,
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>& args)
+  const
+{
+  auto* world = GetParent();
+  if (!world || GetFormId() >= 0xff000000) {
+    return;
+  }
+  MpActor* owner = world->HostOf(*this);
+  if (!owner || owner->GetUserId() == Networking::InvalidUserId) {
+    return;
+  }
+  const auto& listeners = GetActorListeners();
+  if (std::find(listeners.begin(), listeners.end(), owner) !=
+      listeners.end()) {
+    return;
+  }
+  SpSnippet("ObjectReference", function, args, GetFormId())
+    .Execute(owner, SpSnippetMode::kNoReturnResult);
+  spdlog::info("[verb:owner] {:x}'s owner {:x} stands out of its listeners: "
+               "ObjectReference.{} sent to its game",
+               GetFormId(), owner->GetFormId(), function);
 }
 
 void MpObjectReference::BeforeDestroy()

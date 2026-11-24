@@ -14,6 +14,7 @@ import { ObjectReferenceEx } from '../../extensions/objectReferenceEx';
 import { localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 import { HELD_PLAY_MS, HeldPlays } from '../../sync/heldPlays';
+import { reapplyNow } from '../../sync/reapplyGate';
 
 // thuum docs/verbs/traps.md (ADR-059 decision 3): the cell's host runs the
 // world scripts, so guests see what the host's engine SHOWS. On every seat
@@ -244,6 +245,7 @@ type LastAnimation = {
   looksShown: boolean;           // all of them played on the 3D now loaded
   actor: boolean;   // an actor's entry: its looks are its simulator's, not its cell's
   flips: number;    // HostService.ownerFlips at the looks' last owner test (pollOne)
+  answered?: boolean;  // this seat's own script's play the seam answered with no 3D here, shown once at the next 3D load (answeredUnloaded)
 };
 // the wire's cap on a record's graph variables (cap::GRAPH_VARS, UNMEASURED):
 // past it the longest unset name goes
@@ -849,6 +851,12 @@ export class ObjectAnimationService extends ClientListener {
   // alone: safe in the scriptCalls event's context, where no native runs
   noteScriptSide(localId: number, event: string) {
     this.scriptActs.set(localId, (this.scriptActs.get(localId) ?? 0) + 1);
+    // the script's newer act stands on the graph now: an earlier one answered
+    // with no 3D is no longer the one to show
+    const kept = this.lastAnimations.get(localId);
+    if (kept !== undefined) {
+      kept.answered = false;
+    }
     this.notePillar(localId, event);
     const side = sideOfRecord(event);
     if (side !== undefined) {
@@ -1050,6 +1058,28 @@ export class ObjectAnimationService extends ClientListener {
     } finally {
       this.resyncing.delete(id);
     }
+  }
+
+  // an owned latent action this seat's own script ran while the reference's
+  // 3D was not loaded here: the seam answered it at once (the platform's
+  // `unloaded`), so the script stands past it while the graph never took it,
+  // and the pillar's own OnCellLoad turns the graph only once, from its first
+  // side. The play is kept as a relay's is and shown once at the next 3D
+  // load, though this seat hosts the cell (reapplyGate), which puts the graph
+  // where the script stands. Called after noteScriptSide for the same call.
+  // JS state alone: the scriptCalls event's context
+  answeredUnloaded(localId: number, event: string): void {
+    const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
+    if (!refr) {
+      return;
+    }
+    this.keep(refr, localId, event, this.newestSeq(localId), false);
+    const kept = this.lastAnimations.get(localId);
+    if (kept === undefined || kept.event !== event) {
+      return;
+    }
+    kept.answered = true;
+    logLab('verb:scripts', `object animation ${localId.toString(16)} ${event}: this seat's script played it with no 3D here, shown at its next 3D load`);
   }
 
   // rung 3: the object's last animation kept, the record's view (keepView, at
@@ -1658,8 +1688,11 @@ export class ObjectAnimationService extends ClientListener {
     if (!varsDue && !eventDue) {
       return;
     }
-    if (this.controller.lookupListener(HostService).epochForActor(refr) !== 0
-      || this.controller.lookupListener(ScriptStateService).viewOf(id) === 'pending') {
+    if (!reapplyNow({
+      hostedHere: this.controller.lookupListener(HostService).epochForActor(refr) !== 0,
+      viewPending: this.controller.lookupListener(ScriptStateService).viewOf(id) === 'pending',
+      answered: kept.answered === true,
+    })) {
       kept.lookAt = now + REAPPLY_WAIT_MS;
       return;
     }
@@ -1688,6 +1721,7 @@ export class ObjectAnimationService extends ClientListener {
       return;
     }
     kept.shown = true;
+    kept.answered = false;
     if (this.sayReapplied(id, now)) {
       logLab('verb:scripts', `object animation ${id.toString(16)} ${kept.event} re-applied at a 3D load (seq ${kept.seq}); ${played ? 'taken' : 'refused'}${kept.tries > 1 ? ` at try ${kept.tries}` : ''}${jump}`);
     }

@@ -214,7 +214,13 @@ export class ScriptCallService extends ClientListener {
                 // mark), so a pillar's side is noted from the call itself
                 const event = ScriptCallService.graphEventOf(call);
                 if (event !== undefined) {
-                    this.controller.lookupListener(ObjectAnimationService).noteScriptSide(call.self, event);
+                    const objectAnimation = this.controller.lookupListener(ObjectAnimationService);
+                    objectAnimation.noteScriptSide(call.self, event);
+                    // the seam answered it at once with no 3D here: shown at
+                    // the reference's next 3D load
+                    if (call.unloaded === true) {
+                        objectAnimation.answeredUnloaded(call.self, event);
+                    }
                 }
             }
             if (call.kind === "look") {

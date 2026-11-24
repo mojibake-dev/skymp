@@ -1105,6 +1105,10 @@ struct QueuedCall
     std::uint32_t n = 0;
   };
   std::optional<Cause> cause;
+  // an owned latent action answered at once because its reference's 3D is
+  // not loaded on this seat (its graph never played it here), raised as
+  // `unloaded`
+  bool unloaded = false;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1207,6 +1211,9 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   }
   if (call.acting != 0) {
     AddObjProperty(&obj, "acting", call.acting);
+  }
+  if (call.unloaded) {
+    AddObjProperty(&obj, "unloaded", true);
   }
   if (call.cause) {
     auto cause = Napi::Object::New(env);
@@ -4125,10 +4132,11 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
       return marks;
     }
   }
-  if (!QueueFromFrame(row, info, stack, top, page, ref->formID)) {
+  std::optional<QueuedCall> call =
+    CallFromFrame(row, info, stack, top, page, ref->formID);
+  if (!call) {
     return marks;
   }
-  marks.action = native.kind == NativeKind::Action;
   // an owned latent action row on a reference whose 3D this seat has not
   // loaded (TESObjectREFR::Is3DLoaded, CommonLibSSE-NG
   // include/RE/T/TESObjectREFR.h:435): its body would wait on a graph event
@@ -4136,11 +4144,17 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // end event), and the script that called it would stay busy past every
   // later event on the reference. The call is answered at once (true for a
   // Bool, as a played animation answers; kCompleted, H-F2's skipped latent),
-  // and its twin goes to the games that render the reference as queued
-  // above. HYPOTHESIS until a sitting's line: the wait never returned
-  // because the 3D was unloaded here
-  if (info.latent && native.kind == NativeKind::Action && !isActor &&
-      !ref->Is3DLoaded()) {
+  // and its twin goes to the games that render the reference. The call is
+  // marked `unloaded`, so this seat shows the play at the reference's next
+  // 3D load (ObjectAnimationService): its graph never took it here, and the
+  // script stands past it. HYPOTHESIS until a sitting's line: the wait
+  // never returned because the 3D was unloaded here
+  const bool unloaded = info.latent && native.kind == NativeKind::Action &&
+    !isActor && !ref->Is3DLoaded();
+  call->unloaded = unloaded;
+  QueueCall(std::move(*call));
+  marks.action = native.kind == NativeKind::Action;
+  if (unloaded) {
     marks.skip = true;
     marks.result = info.result;
     marks.resultTrue = true;
@@ -4148,7 +4162,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     logger::info("[verb:scripts] {}.{} on {:x}: an owned latent action on a "
                  "reference whose 3D this seat has not loaded, answered at "
                  "once (its wait would never end here); its twin relayed to "
-                 "the games that render it",
+                 "the games that render it, shown here at its next 3D load",
                  native.cls, native.fn, ref->formID);
   }
   return marks;

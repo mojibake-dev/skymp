@@ -272,6 +272,10 @@ declare module "skyrimPlatform" {
         localArgs?: number;
         cause?: { kind: number; form: number; n: number };
         acting?: number;
+        // an owned latent action's call the seam answered at once because
+        // the reference's 3D was not loaded on this seat; absent from every
+        // other call and from an older platform
+        unloaded?: boolean;
     }
     interface ScriptCallsEvent {
         calls: ScriptCall[];

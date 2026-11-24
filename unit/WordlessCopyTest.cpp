@@ -1,6 +1,7 @@
 #include "ActionListener.h"
 #include "Messages.h"
 #include "TestUtils.hpp"
+#include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <cmath>
 #include <nlohmann/json.hpp>

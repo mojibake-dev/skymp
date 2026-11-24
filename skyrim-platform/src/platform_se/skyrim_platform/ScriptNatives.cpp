@@ -4766,10 +4766,9 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
 // objects, and an array's Find inside the scope finds the figure where the
 // player is asked for, as the swap reads it elsewhere. HYPOTHESIS until the
 // first lines below are read beside the trigger's own effect
-using ObjectCompareFn =
-  std::int32_t (*)(RE::BSScript::Internal::CodeTasklet* tasklet,
-                   const RE::BSScript::Variable* lhs,
-                   const RE::BSScript::Variable* rhs);
+using ObjectCompareFn = std::int32_t (*)(
+  RE::BSScript::Internal::CodeTasklet* tasklet,
+  const RE::BSScript::Variable* lhs, const RE::BSScript::Variable* rhs);
 ObjectCompareFn g_objectCompareOriginal = nullptr;
 std::atomic<std::uint64_t> g_actingCompares{ 0 };
 

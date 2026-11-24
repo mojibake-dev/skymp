@@ -1088,6 +1088,23 @@ struct QueuedCall
   // from a stack only this seat runs (ForwardsFrom), raised as kind
   // "forward" for the server to send to that owner
   bool forward = false;
+  // a read only another player's own game can make (OnActingLook), raised as
+  // kind "question" for the server to ask that game
+  bool question = false;
+  // the player who acted, by its server id (the acting scope's), raised as
+  // `acting`; 0 for none (this seat's own player)
+  std::uint32_t acting = 0;
+  // what started the call (CauseOf), raised as `cause`: its kind (1 a quest
+  // stage, 2 a conversation line, 3 a scene, 4 a package, 5 a perk's or an
+  // interaction's event, 6 another player's relayed entry or press), the
+  // form at its root and the kind's number
+  struct Cause
+  {
+    std::uint8_t kind = 0;
+    std::uint32_t form = 0;
+    std::uint32_t n = 0;
+  };
+  std::optional<Cause> cause;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1162,11 +1179,12 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   AddObjProperty(&obj, "cls", native.cls);
   AddObjProperty(&obj, "fn", native.fn);
   AddObjProperty(&obj, "kind",
-                 call.touch       ? "touch"
-                   : call.look    ? "look"
-                   : call.created ? "created"
-                   : call.forward ? "forward"
-                                  : KindName(native.kind));
+                 call.touch        ? "touch"
+                   : call.look     ? "look"
+                   : call.created  ? "created"
+                   : call.question ? "question"
+                   : call.forward  ? "forward"
+                                   : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
   for (uint32_t i = 0; i < call.argCount; ++i) {
@@ -1186,6 +1204,16 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   }
   if (call.localArgs != 0) {
     AddObjProperty(&obj, "localArgs", static_cast<int>(call.localArgs));
+  }
+  if (call.acting != 0) {
+    AddObjProperty(&obj, "acting", call.acting);
+  }
+  if (call.cause) {
+    auto cause = Napi::Object::New(env);
+    AddObjProperty(&cause, "kind", static_cast<int>(call.cause->kind));
+    AddObjProperty(&cause, "form", call.cause->form);
+    AddObjProperty(&cause, "n", call.cause->n);
+    obj.Set("cause", cause);
   }
   if (call.landed) {
     auto landed = Napi::Array::New(env, call.landed->size());
@@ -2983,17 +3011,19 @@ QuestCause::Self SelfKindOfObject(RE::BSScript::IObjectHandlePolicy* policy,
   return QuestCause::Self::kNone;
 }
 
-// whether a skipped call's stack is one only this seat runs, so its state
-// call on another seat's subject goes to that owner instead of nowhere: a
-// relay applied here for another player (the acting scope), another player's
-// relayed trigger entry, and a world root (a dialogue, scene, package or perk
-// fragment, an interaction's event; QuestCause::Classify). A quest stage's
-// fragment runs on every seat, the owner's among them, so its calls are not
-// forwarded (the owner's own run makes them); a seat-own root (a lifecycle
-// or cell-load handler on this seat's copy) stays skipped
+// whether a skipped call's stack can be one only this seat runs, so its
+// state call on another seat's subject goes to that owner instead of
+// nowhere: a relay applied here for another player (the acting scope),
+// another player's relayed trigger entry, a world root (a dialogue, scene,
+// package or perk fragment, an interaction's event; QuestCause::Classify)
+// and a quest stage's fragment. Each names its cause (CauseOf), and the
+// server delivers a cause's call once: never when the stage reached the
+// owner too, whose own run makes the call. A seat-own root (a lifecycle or
+// cell-load handler on this seat's copy) stays skipped
 constexpr bool ForwardsFrom(StagedRoot root)
 {
-  return root == kRootRelayed || root == kRootTrigger || root == kRootWorld;
+  return root == kRootRelayed || root == kRootTrigger || root == kRootWorld ||
+    root == kRootStage;
 }
 
 // a staged call's root kind: the acting scope's root first (ScopeRootOf),
@@ -3032,6 +3062,67 @@ StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
   return kRootNone;
 }
 
+// what started a forwarded call, by its stack's root frame: a quest stage's
+// fragment (kind 1, its quest and the fragment's number, one per stage), a
+// world root by its self's kind (2 a topic info's fragment, 3 a scene's, 4 a
+// package's, 5 a perk's fragment or an interaction's event), else inside an
+// acting scope another player's relayed entry or press (6, the root's self
+// and the scope's arm). None when the root names no load-order form. Read
+// through the handle policy and the frame's names alone, as StagedRootOf
+std::optional<QueuedCall::Cause> CauseOf(
+  const RE::BSScript::Stack* stack,
+  const std::optional<ActingScope::Scope>& scope,
+  RE::BSScript::IObjectHandlePolicy* policy)
+{
+  const RE::BSScript::StackFrame* root = stack ? RootFrameOf(stack) : nullptr;
+  if (!root) {
+    return std::nullopt;
+  }
+  const std::uint32_t form = SubjectOfFrame(root);
+  if (form == 0 || form >= 0xff000000) {
+    return std::nullopt;
+  }
+  const RE::BSScript::ObjectTypeInfo* type = root->owningObjectType.get();
+  const RE::BSScript::IFunction* function = root->owningFunction.get();
+  const std::string_view script = type ? type->GetName() : "";
+  const std::string_view name =
+    function ? std::string_view(function->GetName().c_str()) : "";
+  const QuestCause::Self self = SelfKindOfObject(policy, ObjectOf(root->self));
+  QueuedCall::Cause cause;
+  cause.form = form;
+  switch (QuestCause::Classify(script, name, self)) {
+    case QuestCause::Root::kStageFragment: {
+      cause.kind = 1;
+      constexpr std::string_view kFragment = "Fragment_";
+      if (name.size() > kFragment.size()) {
+        std::uint32_t n = 0;
+        for (const char c : name.substr(kFragment.size())) {
+          if (c < '0' || c > '9') {
+            break;
+          }
+          n = n * 10 + static_cast<std::uint32_t>(c - '0');
+        }
+        cause.n = n;
+      }
+      return cause;
+    }
+    case QuestCause::Root::kWorld:
+      cause.kind = self == QuestCause::Self::kInfo ? 2
+        : self == QuestCause::Self::kScene         ? 3
+        : self == QuestCause::Self::kPackage       ? 4
+                                                   : 5;
+      return cause;
+    default:
+      break;
+  }
+  if (scope) {
+    cause.kind = 6;
+    cause.n = static_cast<std::uint32_t>(scope->seq);
+    return cause;
+  }
+  return std::nullopt;
+}
+
 Marks OnCreatedCall(std::size_t row, const RowInfo& info,
                     const RE::BSScript::Stack* stack,
                     const RE::BSScript::StackFrame* top, std::uint32_t page,
@@ -3061,8 +3152,9 @@ Marks OnCreatedCall(std::size_t row, const RowInfo& info,
 // is not its own player when the target is no actor, so the look is the
 // player's own game's: the body is skipped and the call answers that game's
 // last look at the target (ActingScope::Looks), false while none stands, and
-// when the pair is due an ask the platform raises lookAsked for the client
-// to send PlayerLookAsk. True when the call is answered so; false leaves it
+// when the pair is due an ask the call is queued as a question (kind
+// "question", self 0x14, the target, acting the player) for the server to
+// ask that game. True when the call is answered so; false leaves it
 // to the staged count as before (a self that is no figure, a frame not the
 // native's own, a target that names no load-order reference)
 bool OnActingLook(std::size_t row, const RowInfo& info,
@@ -3109,14 +3201,18 @@ bool OnActingLook(std::size_t row, const RowInfo& info,
                  "is asked of it again",
                  player, scope.player.figure, looked,
                  marks.lookAnswer ? "yes" : "no");
-    if (auto* platform = SkyrimPlatform::GetSingleton()) {
-      platform->AddTickTask([player, looked](Napi::Env env) {
-        auto obj = Napi::Object::New(env);
-        AddObjProperty(&obj, "player", player);
-        AddObjProperty(&obj, "target", looked);
-        EventsApi::SendEvent("lookAsked", { obj });
-      });
-    }
+    QueuedCall call;
+    call.row = row;
+    call.self = 0x14;
+    call.argCount = 1;
+    call.args[0].kind = CallArg::Kind::Form;
+    call.args[0].formId = looked;
+    call.latent = info.latent;
+    call.stackId = stack->stackID;
+    call.question = true;
+    call.acting = player;
+    NameCaller(top->previousFrame, call.caller, call.handler);
+    QueueCall(std::move(call));
   }
   return true;
 }
@@ -3957,6 +4053,10 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
         if (auto call =
               CallFromFrame(row, info, stack, top, page, ref->formID)) {
           call->forward = true;
+          call->cause = CauseOf(stack, scope, policy);
+          if (scope && ActingScope::Swaps(*scope)) {
+            call->acting = scope->player.serverId;
+          }
           QueueCall(std::move(*call));
           Count(row, kCountForwarded);
           LogForwarded(row, ref->formID);

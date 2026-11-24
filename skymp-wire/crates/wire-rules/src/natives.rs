@@ -509,8 +509,8 @@ pub enum Hook {
     PushFigure,
     /// Actor.HasLOS on the acting player's figure inside another player's
     /// acting scope: answered from that player's own game's look, asked of
-    /// it through the server (PlayerLookAsk, PlayerLook); a staged row's,
-    /// read by the platform's OnStaged.
+    /// it through the server as a question on ScriptCall and answered on
+    /// the same message; a staged row's, read by the platform's OnStaged.
     ActingLook,
 }
 
@@ -627,7 +627,7 @@ impl Hook {
             Hook::SceneStart => "Scene.Start and ForceStart are counted and run inside a scope rooted at a relay (train 53's V-scene, ADR-073 D-A2 C): a stopgap (decision 5 (c)), replaced by step 5a's scene row (decision 6, D-L2 B: the starting seat, the stage's cause seat, claims the scene's actors); deletes at 5a's scene row",
             Hook::ActingInventory => "ObjectReference.GetItemCount on the acting player's figure inside another player's acting scope answers the server's record of that player's inventory, carried in by the relayed press (thuum tracker #117, Eli's design B; ADR-063: one owner per inventory, no figure inventory): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory travels by its change form, every seat reading the one record); deletes when a figure's inventory reads take the player's record from that change form",
             Hook::PushFigure => "ObjectReference.PushActorAway onto another player's figure (an actor with a dynamic form id on base 0x7, the server's IsCreatedAsPlayer) runs on the seat whose own player pushes and is skipped on every other, and a push onto a seat's own player by another player's figure is skipped there, so the pusher's own game throws its copy and claims the body for the flight while every other screen follows that throw's live-body stream until its rest hands the body back (a player's body is its pusher's for the throw, as its gripper's for a grip): a stopgap (decision 5 (c)), replaced by the row's subject the pushed actor (Subject::Arg0Method) with its owner asked (decision 6), a player's figure answered by its pusher's seat for the throw and a knocked NPC by the seat whose cause moved it; deletes when owner_of answers a knock's cause seat and the row is unstaged with its target the subject",
-            Hook::ActingLook => "Actor.HasLOS on the acting player's figure inside another player's acting scope answers that player's own game's look at the target (the engine's test refuses a subject that is not its own player when the target is no actor): the seam asks that game through the server (PlayerLookAsk) and keeps its answers (PlayerLook, setPlayerLook), and answers false while none stands; decision 5 (a), a player's own camera (R3), its own game's",
+            Hook::ActingLook => "Actor.HasLOS on the acting player's figure inside another player's acting scope answers that player's own game's look at the target (the engine's test refuses a subject that is not its own player when the target is no actor): the seam asks that game through the server (a question on ScriptCall) and keeps its answers (ScriptCall's answer, setPlayerLook), and answers false while none stands; decision 5 (a), a player's own camera (R3), its own game's",
         }
     }
 }
@@ -1759,15 +1759,6 @@ impl Bucket {
     }
 }
 
-/// The server's script-call state: every reporter's budget and every
-/// subject's sequence, by form id. Runtime only: a restart starts every
-/// budget full and every sequence at 0, and an object's stored record (rung
-/// 3, wire-rules script_state: the record keeps the sequence it was taken
-/// at) seeds its sequence back ([`ScriptCalls::seed`]) before the sequence is
-/// read or moved again. A budget outlives its reporter's disconnect, as a
-/// voice's recovery does, so a reconnect does not refill it. A reporter has
-/// two: its actions' and other rows', and its record rows' (thuum ADR-068
-
 /// The owner step on a question (a read only the acting player's own game
 /// can answer, asked by a script another seat runs for that player): the
 /// acting player is a connected player other than the reporter; sent to that
@@ -1814,6 +1805,14 @@ fn answer(row: Row, facts: &Facts) -> Verdict {
     })
 }
 
+/// The server's script-call state: every reporter's budget and every
+/// subject's sequence, by form id. Runtime only: a restart starts every
+/// budget full and every sequence at 0, and an object's stored record (rung
+/// 3, wire-rules script_state: the record keeps the sequence it was taken
+/// at) seeds its sequence back ([`ScriptCalls::seed`]) before the sequence is
+/// read or moved again. A budget outlives its reporter's disconnect, as a
+/// voice's recovery does, so a reconnect does not refill it. A reporter has
+/// two: its actions' and other rows', and its record rows' (thuum ADR-068
 /// rung 4).
 #[derive(Debug, Default)]
 pub struct ScriptCalls {

@@ -171,7 +171,8 @@ pub const SKYMP_NATIVE_HOOK_ACTING_INVENTORY: u8 = 15;
 /// (thuum tracker #178).
 pub const SKYMP_NATIVE_HOOK_PUSH_FIGURE: u8 = 16;
 /// Hook: Actor.HasLOS on the acting player's figure inside another player's
-/// acting scope, answered from that player's own game's look (PlayerLook).
+/// acting scope, answered from that player's own game's look (a question on
+/// the script channel).
 pub const SKYMP_NATIVE_HOOK_ACTING_LOOK: u8 = 17;
 /// The largest hook code: a row with a larger one is a table this build does
 /// not read.

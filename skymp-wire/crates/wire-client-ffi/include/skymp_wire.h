@@ -325,7 +325,8 @@
 
 /**
  * Hook: Actor.HasLOS on the acting player's figure inside another player's
- * acting scope, answered from that player's own game's look (PlayerLook).
+ * acting scope, answered from that player's own game's look (a question on
+ * the script channel).
  */
 #define SKYMP_NATIVE_HOOK_ACTING_LOOK 17
 

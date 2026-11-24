@@ -214,3 +214,21 @@ export class PassTimes {
     return line;
   }
 }
+
+// The time a view's far-apply clock counts from after an apply at `now`
+// (movementApplyDue's sinceLastApplyMs), for the view `id`: the apply's own
+// time, except at the view's first apply, which counts from earlier by a
+// share of `farRateMs` its id gives (farPhaseMs). Views made in one frame (a
+// relaunch's, a teleport's) then fall due spread over the far rate rather
+// than all in one frame, and every clock keeps the same period, so the
+// spread stays.
+export const appliedClock = (now: number, firstApply: boolean, id: number, farRateMs: number): number => {
+  return firstApply ? now - farPhaseMs(id, farRateMs) : now;
+};
+
+// A share of `rateMs` for the id, the same for the same id, spread over the
+// ids by a multiplicative hash (Knuth's golden-ratio constant)
+export const farPhaseMs = (id: number, rateMs: number): number => {
+  const span = Math.max(1, Math.floor(rateMs));
+  return (Math.imul(id >>> 0, 0x9e3779b1) >>> 0) % span;
+};

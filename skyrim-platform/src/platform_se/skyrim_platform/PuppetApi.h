@@ -53,6 +53,13 @@ Napi::Value IsHosted(const Napi::CallbackInfo& info);
 // scope at once. False for a quest 0, a stage outside -3 to 65535, a
 // serverId 0, the player's own id as the figure, a ttl outside 1 to 60000
 Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
+// a player's own game's look at a target as the server relayed it
+// (PlayerLook): the player by its server id (0xff000000 and up), the target
+// a load-order form, whether the player sees it; kept in the look table the
+// seam answers Actor.HasLOS on that player's figure from (ActingScope::Looks).
+// False, nothing stored, for a player below 0xff000000 or a target of 0 or
+// 0xff000000 and up; no game call
+Napi::Value SetPlayerLook(const Napi::CallbackInfo& info);
 // train 53's V-scene (ADR-073 D-A2 C): setRelayedScope(questId, stage,
 // ttlMs), a relayed stage (0 to 65535), start (-1) or stop (-2) whose cause
 // seat is elsewhere and whose acting player is this seat's own or unnamed:
@@ -398,6 +405,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetActingPlayer)));
+  exports.Set(
+    "setPlayerLook",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerLook)));
   exports.Set(
     "setRelayedScope",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetRelayedScope)));

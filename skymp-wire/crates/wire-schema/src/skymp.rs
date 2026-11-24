@@ -1586,6 +1586,21 @@ wire_struct! {
         /// copy's 3D loads by the row's own word; absent on every other
         /// snippet, and only with `seq`.
         pub keep: Option<u8>,
+        /// Since SCHEMA_VERSION 68 (the one script channel): on a relayed
+        /// call, the player who acted, by its actor's id as the receiver
+        /// names it (0x14 for its own): the receiver runs the call as that
+        /// player's act. Absent otherwise.
+        pub acting: Option<u32>,
+        /// Since SCHEMA_VERSION 68: true on a question about the receiver's
+        /// own player (`self_id` 0x14): the receiver watches that read for
+        /// the wire's LOOK_WATCH_MS and answers with ScriptCall's `answer`
+        /// at its first read and each change. Absent otherwise.
+        pub question: Option<bool>,
+        /// Since SCHEMA_VERSION 68: another player's game's answer to a
+        /// question this seat asked about that player (`self_id` the
+        /// player's figure): kept for the seat's scripts, nothing run.
+        /// Absent otherwise.
+        pub answer: Option<SnippetArg>,
     }
 }
 
@@ -2897,19 +2912,55 @@ wire_struct! {
         /// object argument of 0xff000000 and up stays what rung 5 made it, a
         /// player's figure by the server's id.
         pub local_args: Option<u16>,
-        /// Since SCHEMA_VERSION 68 ("forward, never drop"): true on a state row's call the sender's own engine
-        /// skipped because the sender does not own the subject, made by a
-        /// stack a world cause roots on that seat alone (a dialogue, scene or
-        /// package fragment, another player's relayed entry or press), which
-        /// the server sends to the subject's owner alone to run; absent on
-        /// every other call, and never false. R2, the sender's word: the
-        /// server judges the row a live state row, the subject one the
-        /// sender does not own and one some seat does, and never the value.
-        /// Delivered once on the reliable channel; a duplicate would run the
-        /// call twice on the owner, as a second skip on the sender would
-        /// forward it twice (a lock or an enable twice is the same; an item
-        /// given twice is not, and the server folds no repeat yet).
+        /// Since SCHEMA_VERSION 68 (the one script channel): true on a call
+        /// the sender's engine skipped, for the call's owner to run: a state
+        /// row's call on a subject another seat owns (sent to that owner), or
+        /// a question, a read only a player's own game can answer, on the
+        /// acting player (`self_id` 0x14 with `acting` another player: sent
+        /// to that player's game). Absent on every other call, never false.
+        /// R2, the sender's word: the server judges the row, the owner and
+        /// the cause, never the value.
         pub forward: Option<bool>,
+        /// Since SCHEMA_VERSION 68: what started the call (a quest stage, a
+        /// conversation line, a scene, a package, an interaction event,
+        /// another player's relayed entry or press), so the server delivers
+        /// one cause's call once whichever seats report it, and drops a
+        /// stage's forward when it relayed that stage to the owner, whose own
+        /// run makes the call. Absent when the sender read none.
+        pub cause: Option<ScriptCause>,
+        /// Since SCHEMA_VERSION 68: the player who acted, by its actor's
+        /// server id: the owner runs the call as that player's act, and on a
+        /// question 0x14 names that player. Absent for the sender's own
+        /// player outside any other player's scope.
+        pub acting: Option<u32>,
+        /// Since SCHEMA_VERSION 68: a player's game's answer to a question
+        /// about its own player (`self_id` 0x14, no `forward`), sent at a
+        /// watch's first read, at each change and after each ask; the server
+        /// sends it to the seats that asked. Absent on every other call.
+        pub answer: Option<SnippetArg>,
+    }
+}
+
+/// How long a player's game watches a question about its own player
+/// (SpSnippet's `question`), milliseconds: a script polls a look every few
+/// seconds (a word wall's every five), and each ask extends the watch.
+pub const LOOK_WATCH_MS: u32 = 10_000;
+
+wire_struct! {
+    /// What started a script call (ScriptCall's `cause`): its kind, the
+    /// form at its root and a number the kind gives, the same on every seat
+    /// that runs the same root. Kinds: 1 a quest stage (`form` the quest,
+    /// `n` the stage), 2 a conversation line (the topic info), 3 a scene, 4 a
+    /// package, 5 an interaction event (the reference whose event it is), 6
+    /// another player's relayed entry or press (the trigger or the pressed
+    /// reference, `n` the relay's sequence).
+    pub struct ScriptCause {
+        /// The cause's kind, 1 to 6.
+        pub kind: u8,
+        /// The form at the cause's root, a load-order form.
+        pub form: u32,
+        /// The kind's number: a stage, a relay's sequence, else 0.
+        pub n: u32,
     }
 }
 

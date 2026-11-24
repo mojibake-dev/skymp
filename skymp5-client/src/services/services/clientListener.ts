@@ -192,6 +192,12 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
     function once(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
+    // another player's game's answer to a look this seat's script asked of
+    // that player's figure (a question on the script channel), written into
+    // the platform's look table by the player's server id and the target,
+    // which answers the script's Actor.HasLOS there. An older platform has
+    // none, and every use is guarded
+    function setPlayerLook(player: number, target: number, los: boolean): boolean;
 
     // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on
     // PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next
@@ -230,11 +236,20 @@ declare module "skyrimPlatform" {
     // Sound.Play, whose self is the Sound and whose subject is the source in
     // its first argument), run here and reported from here. Kind "forward" is
     // a state row's call this seat's engine skipped on a subject another seat
-    // owns, from a stack only this seat runs, sent on for that owner to run
+    // owns, from a stack only this seat runs, sent on for that owner to run;
+    // since the one script channel it names its cause (1 a quest stage: its
+    // quest and stage; 2 a conversation line, 3 a scene, 4 a package, 5 a
+    // perk's or an interaction's event: its root's form and 0; 6 another
+    // player's relayed entry or press: its subject and the relay's arm) and,
+    // inside another player's acting scope, acting, that player's server id.
+    // Kind "question" is Actor.HasLOS on another player's figure inside that
+    // player's acting scope, a read only that player's own game can make:
+    // self 0x14, args [{ formId }] the target, acting that player's server
+    // id, sent for the server to ask that game
     interface ScriptCall {
         cls: string;
         fn: string;
-        kind: "action" | "state" | "everyone" | "touch" | "look" | "created" | "forward";
+        kind: "action" | "state" | "everyone" | "touch" | "look" | "created" | "forward" | "question";
         self: number;
         callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];
@@ -255,6 +270,8 @@ declare module "skyrimPlatform" {
         // name a created reference, bit i for argument i
         placed?: number;
         localArgs?: number;
+        cause?: { kind: number; form: number; n: number };
+        acting?: number;
     }
     interface ScriptCallsEvent {
         calls: ScriptCall[];

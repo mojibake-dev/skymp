@@ -1,0 +1,23 @@
+{
+  "acting": 4278190081,
+  "args": [
+    {
+      "formId": 461268,
+      "type": "ObjectReference"
+    }
+  ],
+  "caller": "WordWallTriggerScript",
+  "cause": {
+    "form": 461266,
+    "kind": 6,
+    "n": 1
+  },
+  "cls": "Actor",
+  "epoch": 0,
+  "fn": "HasLOS",
+  "forward": true,
+  "handler": "isLooking",
+  "latent": false,
+  "selfId": 20,
+  "t": 75
+}

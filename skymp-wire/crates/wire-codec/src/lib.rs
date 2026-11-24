@@ -236,7 +236,8 @@ mod tests {
         // empty `landed` carries the list's presence byte and its zero
         // length, followed since SCHEMA_VERSION 55 by `placed`'s absent
         // presence byte and `local_args`' zero (the spell channel) and since
-        // SCHEMA_VERSION 68 by `forward`'s absent presence byte; the same
+        // SCHEMA_VERSION 68 by `forward`'s, `cause`'s, `acting`'s and
+        // `answer`'s absent presence bytes; the same
         // call with 255 landings of Gold001 x1 (each the varint 0x0f, then 1
         // zigzagged to 0x02) decodes, and with 256 it is malformed at the
         // bound
@@ -249,6 +250,9 @@ mod tests {
             ..Default::default()
         });
         let mut prefix = encode(&empty)?;
+        assert_eq!(prefix.pop(), Some(0x00), "answer's absent presence byte");
+        assert_eq!(prefix.pop(), Some(0x00), "acting's absent presence byte");
+        assert_eq!(prefix.pop(), Some(0x00), "cause's absent presence byte");
         assert_eq!(prefix.pop(), Some(0x00), "forward's absent presence byte");
         assert_eq!(prefix.pop(), Some(0x00), "local_args' zero");
         assert_eq!(prefix.pop(), Some(0x00), "placed's absent presence byte");
@@ -259,7 +263,7 @@ mod tests {
             for _ in 0..n {
                 bytes.extend([0x0f, 0x02]);
             }
-            bytes.extend([0x00, 0x00, 0x00]);
+            bytes.extend([0x00; 6]);
             bytes
         };
         let full = decode(&body([0xff, 0x01], wire_schema::cap::SCRIPT_CALL_LANDED))?;

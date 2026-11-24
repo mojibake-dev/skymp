@@ -48,7 +48,8 @@ Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
   return promise;
 }
 
-void SpSnippet::Relay(MpActor* listener, uint32_t seq, uint8_t keep)
+void SpSnippet::Relay(MpActor* listener, uint32_t seq, uint8_t keep,
+                      uint32_t acting)
 {
   if (!listener->IsCreatedAsPlayer()) {
     return;
@@ -59,7 +60,34 @@ void SpSnippet::Relay(MpActor* listener, uint32_t seq, uint8_t keep)
   if (keep != 0) {
     message.keep = keep;
   }
+  if (acting != 0) {
+    message.acting = ClientFormId(acting, listener);
+  }
   listener->SendToUser(message, true);
+}
+
+void SpSnippet::Ask(MpActor* player)
+{
+  if (!player->IsCreatedAsPlayer()) {
+    return;
+  }
+  SpSnippetMessage message =
+    MakeMessage(player, std::numeric_limits<uint32_t>::max());
+  message.question = true;
+  player->SendToUser(message, true);
+}
+
+void SpSnippet::Answer(MpActor* asker,
+                       const std::variant<bool, double, std::string,
+                                          SpSnippetObjectArgument>& answer)
+{
+  if (!asker->IsCreatedAsPlayer()) {
+    return;
+  }
+  SpSnippetMessage message =
+    MakeMessage(asker, std::numeric_limits<uint32_t>::max());
+  message.answer = answer;
+  asker->SendToUser(message, true);
 }
 
 void SpSnippet::Serve(MpActor* listener)

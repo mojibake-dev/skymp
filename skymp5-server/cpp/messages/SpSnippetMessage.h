@@ -30,7 +30,10 @@ struct SpSnippetMessage : public MessageBase<SpSnippetMessage>
       .Serialize("selfId", selfId)
       .Serialize("snippetIdx", snippetIdx)
       .Serialize("seq", seq)
-      .Serialize("keep", keep);
+      .Serialize("keep", keep)
+      .Serialize("acting", acting)
+      .Serialize("question", question)
+      .Serialize("answer", answer);
   }
 
   std::string class_;
@@ -51,4 +54,14 @@ struct SpSnippetMessage : public MessageBase<SpSnippetMessage>
   // keeps it for its copy's 3D loads by the row's own word; absent on every
   // other snippet, and only with `seq`
   std::optional<uint32_t> keep;
+  // since SCHEMA_VERSION 68 (the one script channel): on a relayed call the
+  // player who acted, by its actor's id as the receiver names it (0x14 for
+  // its own); a question about the receiver's own player, which it watches
+  // and answers; another player's game's answer to a question this seat
+  // asked about that player. Each absent otherwise
+  std::optional<uint32_t> acting;
+  std::optional<bool> question;
+  std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>
+    answer;
 };

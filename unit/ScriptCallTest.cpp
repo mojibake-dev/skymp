@@ -480,6 +480,167 @@ TEST_CASE("A guest's forwarded state call on a container the host's game "
   Leave(p);
 }
 
+// the one script channel: a forward names its cause and the player who
+// acted; one cause's call reaches the owner once
+void ForwardCaused(PartOne& p, Networking::UserId user, uint32_t selfId,
+                   std::vector<Arg> args, uint32_t causeKind,
+                   uint32_t causeForm, uint32_t causeN,
+                   std::optional<uint32_t> acting = std::nullopt)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = selfId;
+  msg.cls = "ObjectReference";
+  msg.fn = "Lock";
+  msg.args = std::move(args);
+  msg.caller = "TestTopicInfoFragment";
+  msg.handler = "Fragment_0";
+  msg.forward = true;
+  msg.cause = ScriptCallMessage::Cause{ causeKind, causeForm, causeN };
+  msg.acting = acting;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+TEST_CASE("A forward names its acting player to the owner and one cause's "
+          "call is delivered once",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kByTheChest);
+  // a conversation line's cause (an INFO the test names): the guest acted
+  constexpr uint32_t kInfo = 0x10d4c1;
+  ForwardCaused(p, 1, kBanditChest, { Arg(false), Arg(false) }, 2, kInfo, 0,
+                kGuestActor);
+  auto toHost = SnippetsTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["function"] == "Lock");
+  REQUIRE(toHost[0]["acting"] == kGuestActor);
+  // the same cause's same call again: folded, the owner hears it once
+  p.Messages().clear();
+  {
+    LogCapture log;
+    ForwardCaused(p, 1, kBanditChest, { Arg(false), Arg(false) }, 2, kInfo, 0,
+                  kGuestActor);
+    REQUIRE(SnippetsTo(p, 0).empty());
+    REQUIRE(log.Count("folded, not delivered") == 1);
+  }
+  // the same cause's call with other values is another call
+  ForwardCaused(p, 1, kBanditChest, { Arg(true), Arg(false) }, 2, kInfo, 0,
+                kGuestActor);
+  toHost = SnippetsTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["arguments"] == nlohmann::json::array({ true, false }));
+  // a forward naming no acting player names its reporter
+  p.Messages().clear();
+  ForwardCaused(p, 1, kBanditChest, { Arg(false), Arg(true) }, 2, kInfo, 0);
+  toHost = SnippetsTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["acting"] == kGuestActor);
+  Leave(p);
+}
+
+TEST_CASE("A forward whose cause is a quest stage the server relays to every "
+          "seat is never delivered: the owner's own run of the stage makes "
+          "the call",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  // every quest's stages are the world's but the gate quest's
+  // (DialogueWhiterunGuardGateStop 0xd1984), which stays each player's own
+  p.SetSharedQuestsSettings(
+    R"({"mode": "all", "denied": ["d1984:Skyrim.esm"]})");
+  Enter(p, kByTheChest);
+  // a stage of a relayed quest (Skyrim.esm QUST 0x39645 MS13,
+  // QuestStageTest's, stage 10)
+  ForwardCaused(p, 1, kBanditChest, { Arg(false), Arg(false) }, 1, 0x39645, 10,
+                kGuestActor);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  // the denied quest's stage ran on the guest's game alone: delivered
+  ForwardCaused(p, 1, kBanditChest, { Arg(false), Arg(false) }, 1, 0xd1984, 10,
+                kGuestActor);
+  const auto toHost = SnippetsTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["function"] == "Lock");
+  Leave(p);
+  p.SetSharedQuestsSettings("[]");
+}
+
+// a question: the host's script asks whether the guest's player sees the
+// wall's look marker (Actor.HasLOS, a read only the guest's game can
+// answer); the answer: the guest's game's read of its own player
+constexpr uint32_t kLookMarker = 0x709d4;
+
+void Ask(PartOne& p, Networking::UserId user, uint32_t acting,
+         uint32_t marker = kLookMarker)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = 0x14;
+  msg.cls = "Actor";
+  msg.fn = "HasLOS";
+  msg.args = { Arg(SpSnippetObjectArgument{ marker, "ObjectReference" }) };
+  msg.caller = "WordWallTriggerScript";
+  msg.handler = "isLooking";
+  msg.forward = true;
+  msg.acting = acting;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+void Answer(PartOne& p, Networking::UserId user, bool sees,
+            uint32_t marker = kLookMarker)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = 0x14;
+  msg.cls = "Actor";
+  msg.fn = "HasLOS";
+  msg.args = { Arg(SpSnippetObjectArgument{ marker, "ObjectReference" }) };
+  msg.answer = sees;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+TEST_CASE("A question about the guest's player goes to the guest's own game "
+          "alone, and its answer to the seat that asked",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Ask(p, 0, kGuestActor);
+  const auto toGuest = SnippetsTo(p, 1);
+  REQUIRE(toGuest.size() == 1);
+  REQUIRE(toGuest[0]["class"] == "Actor");
+  REQUIRE(toGuest[0]["function"] == "HasLOS");
+  // the guest's own player, as its game names it
+  REQUIRE(toGuest[0]["selfId"] == 0x14);
+  REQUIRE(toGuest[0]["question"] == true);
+  REQUIRE(toGuest[0]["arguments"][0]["formId"] == kLookMarker);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  p.Messages().clear();
+  Answer(p, 1, true);
+  const auto toHost = SnippetsTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["function"] == "HasLOS");
+  // the guest's actor, as the host's game names it
+  REQUIRE(toHost[0]["selfId"] == kGuestActor);
+  REQUIRE(toHost[0]["answer"] == true);
+  REQUIRE(SnippetsTo(p, 1).empty());
+  // an answer to a question nobody asked (another marker) reaches nobody
+  p.Messages().clear();
+  Answer(p, 1, true, 0x709d5);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  // a question about the asker's own player asks nobody
+  Ask(p, 0, kHostActor);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(SnippetsTo(p, 1).empty());
+  Leave(p);
+}
+
 TEST_CASE("A reporter's script calls past its budget are refused and relayed "
           "to nobody",
           "[ScriptCall][espm]")

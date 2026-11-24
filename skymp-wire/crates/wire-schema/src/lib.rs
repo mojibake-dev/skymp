@@ -320,10 +320,13 @@ use bounded::{String, Vec};
 /// 67: CrimeGold's optional `paid_gold`, the gold the player's own engine
 /// paid as it set the bounty (a fine), so the record pays it too. A 66 peer
 /// would misread every CrimeGold.
-/// 68: ScriptCall's optional `forward`, a state call the sender's engine
-/// skipped on a subject it does not own, sent on to that subject's owner (a
-/// guest's dialogue fragment unlocking a door the host's game owns). A 67
-/// peer would misread every ScriptCall.
+/// 68: the one script channel: ScriptCall's optional `forward` (a call the
+/// sender skipped, for its owner: a state call on another seat's subject, or
+/// a question about the acting player for that player's own game), `cause`
+/// (what started it, delivered once), `acting` (the player who acted) and
+/// `answer` (a player's game's answer about itself); SpSnippet's `acting`,
+/// `question` and `answer`. A 67 peer would misread every ScriptCall and
+/// SpSnippet.
 /// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
 pub const SCHEMA_VERSION: u16 = 68;
 
@@ -1076,9 +1079,9 @@ const TABLE: [Row; 96] = [
     row("ChangeFormApply", 74, 136 * KIB, S2C),
     // eleven arguments at SNIPPET_STRING's 16 KiB each, the four names at
     // PAPYRUS_NAME and, since SCHEMA_VERSION 44, 255 landings at ten varint
-    // bytes each, with room (183,365 bytes at the fullest, pinned by the size
-    // test; thuum ADR-068, D-R1 C's leveled gap)
-    row("ScriptCall", 75, 180 * KIB, C2S),
+    // bytes each, and since SCHEMA_VERSION 68 an answer at SNIPPET_STRING,
+    // with room (199,784 bytes at the fullest, pinned by the size test)
+    row("ScriptCall", 75, 200 * KIB, C2S),
     // a reference's script record (thuum ADR-068 rung 3): under the 256 KiB
     // the transport takes from a client, with room over the 160 KiB answer
     // the owner's native refuses past (its JSON, which postcard spells
@@ -1625,6 +1628,9 @@ mod tests {
             placed: Some(u32::MAX),
             local_args: Some(u16::MAX),
             forward: Some(true),
+            cause: Some(skymp::ScriptCause { kind: u8::MAX, form: u32::MAX, n: u32::MAX }),
+            acting: Some(u32::MAX),
+            answer: Some(skymp::SnippetArg::String("x".repeat(cap::SNIPPET_STRING).try_into().unwrap_or_default())),
             ..Default::default()
         }
     }
@@ -1640,12 +1646,14 @@ mod tests {
         // their two-byte length and 255 of ten bytes (the table's comment),
         // and since SCHEMA_VERSION 55 `placed` (a presence byte and five)
         // and `local_args` (a presence byte and three), and since
-        // SCHEMA_VERSION 68 `forward` (a presence byte and one)
-        assert_eq!(bytes.len(), 183_377);
+        // SCHEMA_VERSION 68 `forward` (a presence byte and one), `cause` (a
+        // presence byte and eleven), `acting` (one and five) and `answer` (a
+        // presence byte, the string's tag and length, and SNIPPET_STRING)
+        assert_eq!(bytes.len(), 199_784);
         assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
         // an absent landing costs its presence byte alone
         let plain = Message::ScriptCall(skymp::ScriptCall { landed: None, ..script_call_at_its_caps() });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_825));
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(197_232));
         // a 256th landing fails at the bound, before any check
         let over: Result<bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = (0..=cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(0xf), count: 1 }).collect::<alloc::vec::Vec<_>>().try_into();
         assert!(over.is_err());

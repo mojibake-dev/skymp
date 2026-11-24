@@ -342,14 +342,76 @@ void ActingScope::Sweep()
   StoreSizes();
 }
 
+namespace {
+struct Look
+{
+  bool answered = false;
+  bool los = false;
+  uint64_t askedMs = 0;
+};
+struct LookTable
+{
+  std::mutex m;
+  std::unordered_map<uint64_t, Look> looks;
+};
+LookTable g_looks;
+
+uint64_t LookKey(uint32_t player, uint32_t target)
+{
+  return (static_cast<uint64_t>(player) << 32) | target;
+}
+}
+
 void ActingScope::Clear()
 {
-  std::lock_guard l(g_scope.m);
-  g_scope.requests.clear();
-  g_scope.arms.clear();
-  g_scope.joined.clear();
-  g_scope.lines.clear();
-  StoreSizes();
+  {
+    std::lock_guard l(g_scope.m);
+    g_scope.requests.clear();
+    g_scope.arms.clear();
+    g_scope.joined.clear();
+    g_scope.lines.clear();
+    StoreSizes();
+  }
+  std::lock_guard l(g_looks.m);
+  g_looks.looks.clear();
+}
+
+void ActingScope::Looks::Set(uint32_t player, uint32_t target, bool los)
+{
+  std::lock_guard l(g_looks.m);
+  Look& look = g_looks.looks[LookKey(player, target)];
+  look.answered = true;
+  look.los = los;
+}
+
+bool ActingScope::Looks::Answer(uint32_t player, uint32_t target, bool& ask)
+{
+  const uint64_t now = NowMs();
+  std::lock_guard l(g_looks.m);
+  if (g_looks.looks.size() >= kMaxLooks &&
+      g_looks.looks.find(LookKey(player, target)) == g_looks.looks.end()) {
+    auto oldest = g_looks.looks.begin();
+    for (auto it = g_looks.looks.begin(); it != g_looks.looks.end(); ++it) {
+      if (it->second.askedMs < oldest->second.askedMs) {
+        oldest = it;
+      }
+    }
+    g_looks.looks.erase(oldest);
+  }
+  Look& look = g_looks.looks[LookKey(player, target)];
+  const bool standing = look.askedMs != 0 && now - look.askedMs < kWatchMs;
+  const bool answer = standing && look.answered && look.los;
+  ask = look.askedMs == 0 || now - look.askedMs >= kAskMs;
+  if (ask) {
+    look.askedMs = now;
+  }
+  return answer;
+}
+
+size_t ActingScope::Looks::Count()
+{
+  std::lock_guard l(g_looks.m);
+  return g_looks.looks.size();
 }
 
 ActingScope::Counts ActingScope::Count()

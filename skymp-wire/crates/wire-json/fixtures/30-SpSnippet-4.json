@@ -1,0 +1,14 @@
+{
+  "arguments": [
+    {
+      "formId": 461268,
+      "type": "ObjectReference"
+    }
+  ],
+  "class": "Actor",
+  "function": "HasLOS",
+  "question": true,
+  "selfId": 20,
+  "snippetIdx": 4294967295,
+  "t": 30
+}

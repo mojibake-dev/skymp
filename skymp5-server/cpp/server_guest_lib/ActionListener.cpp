@@ -5517,16 +5517,13 @@ void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
   ObjectAnimationMessage relay;
   relay.refr = msg.refr;
   relay.event = msg.event;
-  size_t relayed = 0;
-  for (auto listener : refrPtr->GetActorListeners()) {
-    if (listener == reporter ||
-        partOne.serverState.UserByActor(listener) ==
-          Networking::InvalidUserId) {
-      continue;
-    }
-    listener->SendToUser(relay, true);
-    ++relayed;
-  }
+  // the reference's owner, wherever its player stands, and its other
+  // listeners
+  const size_t relayed =
+    refrPtr
+      ->SendToOwnerAndActorListeners(
+        reporter, true, [&](MpActor& to, bool) { to.SendToUser(relay, true); })
+      .sent;
   // every line keeps today's "<refr> animates <refr>" head, which
   // x-lever-furn's claim 5 counts
   if (byUser && occupant && occupant != reporter) {
@@ -8266,39 +8263,16 @@ void ActionListener::RelayActivationToHost(MpActor& caster,
   // press sends it nowhere (the host's engine counts its own player)
   RelayedActivationMessage hostRelay = relay;
   hostRelay.presserInventory = caster.GetInventory();
-  size_t sent = 0;
-  bool toHost = false;
-  for (auto listener : target.GetActorListeners()) {
-    if (!player || listener == &caster) {
-      continue;
-    }
-    if (partOne.serverState.UserByActor(listener) !=
-        Networking::InvalidUserId) {
-      if (listener->GetFormId() == host.player) {
-        listener->SendToUser(hostRelay, true);
-        toHost = true;
-      } else {
-        listener->SendToUser(relay, true);
-      }
-      ++sent;
-    }
-  }
-  // the owner out of the object's listeners (its player across the cell);
-  // an actor's activation reported by its owner is the owner's run already
-  if (!toHost && host.player != caster.GetFormId() &&
-      (player || partOne.worldState.HostOf(caster) == nullptr ||
-       partOne.worldState.HostOf(caster)->GetFormId() != host.player)) {
-    const auto& hostForm =
-      partOne.worldState.LookupFormByIdNoLoad(host.player);
-    MpActor* hostActor = hostForm ? hostForm->AsActor() : nullptr;
-    if (hostActor &&
-        partOne.serverState.UserByActor(hostActor) !=
-          Networking::InvalidUserId) {
-      hostActor->SendToUser(hostRelay, true);
-      toHost = true;
-      ++sent;
-    }
-  }
+  // a player's press goes to the owner and the object's other listeners, its
+  // own engine having run it; an actor's press its simulator reports goes to
+  // the owner alone, and is the owner's run already when the owner reports it
+  const MpActor* ranIt = player ? &caster : partOne.worldState.HostOf(caster);
+  const auto out = target.SendToOwnerAndActorListeners(
+    ranIt, player, [&](MpActor& to, bool owner) {
+      to.SendToUser(owner ? hostRelay : relay, true);
+    });
+  const size_t sent = out.sent;
+  const bool toHost = out.toOwner;
   spdlog::info(
     "[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x}): "
     "relayed to {} other game(s){}",
@@ -8539,17 +8513,14 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
   RelayedActivationMessage relay;
   relay.target = targetPtr->GetFormId();
   relay.caster = casterId;
-  size_t sent = 0;
-  for (auto listener : targetPtr->GetActorListeners()) {
-    if (listener == &reporter) {
-      continue;
-    }
-    if (partOne.serverState.UserByActor(listener) !=
-        Networking::InvalidUserId) {
-      listener->SendToUser(relay, true);
-      ++sent;
-    }
-  }
+  // the target's owner, whose engine runs its scripts, wherever its player
+  // stands, and its other listeners
+  const size_t sent =
+    targetPtr
+      ->SendToOwnerAndActorListeners(
+        &reporter, true,
+        [&](MpActor& to, bool) { to.SendToUser(relay, true); })
+      .sent;
   if (firing.code == skymp::rules::TriggerFiringCode::Loader) {
     spdlog::info("[verb:traps] {:x} activates {:x} in cell {:x} ({:x} reports "
                  "with the cell loaded, its firing): relayed to {} game(s)",
@@ -8912,16 +8883,14 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
   relay.stage = after.stage;
   relay.destroyed = after.destroyed;
   relay.served = false;
-  size_t relayed = 0;
-  for (auto listener : refrPtr->GetActorListeners()) {
-    if (listener == reporter ||
-        partOne.serverState.UserByActor(listener) ==
-          Networking::InvalidUserId) {
-      continue;
-    }
-    listener->SendToUser(relay, true);
-    ++relayed;
-  }
+  // the reference's owner, whose engine runs its scripts (a destructible's
+  // OnDestructionStageChanged), wherever its player stands, and its other
+  // listeners
+  const size_t relayed =
+    refrPtr
+      ->SendToOwnerAndActorListeners(
+        reporter, true, [&](MpActor& to, bool) { to.SendToUser(relay, true); })
+      .sent;
   spdlog::info("[verb:traps] {:x} reports {:x} at stage {}, destroyed {}: "
                "recorded (the first report), relayed to {} game(s)",
                reporter->GetFormId(), msg.refr, msg.stage, msg.destroyed,
@@ -9745,18 +9714,17 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
       msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
     prop->SetPos(pos, mode);
     prop->SetAngle(rot, mode);
-    size_t sent = 0;
-    for (auto listener : prop->GetActorListeners()) {
-      if (listener == myActor) {
-        continue;
-      }
-      const auto targetUserId = partOne.serverState.UserByActor(listener);
-      if (targetUserId != Networking::InvalidUserId) {
-        partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
-                                     rawMsgData.unparsedLength, msg.asleep);
-        ++sent;
-      }
-    }
+    // the prop's owner, whose engine runs what it lands on (a pressure
+    // plate's trigger), wherever its player stands, and its other listeners
+    const size_t sent = prop
+                          ->SendToOwnerAndActorListeners(
+                            myActor, true,
+                            [&](MpActor& to, bool) {
+                              partOne.GetSendTarget().Send(
+                                to.GetUserId(), rawMsgData.unparsed,
+                                rawMsgData.unparsedLength, msg.asleep);
+                            })
+                          .sent;
     partOne.serverState.CountStream(
       rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
     return sent;
@@ -9827,15 +9795,12 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
         bone.pos = { bone.pos[0] + shift.x, bone.pos[1] + shift.y,
                      bone.pos[2] + shift.z };
       }
-      size_t sent = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        if (listener == myActor ||
-            listener->GetUserId() == Networking::InvalidUserId) {
-          continue;
-        }
-        listener->SendToUser(relay, true);
-        ++sent;
-      }
+      const size_t sent =
+        prop
+          ->SendToOwnerAndActorListeners(
+            myActor, true,
+            [&](MpActor& to, bool) { to.SendToUser(relay, true); })
+          .sent;
       partOne.serverState.CountStream(
         rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
       const auto told =

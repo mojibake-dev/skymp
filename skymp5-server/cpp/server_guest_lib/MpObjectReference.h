@@ -8,6 +8,7 @@
 #include "MessageBase.h"
 #include "MpChangeForms.h"
 #include "MpForm.h"
+#include "SpSnippetMessage.h"
 #include "libespm/Loader.h"
 #include <chrono>
 #include <functional>
@@ -19,6 +20,7 @@
 #include <simdjson.h>
 #include <string>
 #include <tuple>
+#include <variant>
 #include <vector>
 
 #include "CreateActorMessage.h"
@@ -491,6 +493,36 @@ public:
 
   void SendInventoryUpdate();
   const std::vector<MpActor*>& GetActorListeners() const noexcept;
+
+  // the games an act on this reference reached: how many, whether its owner
+  // was one of them, and the owner's actor (0 for none)
+  struct OwnerSend
+  {
+    size_t sent = 0;
+    bool toOwner = false;
+    uint32_t owner = 0;
+  };
+
+  // An act on this reference to its owner, the game whose engine runs its
+  // scripts (WorldState::HostOf: an actor's simulator, else its cell's
+  // host), wherever that game's player stands, and with `listeners` to the
+  // other players listening to it; never to `except`, the game that ran it
+  // already. `send` delivers to one game and is told whether it is the
+  // owner's.
+  OwnerSend SendToOwnerAndActorListeners(
+    const MpActor* except, bool listeners,
+    const std::function<void(MpActor& to, bool owner)>& send) const;
+
+  // A change to this game-file reference's record to its owner when the
+  // owner is none of its listeners: such a game holds no form of it to apply
+  // a property to, so its engine takes the change as the call that makes it
+  // (`function` with `args`, run on the game-file reference). The record is
+  // written before; a listener owner had the property already
+  void CallOwnerOutOfRange(
+    const char* function,
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>& args)
+    const;
 
   static const char* GetPropertyPrefixPrivate() noexcept { return "private."; }
   static const char* GetPropertyPrefixPrivateIndexed() noexcept

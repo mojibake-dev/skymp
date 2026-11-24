@@ -28,6 +28,7 @@ import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
 import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
+import { knockKept } from "../../sync/knockKept";
 import { UndrivenSkeletons, sampleStep } from "../../sync/drivenParts";
 
 const TAG = "verb:prop-physics";
@@ -318,6 +319,7 @@ type Prop = {
     keyframeDue: boolean;          // a word named another seat: the copy goes Keyframed before any of its samples
     lastAppliedLog: number;
     lastClaimAt: number;
+    knockTrackedAt: number;        // a knock of a body this seat hosts tracked it then (its knock edge, a relayed push): kept until its stream starts (0 none)
     farWake: boolean;              // tracked in place by wakeFar (past TRACK_RADIUS or the TRACK_MAX cap): kept while awake (#120)
     restAt: number;                // the render clock applied the stream's asleep sample then, for the Dynamic set after it (0 none)
     // physics rung 4, a body of parts followed (route K3, D-PH26 A: each part
@@ -2705,6 +2707,9 @@ export class PropService extends ClientListener {
                 // sample), so no claim: the knock edge's own path
                 // (trackKnocks), for a graph that queues no knock edge
                 const hosted = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by a push", false, true);
+                if (typeof hosted !== "string") {
+                    hosted.knockTrackedAt = now;
+                }
                 logLab(TAG, typeof hosted === "string"
                     ? `actor ${id}: this seat hosts it, knocked by a push, no row: ${hosted}`
                     : `prop ${hosted.refr.toString(16)}: an actor this seat hosts, knocked by a push; tracked`);
@@ -2752,7 +2757,10 @@ export class PropService extends ClientListener {
             if (localId === 0x14) {
                 this.trackOwnBody(now);
             } else if (!this.byLocal.has(localId)) {
-                this.rowInPlace({ localId, formType: 0 }, now, "knocked here (ActionKnockDown)");
+                const row = this.rowInPlace({ localId, formType: 0 }, now, "knocked here (ActionKnockDown)");
+                if (row) {
+                    row.knockTrackedAt = now;
+                }
             }
         }
     }
@@ -3404,8 +3412,9 @@ export class PropService extends ClientListener {
     // whose stream this seat follows (followLive: an awake sample on the
     // render clock within the quiet window, or a word naming another seat
     // whose first sample is on its way); one this seat claimed moments ago
-    // (an impact, an island, a contact), awaiting the word; a trap body is the
-    // trap bodies' loop's
+    // (an impact, an island, a contact), awaiting the word; one this seat's
+    // engine knocked moments ago, awaiting its stream's first sample
+    // (sync/knockKept.ts); a trap body is the trap bodies' loop's
     private keptAnywhere(prop: Prop, myId: number, now: number): boolean {
         const word = this.owners.get(prop.refr);
         if (myId !== 0 && word !== undefined && word.player === myId) {
@@ -3433,7 +3442,8 @@ export class PropService extends ClientListener {
         // out
         const farAwake = prop.farWake && now - prop.awakeAt < FAR_WAKE_KEEP_MS;
         return prop.streaming || prop.held || farAwake || this.followLive(prop, now)
-            || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS);
+            || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS)
+            || knockKept(prop.knockTrackedAt, now);
     }
 
     // whether the prop's reference stands with its 3D loaded in the player's
@@ -4332,6 +4342,7 @@ export class PropService extends ClientListener {
             keyframeDue: false,
             lastAppliedLog: 0,
             lastClaimAt: 0,
+            knockTrackedAt: 0,
             farWake: false,
             restAt: 0,
             imposing: false,

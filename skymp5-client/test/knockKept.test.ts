@@ -222,7 +222,7 @@ test('a knocked draugr whose stream never starts within the window is untracked 
   const row = s.props.get(DRAUGR);
   assert.ok(row, "the draugr's knock makes it a row");
   // the window over (the test's clock starts near 0)
-  row.knockedAt = -KNOCK_KEEP_MS - 1;
+  row.knockTrackedAt = -KNOCK_KEEP_MS - 1;
   rescanDue();
   handlers.update();
   assert.equal(s.props.has(DRAUGR), false);

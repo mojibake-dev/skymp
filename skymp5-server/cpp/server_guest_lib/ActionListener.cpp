@@ -8237,11 +8237,12 @@ void ActionListener::RelayActivationToHost(MpActor& player,
   if (!host.hosted) {
     return;
   }
-  // every other game in the cell gets it: the host's, so the cell's
-  // simulation counts the press, and the guests', whose engines run the same
-  // script while the layer admits it everywhere (the hosted-cell gate's
-  // train replaces the guests' share with the host's animations, ADR-059
-  // decision 3); the sender's own engine ran it already
+  // the press goes to the object's owner, the cell's host whose engine runs
+  // the object's script, wherever the host's player stands in the cell, and
+  // to the object's other listeners, whose engines run the same script while
+  // the layer admits it everywhere (the hosted-cell gate's train replaces
+  // the guests' share with the host's animations, ADR-059 decision 3); the
+  // sender's own engine ran it already
   RelayedActivationMessage relay;
   relay.target = target.GetFormId();
   relay.caster = player.GetFormId();
@@ -8271,6 +8272,19 @@ void ActionListener::RelayActivationToHost(MpActor& player,
       } else {
         listener->SendToUser(relay, true);
       }
+      ++sent;
+    }
+  }
+  // the owner out of the object's listeners (its player across the cell)
+  if (!toHost && host.player != player.GetFormId()) {
+    const auto& hostForm =
+      partOne.worldState.LookupFormByIdNoLoad(host.player);
+    MpActor* hostActor = hostForm ? hostForm->AsActor() : nullptr;
+    if (hostActor &&
+        partOne.serverState.UserByActor(hostActor) !=
+          Networking::InvalidUserId) {
+      hostActor->SendToUser(hostRelay, true);
+      toHost = true;
       ++sent;
     }
   }

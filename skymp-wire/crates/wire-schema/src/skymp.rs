@@ -2679,8 +2679,45 @@ wire_struct! {
         /// figure carrying no inventory); absent on an entry, on a press by
         /// no player and to every other game.
         pub presser_inventory: Option<Inventory>,
+        /// Since SCHEMA_VERSION 69 (the one script channel's events): an
+        /// act another seat made on an object the receiver owns, sent to
+        /// the object's scripts alone, never the engine's default
+        /// processing: [`SCRIPT_EVENT_ACTIVATE`] to
+        /// [`SCRIPT_EVENT_EFFECT_APPLY`]; absent on an activation and on an
+        /// entry.
+        pub event: Option<u8>,
+        /// The event's form: OnHit's source (a weapon or a spell, absent for
+        /// none), OnItemAdded's and OnItemRemoved's base item,
+        /// OnMagicEffectApply's effect.
+        pub source: Option<u32>,
+        /// OnHit's projectile, absent for none.
+        pub projectile: Option<u32>,
+        /// OnItemAdded's and OnItemRemoved's count, above 0.
+        pub count: Option<i32>,
+        /// OnHit's flags: [`HIT_POWER`], [`HIT_SNEAK`], [`HIT_BASH`],
+        /// [`HIT_BLOCKED`].
+        pub flags: Option<u8>,
     }
 }
+
+/// RelayedActivation's `event`: OnActivate alone, the caster as akActionRef.
+pub const SCRIPT_EVENT_ACTIVATE: u8 = 1;
+/// OnHit: the caster the aggressor.
+pub const SCRIPT_EVENT_HIT: u8 = 2;
+/// OnItemAdded: the caster the source container.
+pub const SCRIPT_EVENT_ITEM_ADDED: u8 = 3;
+/// OnItemRemoved: the caster the destination container.
+pub const SCRIPT_EVENT_ITEM_REMOVED: u8 = 4;
+/// OnMagicEffectApply: the caster the caster.
+pub const SCRIPT_EVENT_EFFECT_APPLY: u8 = 5;
+/// OnHit's abPowerAttack.
+pub const HIT_POWER: u8 = 1;
+/// OnHit's abSneakAttack.
+pub const HIT_SNEAK: u8 = 2;
+/// OnHit's abBashAttack.
+pub const HIT_BASH: u8 = 4;
+/// OnHit's abHitBlocked.
+pub const HIT_BLOCKED: u8 = 8;
 
 wire_struct! {
     /// MsgType 71, thuum's (docs/verbs/traps.md, ADR-059 decision 3): a world

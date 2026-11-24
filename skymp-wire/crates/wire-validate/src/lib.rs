@@ -1524,9 +1524,45 @@ fn check_activate(m: &skymp::Activate) -> Result<(), Reject> {
 /// presser inventory: on an activation alone (an entry carries none), each
 /// stack naming an item (a base id) and holding one at least, as the
 /// server's own record keeps a stack.
+///
+/// Since SCHEMA_VERSION 69 a script event: never beside an entry; OnHit with
+/// at most its four flags and no count; an item event with its base item and
+/// a count above 0; an effect's apply with its effect; OnActivate alone with
+/// none of the event's fields. Every event field is absent without `event`.
 fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> {
     if m.target == 0 || m.caster == 0 || m.entry.is_some_and(|e| !is_entry_event(e)) {
         return Err(Reject::Range);
+    }
+    let fields = (m.source, m.projectile, m.count, m.flags);
+    match m.event {
+        None => {
+            if fields != (None, None, None, None) {
+                return Err(Reject::Range);
+            }
+        }
+        Some(_) if m.entry.is_some() => return Err(Reject::Range),
+        Some(skymp::SCRIPT_EVENT_ACTIVATE) => {
+            if fields != (None, None, None, None) {
+                return Err(Reject::Range);
+            }
+        }
+        Some(skymp::SCRIPT_EVENT_HIT) => {
+            let all = skymp::HIT_POWER | skymp::HIT_SNEAK | skymp::HIT_BASH | skymp::HIT_BLOCKED;
+            if m.count.is_some() || m.flags.is_some_and(|f| f & !all != 0) || m.source == Some(0) || m.projectile == Some(0) {
+                return Err(Reject::Range);
+            }
+        }
+        Some(skymp::SCRIPT_EVENT_ITEM_ADDED | skymp::SCRIPT_EVENT_ITEM_REMOVED) => {
+            if m.source.is_none_or(|s| s == 0) || m.count.is_none_or(|c| c <= 0) || m.projectile.is_some() || m.flags.is_some() {
+                return Err(Reject::Range);
+            }
+        }
+        Some(skymp::SCRIPT_EVENT_EFFECT_APPLY) => {
+            if m.source.is_none_or(|s| s == 0) || m.projectile.is_some() || m.count.is_some() || m.flags.is_some() {
+                return Err(Reject::Range);
+            }
+        }
+        Some(_) => return Err(Reject::Range),
     }
     if let Some(inventory) = &m.presser_inventory {
         if m.entry.is_some() || inventory.entries.iter().any(|e| e.base_id == 0 || e.count == 0) {
@@ -4810,6 +4846,30 @@ mod tests {
         assert_eq!(validate_server(&pressed(vec![stack(0, 1)], None)), Err(Reject::Range));
         assert_eq!(validate_server(&pressed(vec![stack(0x39647, 0)], None)), Err(Reject::Range));
         assert_eq!(validate_server(&pressed(vec![stack(0x39647, 1)], Some(1))), Err(Reject::Range));
+        // the one script channel's events (SCHEMA_VERSION 69): the guest's
+        // arrow (Iron Arrow 0x1397d, its projectile 0x3be11) hitting a
+        // training dummy 0x7f817 the host owns, a sneak attack; a lockpick
+        // 0xa added to a chest 0x371e9, two of them; OnActivate alone
+        use wire_schema::skymp::{HIT_BLOCKED, HIT_SNEAK, SCRIPT_EVENT_ACTIVATE, SCRIPT_EVENT_EFFECT_APPLY, SCRIPT_EVENT_HIT, SCRIPT_EVENT_ITEM_ADDED};
+        let event = |target: u32, event, source, projectile, count, flags| {
+            Message::RelayedActivation(RelayedActivation { target, caster: 0xff00_0001, event, source, projectile, count, flags, ..Default::default() })
+        };
+        assert_eq!(validate_server(&event(0x7f817, Some(SCRIPT_EVENT_HIT), Some(0x1397d), Some(0x3be11), None, Some(HIT_SNEAK))), Ok(()));
+        assert_eq!(validate_server(&event(0x7f817, Some(SCRIPT_EVENT_HIT), None, None, None, None)), Ok(()));
+        assert_eq!(validate_server(&event(0x7f817, Some(SCRIPT_EVENT_HIT), Some(0x1397d), None, None, Some(HIT_BLOCKED << 1))), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x7f817, Some(SCRIPT_EVENT_HIT), Some(0x1397d), None, Some(1), None)), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x371e9, Some(SCRIPT_EVENT_ITEM_ADDED), Some(0xa), None, Some(2), None)), Ok(()));
+        assert_eq!(validate_server(&event(0x371e9, Some(SCRIPT_EVENT_ITEM_ADDED), Some(0xa), None, Some(0), None)), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x371e9, Some(SCRIPT_EVENT_ITEM_ADDED), None, None, Some(2), None)), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x7f817, Some(SCRIPT_EVENT_EFFECT_APPLY), Some(0x3ae9f), None, None, None)), Ok(()));
+        assert_eq!(validate_server(&event(0x7f817, Some(SCRIPT_EVENT_EFFECT_APPLY), None, None, None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x1b1f1, Some(SCRIPT_EVENT_ACTIVATE), None, None, None, None)), Ok(()));
+        assert_eq!(validate_server(&event(0x1b1f1, Some(SCRIPT_EVENT_ACTIVATE), Some(0xa), None, None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x1b1f1, None, Some(0xa), None, None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&event(0x1b1f1, Some(6), None, None, None, None)), Err(Reject::Range));
+        // never beside an entry
+        let both = Message::RelayedActivation(RelayedActivation { target: 0x37281, caster: 0xff00_0001, entry: Some(1), event: Some(SCRIPT_EVENT_ACTIVATE), ..Default::default() });
+        assert_eq!(validate_server(&both), Err(Reject::Range));
     }
 
     #[test]

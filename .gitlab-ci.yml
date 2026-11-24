@@ -14,11 +14,13 @@ variables:
   FUZZ_SECONDS: "120"
 
 # A failed fetch runs again by the stock levers where they exist: cargo's own retries (CARGO_NET_RETRY on the wire
-# jobs) and PowerShell's (-MaximumRetryCount on the master files). The fetches with none, BuildKit's Docker Hub token
-# and metadata (server-build), cargo-deny's advisory database (wire-test) and vcpkg's bootstrap download
-# (client-build), run under ci/net-retry.sh or ci/net-retry.ps1: a failure whose last lines carry the fetch's own
-# message (ci/net-failures.txt) exits 75, and the job runs again, twice at most. Any other failure keeps its own exit
-# code and is never retried.
+# jobs). The fetches with none, BuildKit's Docker Hub token and metadata (server-build) and cargo-deny's advisory
+# database (wire-test), run under ci/net-retry.sh: a failure whose last lines carry the fetch's own message
+# (ci/net-failures.txt) exits 75, and the job runs again, twice at most. Any other failure keeps its own exit code and
+# is never retried.
+#
+# Every job here runs on Linux. The Windows client and Skyrim Platform (the dist the lab's games run) are built by
+# .github/workflows/parity-windows.yml on GitHub's runners, never on the host the lab's games share.
 default:
   retry:
     max: 2
@@ -191,7 +193,7 @@ server-build:
     # Skyrim Platform headers unit/ includes; lab/tools/fork-lint.sh checks the list against unit/),
     # every project's CMake files (the configure reads them all), vcpkg and its ports, the build's own scripts and
     # Dockerfile, the deps image's pin (misc/), and this file. The Linux build also compiles the client and Skyrim
-    # Platform, which client-build builds too; only build/dist/server goes into the image. compare_to keeps a new
+    # Platform; only build/dist/server goes into the image. compare_to keeps a new
     # branch's first push from counting every file as changed.
     - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
       changes:
@@ -254,85 +256,3 @@ server-build:
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG"
     - docker push "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"
     - docker push "localhost:5000/skymp-server:$TAG"
-
-# The Windows client and Skyrim Platform build (thuum, 2026-10-05): the `dist`
-# the lab clients run, built on sky-build (VM 720, tag `windows`, a shell
-# runner with pwsh) the way upstream's .github/actions/pr_base does it, so
-# client builds leave GitHub Actions and join this pipeline. Off until the
-# runner exists: set the project variable CLIENT_BUILD_WINDOWS to 1. vcpkg
-# keeps its binary cache on the VM's own D: (no NuGet feed). The master files
-# come from our own copies (SKYRIM_DATA_URL), never from upstream's public
-# download (cmake/download_skyrim_data.cmake), so DOWNLOAD_SKYRIM_DATA stays
-# off and UNIT_DATA_DIR points at the fetched files. The generator is pinned:
-# CMakeLists.txt accepts only Visual Studio 17 2022, and cmake's default is
-# the newest Visual Studio on the machine. needs: [] because the build uses
-# nothing an earlier job makes (it builds the wire's client library from the
-# tree), so a cancelled or failed wire job no longer skips it.
-client-build:
-  stage: server
-  needs: []
-  tags: [windows]
-  # a cold vcpkg build of the client's 59 ports on sky-build's 8 cores will not fit the project's hour (the
-  # first run, job 8859, was on port 13 of 59 at 49 min when it failed with no_updates_running, the runner's
-  # reporting stopping, not this timeout); warm runs hit D:/vcpkg-bincache and take minutes
-  timeout: 4h
-  variables:
-    GIT_SUBMODULE_STRATEGY: recursive
-    GIT_DEPTH: "1"
-    VCPKG_BINARY_SOURCES: "clear;files,D:/vcpkg-bincache,readwrite"
-    VCPKG_FEATURE_FLAGS: "manifests"
-  # A branch's push builds the client only when the branch changes, against canon, a file the build reads: the
-  # client, Skyrim Platform and client-deps, the libraries the platform links (papyrus-vm, savefile, viet,
-  # serialization), skymp-wire (skyrim-platform depends on MpClientPlugin.dll, wire-client-ffi's cdylib), every
-  # project's CMake files (the configure reads them all), vcpkg and its ports, and this file. compare_to keeps a
-  # new branch's first push from counting every file as changed. A pipeline started by hand or by the API builds
-  # the client whatever it changes.
-  rules:
-    - if: $CLIENT_BUILD_WINDOWS != "1"
-      when: never
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "parity"
-    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/ && $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/
-    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
-      changes:
-        paths:
-          - .gitlab-ci.yml
-          - .gitmodules
-          - vcpkg
-          - vcpkg.json
-          - overlay_ports/**/*
-          - overlay_triplets/**/*
-          - "**/CMakeLists.txt"
-          - "**/*.cmake"
-          - cmake/**/*
-          - skymp5-client/**/*
-          - skyrim-platform/**/*
-          - client-deps/**/*
-          - skymp-wire/**/*
-          - papyrus-vm/**/*
-          - savefile/**/*
-          - viet/**/*
-          - serialization/**/*
-        compare_to: refs/heads/canon
-  script:
-    - New-Item -ItemType Directory -Force D:/vcpkg-bincache, skyrim_data_files | Out-Null
-    # ci/net-retry.ps1's own exits (ci/net-retry.test.ps1), on the host its wrapped step runs on
-    - '& ci/net-retry.test.ps1; if ($LASTEXITCODE) { exit 1 }'
-    - |
-      foreach ($f in 'Skyrim.esm', 'Update.esm', 'Dawnguard.esm', 'HearthFires.esm', 'Dragonborn.esm') {
-        Invoke-WebRequest -UseBasicParsing -MaximumRetryCount 5 -RetryIntervalSec 10 -Uri "$env:SKYRIM_DATA_URL/$f" -OutFile "skyrim_data_files/$f"
-      }
-    - Push-Location skymp5-client; yarn --frozen-lockfile; if ($LASTEXITCODE) { exit 1 }; yarn build; if ($LASTEXITCODE) { exit 1 }; yarn test; if ($LASTEXITCODE) { exit 1 }; Pop-Location
-    - '& ci/net-retry.ps1 .\vcpkg\bootstrap-vcpkg.bat -disableMetrics; if ($LASTEXITCODE) { exit $LASTEXITCODE }'
-    - |
-      cmake -B build -G "Visual Studio 17 2022" -A x64 "-DVCPKG_ROOT=$PWD/vcpkg" -DUNIT_DATA_DIR=skyrim_data_files -DDOWNLOAD_SKYRIM_DATA=OFF `
-        -DBUILD_NODEJS=OFF -DBUILD_FRONT=OFF -DPREPARE_NEXUS_ARCHIVES=OFF -DCMAKE_BUILD_TYPE=Release `
-        -DSKYRIM_VR=OFF -DCPPCOV_PATH=OFF
-      if ($LASTEXITCODE) { exit 1 }
-    # the client's own targets, all of build/dist/client: Skyrim Platform (its libraries and their copy into the
-    # dist), client-deps' files and the client bundle; the server and its unit tests are server-build's, on Linux
-    - cmake --build build --config Release --target skyrim-platform client-deps skymp5-client; if ($LASTEXITCODE) { exit 1 }
-  artifacts:
-    name: dist
-    paths: [build/dist]
-    expire_in: 14 days

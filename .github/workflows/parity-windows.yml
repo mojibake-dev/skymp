@@ -1,13 +1,15 @@
-# Fork-only: the Windows client and Skyrim Platform build for branch canon,
-# reusing upstream's composite action, whose BUILD_TARGETS and RUN_TESTS
-# inputs keep upstream's whole build and tests by default. Upstream's own
-# pr-windows-flatrim.yml watches main; this file is the same job pointed at
-# canon, building the client's targets alone (Skyrim Platform, client-deps,
-# the client bundle: all of dist/client) and running the client's own tests
-# (skymp5-client's yarn test) with no ctest: the server and its unit tests are
-# built and run by the fork's GitLab server-build, on every canon push as on
-# every branch's, and each branch's client by its GitLab client-build. Nothing
-# here is meant for upstream.
+# Fork-only: the Windows client and Skyrim Platform build, the lab's one source of
+# a dist, for canon and every milestone branch (m<N>-...), reusing upstream's
+# composite action, whose BUILD_TARGETS and RUN_TESTS inputs keep upstream's
+# whole build and tests by default. Upstream's own pr-windows-flatrim.yml
+# watches main; this file is the same job pointed at the fork's branches,
+# building the client's targets alone (Skyrim Platform, client-deps, the client
+# bundle: all of dist/client) and running the client's own tests (skymp5-client's
+# yarn test) with no ctest: the server and its unit tests are built and run by
+# the fork's GitLab server-build. GitHub's runners build it so that no Windows
+# build shares a host with the lab's games. The lab takes the run of a commit by
+# its head sha (thuum's lab/tools/client-builds.py), and starts one by dispatch
+# for a branch head no push built. Nothing here is meant for upstream.
 #
 # vcpkg binary cache: pr_base points the "GitHub" NuGet source at upstream's
 # feed (skyrim-multiplayer), which this fork's token can read but not write,
@@ -21,10 +23,11 @@ name: Parity Windows Flatrim (AE/SE)
 
 on:
   push:
-    # canon alone; a branch's client is the GitLab client-build's. A newer
-    # push supersedes a running build (concurrency below); a dispatch while a
-    # push build runs cancels it the same way
-    branches: [ canon ]
+    # every push of canon or a milestone branch, whatever it changes, so each
+    # head has its own dist. A newer push to the same branch supersedes a
+    # running build (concurrency below); a dispatch while a push build runs
+    # cancels it the same way
+    branches: [ canon, 'm[0-9]+-*' ]
   workflow_dispatch:
 
 concurrency:

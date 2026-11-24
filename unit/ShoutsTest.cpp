@@ -26,12 +26,15 @@ PartOne& GetPartOne();
 // its hits as a cast does, and reaches the neighbours' games as a cast (their
 // figure breathes it).
 // Skyrim.esm (thuum lab/esm.py, 2026-10-10): UnrelentingForceShout SHOU
-// 0x13E07, its first word WOOP 0x13E22, its variations' spells 0x13E09 and
-// 0x13F39 (recovery 15 and 20 s); Flames 0x12FCD, no shout's.
+// 0x13E07, its words WOOP 0x13E22, 0x13E23 and 0x13E24, its variations'
+// spells 0x13E09 and 0x13F39 (recovery 15 and 20 s); Flames 0x12FCD, no
+// shout's.
 namespace {
 constexpr uint32_t kActor = 0xff000abe;
 constexpr uint32_t kShout = 0x00013e07;
 constexpr uint32_t kWord = 0x00013e22;
+constexpr uint32_t kRo = 0x00013e23;
+constexpr uint32_t kDah = 0x00013e24;
 constexpr uint32_t kFus = 0x00013e09;
 constexpr uint32_t kFusRo = 0x00013f39;
 constexpr uint32_t kFlames = 0x00012fcd;
@@ -242,14 +245,18 @@ TEST_CASE("An admin's RemoveShout takes the shout and its words off the "
   const bool forAll = p.worldState.enableConsoleCommandsForAll;
   p.worldState.enableConsoleCommandsForAll = false;
   auto& ac = Player(p);
+  // the shout with all three of its words known and unlocked
   REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::Shout,
                               FormDesc::FromString("13e07:Skyrim.esm")));
-  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordKnown,
-                              FormDesc::FromString("13e22:Skyrim.esm")));
-  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordUnlocked,
-                              FormDesc::FromString("13e22:Skyrim.esm")));
+  for (const char* word :
+       { "13e22:Skyrim.esm", "13e23:Skyrim.esm", "13e24:Skyrim.esm" }) {
+    REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordKnown,
+                                FormDesc::FromString(word)));
+    REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordUnlocked,
+                                FormDesc::FromString(word)));
+  }
 
-  // a player's is refused, and the record keeps all three
+  // a player's is refused, and the record keeps them
   ac.SetStaffRank(0);
   Console(p, "removeshout", kShout);
   REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
@@ -262,22 +269,30 @@ TEST_CASE("An admin's RemoveShout takes the shout and its words off the "
   REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
   REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::WordKnown, kWord));
 
-  // the shout, its word known and its word unlocked leave the record; the
-  // game removes the shout and clears the word's known flag
+  // the shout and each word, known and unlocked, leave the record; the game
+  // removes the shout and clears each word's known flag
   p.Messages().clear();
   Console(p, "removeshout", kShout);
   const auto told = Told(p);
   REQUIRE(Contains(told, "Actor.RemoveShout 13e07"));
-  REQUIRE(KnowsSent(p, kWord) == std::optional<bool>(false));
+  for (const uint32_t word : { kWord, kRo, kDah }) {
+    REQUIRE(KnowsSent(p, word) == std::optional<bool>(false));
+  }
   REQUIRE(ac.GetShoutRecord().Empty());
 
-  // a known word left behind would give its shout back at the login; none is
+  // the next login teaches none of it back: no shout, no word known or
+  // unlocked (a known word left behind would give its shout back here)
   ac.SetMapMarkersPending(true);
   p.Messages().clear();
   Stand(p);
   const auto again = Told(p);
   REQUIRE(!Contains(again, "Actor.AddShout 13e07"));
-  REQUIRE(!KnowsSent(p, kWord).has_value());
+  for (const uint32_t word : { kWord, kRo, kDah }) {
+    const auto id = fmt::format("{:x}", word);
+    REQUIRE(!KnowsSent(p, word).has_value());
+    REQUIRE(!Contains(again, "Game.TeachWord " + id));
+    REQUIRE(!Contains(again, "Game.UnlockWord " + id));
+  }
   REQUIRE(ac.GetShoutRecord().Empty());
 
   p.worldState.enableConsoleCommandsForAll = forAll;

@@ -23,10 +23,11 @@ export const forceWatchVerdict = (f: { since: number; now: number; ragdoll: bool
 
 // What PropService reads of a watched actor at an update: null when its local
 // id names no remote id or no actor any more. figure: another player's figure
-// (its knock is this seat's push's, the push-figure hook); hosted: an actor
-// this seat's game runs, whatever its graph (a creature's queues no knock
-// edge, since the action hook admits the master behaviour's graph alone)
-export type ForcedRead = { figure: boolean; hosted: boolean; tracked: boolean; ragdoll: boolean };
+// (its knock is this seat's push's, the push-figure hook); puppet: an actor
+// another seat simulates (HostService's word); hosted: an actor this seat's
+// game runs, whatever its graph (a creature's queues no knock edge, since the
+// action hook admits the master behaviour's graph alone)
+export type ForcedRead = { figure: boolean; puppet: boolean; hosted: boolean; tracked: boolean; ragdoll: boolean };
 
 // claim: another player's figure, claimed by touch 3; track: an actor this
 // seat hosts, its body a row this seat streams as the host's

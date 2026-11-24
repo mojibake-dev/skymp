@@ -2740,14 +2740,21 @@ export class PropService extends ClientListener {
         }
         const figure = isFigureBase(ac);
         const hosted = !figure && this.hostsHere(localId);
+        const puppet = !figure && !hosted && this.othersHere(localId);
         const tracked = this.props.has(refr);
         const c = tracked || (!figure && !hosted) ? null : this.bodyClass(localId);
-        return { figure, hosted, tracked, ragdoll: c !== null && c.ragdoll };
+        return { figure, puppet, hosted, tracked, ragdoll: c !== null && c.ragdoll };
     }
 
     // whether this seat's game runs the actor (HostService's word)
     private hostsHere(localId: number): boolean {
         return this.controller.lookupListener(HostService).isMineLocal(localId);
+    }
+
+    // whether another seat's game runs the actor (HostService's word: a
+    // puppet here)
+    private othersHere(localId: number): boolean {
+        return this.controller.lookupListener(HostService).isOthersLocal(localId);
     }
 
     private trackKnocks(now: number) {

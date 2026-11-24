@@ -23,8 +23,8 @@ test("a figure already a row (followed, gripped or owned) is not claimed again",
 // queued anywhere, as when a shout reaches only the other player's figure.
 const PLAYER = 0x14;
 const FIGURE = 0xff000de9;
-const standing: ForcedRead = { figure: true, hosted: false, tracked: false, ragdoll: false };
-const knocked: ForcedRead = { figure: true, hosted: false, tracked: false, ragdoll: true };
+const standing: ForcedRead = { figure: true, puppet: false, hosted: false, tracked: false, ragdoll: false };
+const knocked: ForcedRead = { figure: true, puppet: false, hosted: false, tracked: false, ragdoll: true };
 
 test("a shout that reaches only the other player's figure claims its body once its engine reads it knocked", () => {
   const w = new ForceWatch();
@@ -45,8 +45,8 @@ test("the other seat's shout (another caster) and this seat's own player are not
 test("an actor this seat hosts (a draugr, whose graph queues no knock edge) is a row to track once its engine reads it knocked", () => {
   const w = new ForceWatch();
   assert.equal(w.reach(PLAYER, 0x380b3, 1000), true);
-  assert.deepEqual(w.update(1050, () => ({ figure: false, hosted: true, tracked: false, ragdoll: false })), []);
-  assert.deepEqual(w.update(1300, () => ({ figure: false, hosted: true, tracked: false, ragdoll: true })),
+  assert.deepEqual(w.update(1050, () => ({ figure: false, puppet: false, hosted: true, tracked: false, ragdoll: false })), []);
+  assert.deepEqual(w.update(1300, () => ({ figure: false, puppet: false, hosted: true, tracked: false, ragdoll: true })),
     [{ localId: 0x380b3, verdict: "track" }]);
 });
 
@@ -55,17 +55,25 @@ test("the server's relayed push onto an actor this seat hosts is tracked once kn
   assert.equal(w.relayed(0xe9986, 1000), true);
   assert.equal(w.relayed(0x29602, 1000), true);
   assert.equal(w.relayed(PLAYER, 1000), false);
-  const read = (localId: number): ForcedRead => ({ figure: false, hosted: localId === 0xe9986, tracked: false, ragdoll: true });
+  const read = (localId: number): ForcedRead => ({ figure: false, puppet: localId !== 0xe9986, hosted: localId === 0xe9986, tracked: false, ragdoll: true });
   assert.deepEqual(w.update(1100, read), [
     { localId: 0xe9986, verdict: "track" },
     { localId: 0x29602, verdict: "drop", why: "a relayed push onto an actor this seat does not host" },
   ]);
 });
 
-test("a game-file actor another seat hosts is dropped at its first read, never tracked here", () => {
+test("a draugr another seat hosts (a puppet here) that this seat's shout reached is claimed once its engine reads it knocked, as another player's figure is", () => {
+  const w = new ForceWatch();
+  assert.equal(w.reach(PLAYER, 0x380b5, 1000), true);
+  assert.deepEqual(w.update(1050, () => ({ figure: false, puppet: true, hosted: false, tracked: false, ragdoll: false })), []);
+  assert.deepEqual(w.update(1300, () => ({ figure: false, puppet: true, hosted: false, tracked: false, ragdoll: true })),
+    [{ localId: 0x380b5, verdict: "claim" }]);
+});
+
+test("an actor no seat's word names (neither another player's figure, a puppet, nor this seat's) is dropped at its first read", () => {
   const w = new ForceWatch();
   w.reach(PLAYER, 0x29602, 1000);
-  assert.deepEqual(w.update(1050, () => ({ figure: false, hosted: false, tracked: false, ragdoll: true })),
+  assert.deepEqual(w.update(1050, () => ({ figure: false, puppet: false, hosted: false, tracked: false, ragdoll: true })),
     [{ localId: 0x29602, verdict: "drop", why: "neither another player's figure nor this seat's" }]);
 });
 
@@ -82,7 +90,7 @@ test("a figure that never falls within the window is dropped, and one that reads
 test("a figure that is already a row is dropped, not claimed again", () => {
   const w = new ForceWatch();
   w.reach(PLAYER, FIGURE, 1000);
-  assert.deepEqual(w.update(1100, () => ({ figure: true, hosted: false, tracked: true, ragdoll: true })),
+  assert.deepEqual(w.update(1100, () => ({ figure: true, puppet: false, hosted: false, tracked: true, ragdoll: true })),
     [{ localId: FIGURE, verdict: "drop", why: "already a row" }]);
 });
 

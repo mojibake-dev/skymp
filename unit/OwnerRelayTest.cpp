@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <nlohmann/json.hpp>
 #include <vector>
 
 PartOne& GetPartOne();
@@ -24,6 +25,10 @@ constexpr uint32_t kPlate = 0x567f2;
 constexpr uint32_t kWall = 0x54b15;
 constexpr uint32_t kLamp = 0x9b0fb;
 constexpr uint32_t kLever = 0xaa8c3;
+// a door, a draugr chest and an urn far from the entrance
+constexpr uint32_t kDoor = 0x38dfb;
+constexpr uint32_t kChest = 0x3a7c1;
+constexpr uint32_t kUrn = 0x39005;
 const NiPoint3 kByThePlate{ 8589.f, -5438.f, -2054.f };
 // by the temple's entrance, out of the listeners of every object below
 const NiPoint3 kAtTheEntrance{ -4384.f, 1163.f, 577.f };
@@ -86,6 +91,24 @@ bool Listens(PartOne& p, MpObjectReference& ref, uint32_t actorId)
   const auto& listeners = ref.GetActorListeners();
   return std::find(listeners.begin(), listeners.end(), &actor) !=
     listeners.end();
+}
+
+// the snippets sent to `user`'s game for `function` on `refr` (deferred, so
+// the world ticks first)
+std::vector<nlohmann::json> CallsTo(PartOne& p, Networking::UserId user,
+                                    const char* function, uint32_t refr)
+{
+  p.Tick();
+  std::vector<nlohmann::json> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+        m.j["class"] == "ObjectReference" && m.j["function"] == function &&
+        (m.j["selfId"].get<uint64_t>() & 0xffffffffull) == refr) {
+      out.push_back(m.j);
+    }
+  }
+  return out;
 }
 
 template <class M>
@@ -172,5 +195,60 @@ TEST_CASE("A furniture's guest user's graph event reaches the cell's host "
   REQUIRE(toHost[0].refr == kLever);
   REQUIRE(toHost[0].event == "Lever_PlayerPush");
   REQUIRE(SentTo<ObjectAnimationMessage>(p, 1).empty());
+  Leave(p);
+}
+
+TEST_CASE("A door's open reaches the cell's host out of its listeners as the "
+          "call on the game-file door",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& door = p.worldState.GetFormAt<MpObjectReference>(kDoor);
+  Enter(p, door.GetPos() + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE_FALSE(Listens(p, door, kOwnerHost));
+  REQUIRE(Listens(p, door, kOwnerGuest));
+  door.SetOpen(true);
+  const auto toHost = CallsTo(p, 0, "SetOpen", kDoor);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["arguments"][0] == true);
+  REQUIRE(CallsTo(p, 1, "SetOpen", kDoor).empty());
+  door.SetOpen(false);
+  Leave(p);
+}
+
+TEST_CASE("A lock's change reaches the cell's host out of its listeners as "
+          "the call on the game-file reference",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kChest);
+  Enter(p, chest.GetPos() + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE_FALSE(Listens(p, chest, kOwnerHost));
+  MpChangeFormREFR::Lock lock;
+  lock.level = 25;
+  lock.locked = true;
+  chest.SetLock(lock);
+  const auto toHost = CallsTo(p, 0, "Lock", kChest);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0]["arguments"][0] == true);
+  REQUIRE(toHost[0]["arguments"][1] == false);
+  REQUIRE(CallsTo(p, 1, "Lock", kChest).empty());
+  Leave(p);
+}
+
+TEST_CASE("A prop's owner word reaches the cell's host though the host's "
+          "player stands across the temple",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& urn = p.worldState.GetFormAt<MpObjectReference>(kUrn);
+  Enter(p, urn.GetPos() + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE_FALSE(Listens(p, urn, kOwnerHost));
+  p.SendPropOwnerWord(kUrn, kOwnerGuest, 1, kOwnerGuest);
+  const auto toHost = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].refr == kUrn);
+  REQUIRE(toHost[0].player == kOwnerGuest);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
   Leave(p);
 }

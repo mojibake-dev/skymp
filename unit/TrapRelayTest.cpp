@@ -2,6 +2,7 @@
 #include "Messages.h"
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <spdlog/sinks/ostream_sink.h>
@@ -411,6 +412,43 @@ TEST_CASE("A player's activation of a scripted world object goes to the "
   p.Messages().clear();
   Linked(p, 1, kHostActor, kPillar);
   REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  Leave(p);
+}
+
+// a guest's press of a scripted world object goes to the object's owner,
+// the cell's host whose engine runs the object's script, wherever the
+// host's player stands in the cell: the pillar turned by the guest while the
+// host's player is across the temple by the pressure plate, out of the
+// pillar's listeners
+TEST_CASE("A guest's press of a scripted world object goes to the cell's "
+          "host though the host's player stands across the temple",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& pillar = p.worldState.GetFormAt<MpObjectReference>(kPillar);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHostActor);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  guest.SetPos(kByThePillar);
+  guest.ForceSubscriptionsUpdate();
+  host.SetPos(kByThePlate);
+  host.ForceSubscriptionsUpdate();
+  const auto& listeners = pillar.GetActorListeners();
+  REQUIRE(std::find(listeners.begin(), listeners.end(), &host) ==
+          listeners.end());
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Linked(p, 1, 0x14, kPillar);
+    REQUIRE(log.Count("relayed to 1 other game(s), the presser's record (") ==
+            1);
+  }
+  const auto toHost = RelayedTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kPillar);
+  REQUIRE(toHost[0].caster == kGuestActor);
+  REQUIRE(toHost[0].presserInventory.has_value());
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }

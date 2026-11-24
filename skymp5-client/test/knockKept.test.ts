@@ -201,6 +201,23 @@ test("the server's relayed push onto a draugr this seat hosts, past TRACK_RADIUS
   );
 });
 
+test("this seat's own shout at a draugr it hosts, past TRACK_RADIUS, stays tracked through the rescan before its stream's first sample", () => {
+  const { handlers, s, rescanDue } = service();
+  // the shout's effect applied by this seat's player on the draugr (a creature's graph queues no knock edge)
+  handlers.magicEffectApply({
+    caster: { getFormID: () => PLAYER },
+    target: { getFormID: () => DRAUGR },
+  });
+  handlers.update();
+  assert.ok(s.props.has(DRAUGR), "the draugr's knock makes it a row");
+  rescanDue();
+  handlers.update();
+  assert.ok(
+    s.props.has(DRAUGR),
+    'the rescan keeps the knocked draugr until its stream starts',
+  );
+});
+
 test("a knock edge of an NPC this seat hosts, past TRACK_RADIUS, stays tracked through the rescan before its stream's first sample", () => {
   const { handlers, s, rescanDue } = service();
   // the action hook's knock edge for a hosted NPC

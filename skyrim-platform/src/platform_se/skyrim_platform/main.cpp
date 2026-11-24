@@ -209,7 +209,10 @@ DLLEXPORT bool SKSEAPI SKSEPlugin_Load_Impl(const SKSE::LoadInterface* skse)
   logger::info("Loading plugin.");
 
   SKSE::Init(skse);
-  SKSE::AllocTrampoline(64);
+  // the call hooks' 14-byte jumps (Hooks.cpp: the console's print, the quit's
+  // shutdown, the hearing gate and its two compare sites) and the hearing
+  // stub's 17 bytes
+  SKSE::AllocTrampoline(128);
 
   const auto papyrusInterface = SKSE::GetPapyrusInterface();
   if (!papyrusInterface) {

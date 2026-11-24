@@ -1,6 +1,7 @@
 #include "Hooks.h"
 #include "EventHandler.h"
 #include "EventsApi.h"
+#include "FigureNoise.h"
 #include "FridaHooks.h"
 #include "Hosted.h"
 #include "JsUtils.h"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -989,6 +991,120 @@ void InstallHostedResurrectHook()
 }
 
 /**
+ * The hearing hooks (FigureNoise.h): another player's figure counts as this
+ * game's player where CalculateDetection (Address Library 37774) tests a
+ * detection target against its player, so an NPC this game runs hears that
+ * player's noise and watches its arrows as it does its own player's. Three
+ * sites, read on sky-re through REA: the gate before the target's noise is
+ * read out of combat, whose jump past Actor::GetHostileToActor (37537) for a
+ * target that is not the player becomes no-ops so the call's thunk decides;
+ * and the noise's distance and the projectile watch, whose
+ * `mov rcx, [player]` becomes a call to a stub that passes the target (r14)
+ * to FigureNoiseCompared, then `xchg rax, rcx`. Volatile registers are dead
+ * at all three (each is followed by a call, or by code that writes them
+ * before reading). AE only, 1.6.1170's code: a site whose bytes differ
+ * leaves the function unwritten. Written at plugin load, before any
+ * detection runs; the thunks run on the detection job's threads, so they
+ * read the target and the player's global and take no lock
+ */
+namespace {
+// the global the engine reads its player from (Address Library 401069),
+// as the sites' own instructions name it
+std::uintptr_t g_figureNoisePlayer = 0;
+std::atomic<std::uint64_t> g_figureNoiseGateReads{ 0 };
+
+FigureNoise::Target FigureNoiseTarget(RE::Actor* a_target)
+{
+  FigureNoise::Target t;
+  if (!a_target) {
+    return t;
+  }
+  t.isEnginePlayer = reinterpret_cast<std::uintptr_t>(a_target) ==
+    *reinterpret_cast<const std::uintptr_t*>(g_figureNoisePlayer);
+  t.isPlayerFigure = !t.isEnginePlayer && IsPlayerFigure(*a_target);
+  return t;
+}
+
+// the gate's call: GetHostileToActor runs for a target that counts as the
+// player, as it ran for the player alone; any other target is answered not
+// hostile, so its noise stays unread out of combat as the engine has it
+struct FigureNoiseGate
+{
+  static bool thunk(RE::Actor* a_detector, RE::Actor* a_target)
+  {
+    const FigureNoise::Target t = FigureNoiseTarget(a_target);
+    if (!FigureNoise::CountsAsPlayer(t)) {
+      return false;
+    }
+    const bool hostile = func(a_detector, a_target);
+    if (t.isPlayerFigure) {
+      const uint64_t n = ++g_figureNoiseGateReads;
+      if (n <= 5 || n % 1000 == 0) {
+        logger::info("[verb:figure-noise] {:x} hears figure {:x}'s noise "
+                     "out of combat as the player's: hostile {} (read {})",
+                     a_detector ? a_detector->formID : 0, a_target->formID,
+                     hostile, n);
+      }
+    }
+    return hostile;
+  }
+  static inline REL::Relocation<decltype(&thunk)> func;
+};
+
+// the noise's distance and the projectile watch: what the engine's
+// `cmp r14, rcx` compares the target with (FigureNoise::ComparedWith)
+RE::Actor* FigureNoiseCompared(RE::Actor* a_target)
+{
+  const auto player =
+    *reinterpret_cast<const std::uintptr_t*>(g_figureNoisePlayer);
+  return reinterpret_cast<RE::Actor*>(FigureNoise::ComparedWith(
+    FigureNoiseTarget(a_target), reinterpret_cast<std::uintptr_t>(a_target),
+    player));
+}
+}
+
+void InstallFigureNoiseHooks()
+{
+  if (!REL::Module::IsAE()) {
+    logger::info("[verb:figure-noise] the hearing hooks install on AE only");
+    return;
+  }
+  const std::uintptr_t entry = Offsets::Hooks::CalculateDetection.address();
+  const auto found =
+    FigureNoise::Find(reinterpret_cast<const std::uint8_t*>(entry), entry);
+  if (!found ||
+      found->hostileCall != Offsets::Hooks::GetHostileToActor.address()) {
+    logger::warn("[verb:figure-noise] CalculateDetection's code is not "
+                 "1.6.1170's: the hearing hooks are not written, and a "
+                 "figure's noise stays unread out of combat");
+    return;
+  }
+  g_figureNoisePlayer = found->playerSlot;
+
+  REL::safe_fill(entry + FigureNoise::kGateJump, 0x90,
+                 FigureNoise::kGateJumpSize);
+  Hooks::write_thunk_call<FigureNoiseGate>(entry + FigureNoise::kGateCall);
+
+  auto& trampoline = SKSE::GetTrampoline();
+  const auto stubBytes =
+    FigureNoise::Stub(reinterpret_cast<std::uint64_t>(&FigureNoiseCompared));
+  void* stub = trampoline.allocate(stubBytes.size());
+  std::memcpy(stub, stubBytes.data(), stubBytes.size());
+  for (const std::size_t site :
+       { FigureNoise::kNoiseDistance, FigureNoise::kProjectileWatch }) {
+    REL::safe_write(entry + site + 5, FigureNoise::kXchgRaxRcx.data(),
+                    FigureNoise::kXchgRaxRcx.size());
+    trampoline.write_call<5>(entry + site,
+                             reinterpret_cast<std::uintptr_t>(stub));
+  }
+  logger::info("[verb:figure-noise] hearing hooks installed: a figure counts "
+               "as the player at CalculateDetection's gate (+{:x}), noise "
+               "distance (+{:x}) and projectile watch (+{:x})",
+               FigureNoise::kGateCall, FigureNoise::kNoiseDistance,
+               FigureNoise::kProjectileWatch);
+}
+
+/**
  * The graph's answers to a cast request (thuum docs/verbs/cast-action.md).
  * The engine's caster sets the hand's want variable and performs the Attack
  * action only when the graph answers with the BeginCastRight (BeginCastLeft,
@@ -1181,6 +1297,7 @@ void Hooks::Install()
   InstallPlayerHealthDamageHook();
   InstallHostedResurrectHook();
   InstallAddItemFunctorHook();
+  InstallFigureNoiseHooks();
 
   logger::info("CommonLib hooks installed.");
 }

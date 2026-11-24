@@ -3,8 +3,7 @@
 # sysexits.h), which the jobs' `retry: exit_codes: [75]` retries; any other failure keeps its own code, so a
 # build or test that fails on the code is never run again. A network failure is one of the fetches' own messages
 # (ci/net-failures.txt) in the step's last 400 lines. It wraps only the fetches no stock retry covers: BuildKit's
-# Docker Hub token and metadata, cargo-deny's advisory database, vcpkg's bootstrap download (ci/net-retry.ps1).
-# cargo's own fetches retry by CARGO_NET_RETRY, and PowerShell's downloads by -MaximumRetryCount.
+# Docker Hub token and metadata, cargo-deny's advisory database. cargo's own fetches retry by CARGO_NET_RETRY.
 #
 #   ci/net-retry.sh <command> [args...]
 set -u

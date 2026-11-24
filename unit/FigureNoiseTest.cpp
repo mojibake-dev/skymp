@@ -12,14 +12,23 @@
 // server's T0 build reaches it by path, as PushRouteTest.cpp reaches
 // PushRoute.h
 namespace {
-// two actors' addresses on a game: its own player and an NPC
+// three actors' addresses on a game: its own player, another player's
+// figure, an NPC
 constexpr std::uintptr_t kPlayer = 0x1000;
+constexpr std::uintptr_t kFigure = 0x2000;
 constexpr std::uintptr_t kNpc = 0x3000;
 
 FigureNoise::Target Player()
 {
   FigureNoise::Target t;
   t.isEnginePlayer = true;
+  return t;
+}
+
+FigureNoise::Target Figure()
+{
+  FigureNoise::Target t;
+  t.isPlayerFigure = true;
   return t;
 }
 
@@ -43,6 +52,21 @@ TEST_CASE("An NPC's noise stays unread out of combat and carries an NPC's "
 {
   REQUIRE_FALSE(FigureNoise::CountsAsPlayer(Npc()));
   REQUIRE(FigureNoise::ComparedWith(Npc(), kNpc, kPlayer) == kPlayer);
+}
+
+TEST_CASE("A guest's arrow landing beside an NPC this game runs is heard: "
+          "another player's figure's noise is read out of combat as this "
+          "game's own player's is",
+          "[FigureNoise]")
+{
+  REQUIRE(FigureNoise::CountsAsPlayer(Figure()));
+}
+
+TEST_CASE("A guest's noise carries the player's distance, and its arrows in "
+          "flight are watched at the player's distance",
+          "[FigureNoise]")
+{
+  REQUIRE(FigureNoise::ComparedWith(Figure(), kFigure, kPlayer) == kFigure);
 }
 
 namespace {

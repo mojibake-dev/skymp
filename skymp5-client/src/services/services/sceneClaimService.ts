@@ -4,11 +4,13 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { CLAIM_SCENE, SceneMarks, claimMessage, claimOutbox, isRecordId } from "./claimRules";
+import { questActing, sceneOwnHere } from "../../sync/questActing";
 
 const TAG = "verb:npc-talk";
 // the poll, PuppetService's
 const POLL_MS = 500;
 const HELD_LINES_MAX = 256;
+const SCENE_QUESTS_MAX = 256;
 
 const hex = (n: number) => n.toString(16);
 
@@ -62,6 +64,16 @@ const hex = (n: number) => n.toString(16);
 // platform with V-scene's skip, fork 5b4def61, a start under a relay's root
 // is skipped and never raised, so this mark and disown are reached only from
 // a platform that tells such a start).
+//
+// A quest's scenes run on the game of its acting player, the stamp of its
+// latest start or stage (sync/questActing): a scene's phase conditions and
+// packages read "the player", and only that player's own game has that player
+// as its player. When this seat knows the scene's quest's acting player, that
+// decides: this seat's own player makes the scene this seat's own even when
+// it plays on a puppet here (its claim promotes the actor), and another
+// player makes it that player's game's, ceded here with any claim it made,
+// however this seat saw it start. A quest no stamp named keeps the rules
+// above.
 export class SceneClaimService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -90,7 +102,14 @@ export class SceneClaimService extends ClientListener {
     // another game's word holds is stopped as before (playtest 41's Sven
     // scene, the first claim winning)
     holdsScene(localId: number, sceneId: number): boolean {
-        const pending = this.marks.holdsStop(localId, sceneId, Date.now());
+        // the scene's quest's acting player first: another player's game runs
+        // it (never held here), and this seat's own player makes it this
+        // seat's own even when the engine started it on a puppet here
+        const now = Date.now();
+        if (this.settle(sceneId, this.questOf(sceneId), now) === "other") {
+            return false;
+        }
+        const pending = this.marks.holdsStop(localId, sceneId, now);
         const kept = !pending && this.marks.isOwn(sceneId) && this.marks.claimed(localId, sceneId)
             && !this.controller.lookupListener(HostService).isOthersLocal(localId);
         if (!pending && !kept) {
@@ -151,7 +170,13 @@ export class SceneClaimService extends ClientListener {
             return;
         }
         const sceneId = scene.getFormID();
-        if (this.marks.has(sceneId) || !isRecordId(sceneId)) {
+        if (!isRecordId(sceneId)) {
+            return;
+        }
+        const questId = quest.getFormID();
+        this.sceneQuests.set(sceneId, questId);
+        if (this.marks.has(sceneId)) {
+            this.settle(sceneId, questId, Date.now());
             return;
         }
         const alias = this.sp.ReferenceAlias.from(quest.getAliasById(e.actorAliasId));
@@ -160,14 +185,62 @@ export class SceneClaimService extends ClientListener {
         if (localId === 0 || localId === 0x14) {
             return;
         }
-        if (!this.controller.lookupListener(HostService).isMineLocal(localId)) {
+        const mine = this.controller.lookupListener(HostService).isMineLocal(localId);
+        const seat = questActing.seatOf(questId);
+        const own = sceneOwnHere(seat, mine ? "action-mine" : "action-puppet");
+        if (own === undefined) {
             return;
         }
-        const how = `an action on ${hex(localId)}, which this seat simulates`;
-        if (this.marks.mark(sceneId, Date.now(), how, true, true)) {
-            logLab(TAG, `scene ${hex(sceneId)} of ${hex(quest.getFormID())} plays here with ${how}: this seat's own (D-L2 B), its actors claimed at the next poll`);
-            this.nextPoll = 0;
+        const how = seat === "unknown"
+            ? `an action on ${hex(localId)}, which this seat simulates`
+            : `an action on ${hex(localId)}${mine ? "" : " (a puppet here)"}, its quest's acting player ${seat === "here" ? "this seat's own" : hex(questActing.actingOf(questId) ?? 0)}`;
+        if (this.marks.mark(sceneId, Date.now(), how, own, own)) {
+            if (own) {
+                logLab(TAG, `scene ${hex(sceneId)} of ${hex(questId)} plays here with ${how}: this seat's own, its actors claimed at the next poll`);
+                this.nextPoll = 0;
+            } else {
+                logLab(TAG, `scene ${hex(sceneId)} of ${hex(questId)} plays here with ${how}: that player's game's, nothing claimed here`);
+            }
         }
+    }
+
+    // the scene's quest, read once in an update's context (0 for none)
+    private questOf(sceneId: number): number {
+        const known = this.sceneQuests.get(sceneId);
+        if (known !== undefined) {
+            return known;
+        }
+        const scene = this.sp.Scene.from(this.sp.Game.getFormEx(sceneId));
+        const owner = scene ? scene.getOwningQuest() : null;
+        const questId = owner ? owner.getFormID() : 0;
+        if (this.sceneQuests.size >= SCENE_QUESTS_MAX) {
+            this.sceneQuests.clear();
+        }
+        this.sceneQuests.set(sceneId, questId);
+        return questId;
+    }
+
+    // a scene's seat by its quest's acting player, when this seat knows it:
+    // another player's cedes an own mark (its claims released), this seat's
+    // own makes the scene this seat's own; the seat read
+    private settle(sceneId: number, questId: number, now: number): "here" | "other" | "unknown" {
+        const seat = isRecordId(questId) ? questActing.seatOf(questId) : "unknown";
+        if (seat === "other") {
+            const acting = hex(questActing.actingOf(questId) ?? 0);
+            const taken = this.marks.cede(sceneId, `its quest ${hex(questId)}'s acting player ${acting}`);
+            if (taken) {
+                for (const c of taken) {
+                    claimOutbox.push(claimMessage(c.remoteId, false, { purpose: CLAIM_SCENE, quest: c.quest, scene: sceneId }), `scene ${hex(sceneId)} of ${hex(c.quest)} released ${hex(c.remoteId)}: its quest's acting player is ${acting}, whose game runs it`);
+                }
+                logLab(TAG, `scene ${hex(sceneId)} of ${hex(questId)} ceded: its quest's acting player is ${acting}, whose game runs it; ${taken.length} claim(s) released`);
+            }
+        } else if (seat === "here" && !this.marks.isOwn(sceneId)) {
+            if (this.marks.mark(sceneId, now, `its quest ${hex(questId)}'s acting player is this seat's own`, true)) {
+                logLab(TAG, `scene ${hex(sceneId)} of ${hex(questId)} is this seat's own: its quest's acting player is this seat's, its actors claimed at the next poll`);
+                this.nextPoll = 0;
+            }
+        }
+        return seat;
     }
 
     private onUpdate(): void {
@@ -181,6 +254,9 @@ export class SceneClaimService extends ClientListener {
         this.nextPoll = now + POLL_MS;
         for (const sceneId of this.marks.sceneIds()) {
             const scene = this.sp.Scene.from(this.sp.Game.getFormEx(sceneId));
+            // a start the tick task marked by its acting scope alone is settled
+            // here by its quest's acting player, before any claim goes
+            this.settle(sceneId, this.questOf(sceneId), now);
             const state = this.marks.observe(sceneId, scene !== null && scene.isPlaying(), now);
             if (state === "playing" || state === "waiting") {
                 continue;
@@ -188,6 +264,7 @@ export class SceneClaimService extends ClientListener {
             const how = this.marks.how(sceneId);
             const own = this.marks.isOwn(sceneId);
             const claims = this.marks.drop(sceneId);
+            this.sceneQuests.delete(sceneId);
             for (const c of claims) {
                 const message = claimMessage(c.remoteId, false, { purpose: CLAIM_SCENE, quest: c.quest, scene: sceneId });
                 claimOutbox.push(message, `scene ${hex(sceneId)} of ${hex(c.quest)} released ${hex(c.remoteId)}: the scene ${state === "ended" ? "ended here" : "never played here"} (claimed ${((now - c.at) / 1000).toFixed(1)} s ago)`);
@@ -262,6 +339,8 @@ export class SceneClaimService extends ClientListener {
     }
 
     private readonly marks = new SceneMarks();
+    // each marked scene's quest, read once
+    private readonly sceneQuests = new Map<number, number>();
     private readonly heldLines = new Set<string>();
     private nextPoll = 0;
 }

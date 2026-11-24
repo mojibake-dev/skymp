@@ -9,6 +9,7 @@ import { remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 import { SettingsService } from "./settingsService";
+import { questActing, relayScope } from "../../sync/questActing";
 
 const TAG = "verb:quest-stage";
 
@@ -255,10 +256,13 @@ const START_UP_MEMORY_MAX = 2048;
 // here (a chained stage, a relayed trigger's script). Before a live apply,
 // setActingPlayer names the server's `acting` for the pair: its figure here
 // (remoteIdToLocalId, 0 when this seat holds none) and its server id, for
-// ACTING_TTL_MS; never for a served apply (a load). For this seat's own
-// actor, or a relay with no stamp, the scope is a relayed one with no swap
-// (train 53, V-scene: the platform's setRelayedScope, its root kRelayed,
-// Game.GetPlayer this seat's own player). The fragment: a
+// ACTING_TTL_MS; never for a served apply (a load). For a relay with no
+// stamp the scope is a relayed one with no swap (train 53, V-scene: the
+// platform's setRelayedScope, its root kRelayed, Game.GetPlayer this seat's
+// own player); a relay stamped with this seat's own player arms none, so the
+// scenes of its fragment and of its quest run here and are claimed here (a
+// quest's scenes are its acting player's game's, sync/questActing). The
+// fragment: a
 // served stage always carries the mark (the login's replay is a load, D-Q3
 // A); a live stage carries it while the setting questFragmentLive is false
 // (the default, the H-A1 fallback, until x-acting-player v1 is green), and
@@ -908,6 +912,10 @@ export class QuestStageService extends ClientListener {
         if (acting !== undefined) {
             message.acting = acting;
         }
+        // a quest's scenes run on its acting player's game (sync/questActing)
+        if (word === WORD_START) {
+            questActing.noteReport(questId, acting, acting !== undefined && this.isMe(acting));
+        }
         if (this.nameCause(message, cause)) {
             this.causeSent++;
         }
@@ -1409,14 +1417,20 @@ export class QuestStageService extends ClientListener {
 
     // the acting scope for a live apply (the class comment): the server's
     // acting player for the pair, its figure here or 0; none for a served
-    // apply (a load). Train 53 (V-scene): every live apply is a relay, this
-    // seat not the stage's cause seat, so its scope is armed even for this
-    // seat's own actor or a relay with no stamp, with no swap
-    // (nameRelayedScope): unscoped, the fragment's Scene.Start ran on this
-    // seat's puppets, the puppet rule stopped it and its end fragment set a
-    // stage (playtest 52's cure; MS13's argument scene on the guest)
+    // apply (a load). Train 53 (V-scene): a relay with no stamp names no
+    // cause seat here, so its scope is armed with no swap (nameRelayedScope):
+    // unscoped, the fragment's Scene.Start ran on this seat's puppets, the
+    // puppet rule stopped it and its end fragment set a stage. A relay whose
+    // stamp is this seat's own player arms none: the act was this seat's
+    // player's, so its quest's scenes are this game's to run and claim
     private nameActing(item: QuestItem, scopeStage: number) {
         const acting = item.acting;
+        const me = acting !== undefined && this.isMe(acting);
+        // a start's or a stage's stamp names the quest's acting player, whose
+        // game runs its scenes (sync/questActing), a load's too
+        if (scopeStage !== SCOPE_STOP) {
+            questActing.noteRelay(item.quest, acting, me);
+        }
         if (item.served || this.actingExportsMissing) {
             return;
         }
@@ -1425,8 +1439,16 @@ export class QuestStageService extends ClientListener {
             logLab(TAG, "setActingPlayer unavailable on this platform; a relayed request runs as this seat's own player");
             return;
         }
-        if (acting === undefined || this.isMe(acting)) {
+        const scope = relayScope(acting, me);
+        if (scope === "relayed") {
             this.nameRelayedScope(item, scopeStage, acting);
+            return;
+        }
+        // this seat's own act, relayed back: no scope, so a Scene.Start in its
+        // fragment, or a scene that begins with the quest, runs here and this
+        // seat claims its actors (SceneClaimService)
+        if (scope === "none" || acting === undefined) {
+            logTrace(this, `quest ${item.quest.toString(16)} ${scopeStage === SCOPE_START ? "start" : scopeStage === SCOPE_STOP ? "stop" : "stage " + scopeStage} relayed as this seat's own act: no relayed scope, its scenes run here`);
             return;
         }
         const figure = remoteIdToLocalId(acting);
@@ -1439,8 +1461,8 @@ export class QuestStageService extends ClientListener {
         }
     }
 
-    // a relayed scope with no swap, for a live apply whose acting player is
-    // this seat's own or unstamped: the platform's setRelayedScope
+    // a relayed scope with no swap, for a live apply with no stamp: the
+    // platform's setRelayedScope
     // (m4-train-53-platform b29ea207) requests the pair as setActingPlayer
     // does, a start or a stop armed at once, rooted at the relay (kRelayed)
     // with no acting player, so Game.GetPlayer and the player's own actor stay
@@ -1554,6 +1576,7 @@ export class QuestStageService extends ClientListener {
         if (acting !== undefined) {
             message.acting = acting;
         }
+        questActing.noteReport(questId, acting, acting !== undefined && this.isMe(acting));
         if (this.nameCause(message, cause) && stage === 0) {
             this.causeSent++;
         }
@@ -1614,6 +1637,9 @@ export class QuestStageService extends ClientListener {
     // reconnect to the same server (keepOrDropPluginList)
     private onConnectionAccepted() {
         this.arrivalDone();
+        // each quest's acting player is learned anew, this seat's own id the
+        // new connection's
+        questActing.clear();
         this.applyingRuns.clear();
         this.parkedStarts.clear();
         this.busy.clear();

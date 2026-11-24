@@ -56,6 +56,7 @@ export class ArrowSyncService extends ClientListener {
                     this.sp.callNative("TESModPlatform", "LaunchArrowAt", undefined,
                         shooter, weapon, ammo, shot.power, shot.launchAngleX, shot.launchAngleZ,
                         shot.originX, shot.originY, shot.originZ);
+                    this.sayLaunch(shot, shooter, "at the shooter's origin");
                     continue;
                 } catch (err) {
                     logError(this, "TESModPlatform.LaunchArrowAt failed; launching from the figure", err);
@@ -64,10 +65,17 @@ export class ArrowSyncService extends ClientListener {
             try {
                 this.sp.callNative("TESModPlatform", "LaunchArrow", undefined,
                     shooter, weapon, ammo, shot.power, shot.aimAngle, shot.aimHeading);
+                this.sayLaunch(shot, shooter, "from the figure");
             } catch (err) {
                 logError(this, "TESModPlatform.LaunchArrow failed", err);
             }
         }
+    }
+
+    // each launch here, so a read can tell a shot this game flew from one it
+    // never got: the shooter's figure, the arrow and where it left from
+    private sayLaunch(shot: ArrowShotMessage, shooter: Actor, how: string): void {
+        logTrace(this, `shot of ${shot.idx} launched here from ${shooter.getFormID().toString(16)} ${how}: arrow ${shot.ammoId.toString(16)}, power ${shot.power.toFixed(2)}`);
     }
 
     private pending: ArrowShotMessage[] = [];

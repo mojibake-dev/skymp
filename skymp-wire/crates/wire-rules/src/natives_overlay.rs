@@ -52,6 +52,8 @@ const HEAD_PART: &str = "Eli's D-E1 A (ADR-068 rung 5): the player's own head pa
 const SINK: &str = "D2's singleton sink evidence (the spec's New 1 and G8): a native that writes the player singleton's own state takes the acting seat's skip by its sink, never by its name";
 /// Its deleting condition.
 const SINK_DELETES: &str = "when x-native-effects reads the native's sink and the rule keys on it (the row's evidence a trace)";
+/// Cited by Sound.StopInstance and Sound.SetInstanceVolume.
+const SOUND_INSTANCE: &str = "ADR-086's act (Audience::Acting): a sound instance is the int Sound.Play returned on the seat whose script played it, every other seat playing its own, so its stop and its volume run where that script runs and are never sent to the acting player's game";
 
 /// The scene starts' stopgap (train 53's V-scene hook): its replacing rule.
 const SCENE_CLAIM: &str = "step 5a's scene row (ADR-073 decision 6, D-L2 B: the seat that started a scene, the stage's cause seat by D-A2 C, claims its actors for its life)";
@@ -780,5 +782,24 @@ pub const OVERLAY: &[Entry] = &[
         live: false,
         note: &[],
         cells: &[Cell::Hook(Hook::ActingLook)],
+    },
+    // a sound instance's stop and volume, statics on no object the scoped
+    // column would send to the acting player's game as an act on the player:
+    // the instance they name is the playing seat's own handle, so they run
+    // where their script runs. Derived rows' cells, so no live row's place
+    // moves
+    Entry {
+        native: "Sound.StopInstance",
+        class: Class::Decided { cites: SOUND_INSTANCE },
+        live: false,
+        note: &[],
+        cells: &[Cell::Scoped(Scoped::Runs)],
+    },
+    Entry {
+        native: "Sound.SetInstanceVolume",
+        class: Class::Decided { cites: SOUND_INSTANCE },
+        live: false,
+        note: &[],
+        cells: &[Cell::Scoped(Scoped::Runs)],
     },
 ];

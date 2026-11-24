@@ -1,4 +1,5 @@
 #include "ScriptNatives.h"
+#include "ActRoute.h"
 #include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "EventsApi.h"
@@ -573,7 +574,9 @@ constexpr const char* kStagedRootName[kStagedRoots] = {
 // the staged calls counted before a verdict: a Local row's (a read, the VM's
 // own, the screen: R3, never sent), the platform's own, a frame not the
 // native's own, a subject that names no reference; and the one staged hook's
-// skip, a push onto another player's figure (thuum tracker #178, OnStaged)
+// skip, a push onto another player's figure (thuum tracker #178, OnStaged);
+// and an act on another player (ActRoute.h), forwarded to that player's own
+// game or skipped as that game's own already
 enum StagedPlain : std::size_t
 {
   kStagedLocal,
@@ -582,6 +585,8 @@ enum StagedPlain : std::size_t
   kStagedUnresolved,
   kStagedFigurePush,
   kStagedActingLook,
+  kStagedActForwarded,
+  kStagedActSkipped,
   kStagedPlains
 };
 
@@ -591,7 +596,9 @@ constexpr const char* kStagedPlainName[kStagedPlains] = {
   "staged (frame mismatch)",
   "staged (unresolved)",
   "staged skipped (a push its pusher's own game throws)",
-  "staged answered (a look its player's own game answers)"
+  "staged answered (a look its player's own game answers)",
+  "staged forwarded (an act its acting player's own game runs)",
+  "staged skipped (an act its acting player's own game made)"
 };
 
 // thuum tracker #178: another player's figure on this seat, a dynamic form
@@ -3231,10 +3238,15 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
   // step 4's review, SHOULD 4): inside another player's acting scope a call
   // so scoped would run on the acting player's seat alone, whatever its kind
   // (Faction.SetCrimeGold an everyone row, Actor.SetPlayerResistingArrest a
-  // state row, ImageSpaceModifier.Apply a local one)
-  const bool actingSeatAlone =
-    native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE && scope &&
-    ActingScope::Swaps(*scope);
+  // state row, ImageSpaceModifier.Apply a local one); where it goes from
+  // here is ActRoute.h's rule
+  ActRoute::Facts actFacts;
+  actFacts.actingSeatAlone =
+    native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE;
+  actFacts.otherPlayerActs = scope && ActingScope::Swaps(*scope);
+  actFacts.pressRoot = scope && scope->root == ActingScope::RootKind::kTrigger;
+  const ActRoute::Route actRoute = ActRoute::Of(actFacts);
+  const bool actingSeatAlone = actRoute != ActRoute::Route::kRun;
   if (info.actingLook && scope && ActingScope::Swaps(*scope) &&
       OnActingLook(row, info, fn, stack, *scope, marks)) {
     return marks;
@@ -3351,11 +3363,44 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
       }
     }
   }
-  // the acting player's seat alone (New 1), counted by its scope; its self
-  // named by its handle's low 32 bits (SubjectOfFrame, no lookup) for its
-  // kind's first line
+  // an act on the player (ActRoute.h): the acting player's seat alone (New
+  // 1), so never run here. The body is skipped, the declared return's empty
+  // result left in its place (a latent one completes at once, H-F2's
+  // skipped latent), its self named by its handle's low 32 bits
+  // (SubjectOfFrame, no lookup). From a press or an entry this seat runs for
+  // its presser it is forwarded with its acting player and cause, for the
+  // server to run on that player's own game (wire-rules natives'
+  // Audience::Acting); from a relayed stage or word it is that game's own
+  // already and goes nowhere
   if (actingSeatAlone) {
-    CountStaged(row, kWouldSkip, ScopeRootOf(scope), SubjectOfFrame(top), top);
+    const std::uint32_t frameSelf = SubjectOfFrame(top);
+    marks.skip = true;
+    marks.result = info.result;
+    if (actRoute != ActRoute::Route::kForward) {
+      CountStagedPlain(row, kStagedActSkipped);
+      return marks;
+    }
+    const std::uint32_t self = ActRoute::SelfOf(
+      native.subject == NativeSubject::None, frameSelf, scope->player.figure);
+    std::optional<QueuedCall> call =
+      CallFromFrame(row, info, stack, top, kNoPage, self);
+    if (!call) {
+      CountStagedPlain(row, kStagedActSkipped);
+      return marks;
+    }
+    auto* vm = VM::GetSingleton();
+    call->forward = true;
+    call->cause =
+      CauseOf(stack, scope, vm ? vm->GetObjectHandlePolicy() : nullptr);
+    call->acting = scope->player.serverId;
+    QueueCall(std::move(*call));
+    CountStagedPlain(row, kStagedActForwarded);
+    if (SelfLineDue(g_skipLines[row], frameSelf)) {
+      logger::info("[verb:scripts] {}.{} on {:x}: an act on acting player "
+                   "{:x}, skipped here and forwarded to that player's own "
+                   "game",
+                   native.cls, native.fn, frameSelf, scope->player.serverId);
+    }
     return marks;
   }
   // nobody's (D-F1 C): every seat runs it, its self named as above

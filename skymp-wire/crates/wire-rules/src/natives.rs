@@ -1803,21 +1803,33 @@ fn question_accept(row: Row, facts: &Facts) -> Verdict {
 
 /// The owner step on an act (an [`Scoped::ActingSeatAlone`] row a script
 /// another seat runs for the acting player called, skipped on that seat):
-/// the acting player is a connected player other than the reporter; sent to
-/// that player's game alone ([`Audience::Acting`]) as the same native, on
-/// the subject for a method on a form (an image space modifier, a message)
-/// and as a static otherwise, every argument, no sequence and nothing kept.
+/// the acting player is a connected player other than the reporter, and a
+/// quest stage that started it never reached every seat (the acting
+/// player's own game ran the stage and made the act itself); sent to that
+/// player's game alone ([`Audience::Acting`]) as the same native, on the
+/// subject for a method on a form (an image space modifier, a faction), on
+/// the acting player's actor for a method on the player (its game names it
+/// 0x14), and as a static otherwise, every argument, no sequence and
+/// nothing kept.
 fn act(row: Row, subject: u32, facts: &Facts) -> Verdict {
     if facts.acting == 0 || !facts.acting_other {
         return refuse(Code::Owner, format!("an act for {:x}: no other connected player acts", facts.acting));
     }
+    if facts.origin.kind != 0 && facts.origin_relayed {
+        return Verdict::Folded { why: "its cause's quest stage reached the acting player's own game, whose own run makes the act" };
+    }
+    let relay_self = match row.subject {
+        Subject::SelfRef if subject == OWN_PLAYER => facts.acting,
+        Subject::SelfRef => subject,
+        _ => 0,
+    };
     Verdict::Accept(Accept {
         subject,
         seq: 0,
         relay_cls: row.cls,
         relay_fn: row.func,
         relay_args: EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
-        relay_self: if row.subject == Subject::SelfRef && subject != OWN_PLAYER { subject } else { 0 },
+        relay_self,
         audience: Audience::Acting,
         keep: Keep::Nothing,
         graph_event_arg: None,
@@ -2425,8 +2437,36 @@ mod tests {
         };
         let a = accepted(&s.owner(shaped, &Facts { kind: SubjectKind::Record, ..acting }));
         assert_eq!((a.audience, a.relay_self), (Audience::Acting, 0x6a8));
+        // a method on the player: the acting player's actor, which its own
+        // game names 0x14
+        let shaped = match s.shape_forward(row("Actor", "SetPlayerResistingArrest"), &[], HOST, OWN_PLAYER, 0) {
+            Ok(shaped) => shaped,
+            Err(r) => panic!("{r:?}"),
+        };
+        let a = accepted(&s.owner(shaped, &acting));
+        assert_eq!((a.audience, a.relay_self), (Audience::Acting, GUEST));
         // a quit is never sent
         assert_eq!(refused_by(s.shape_forward(row("Debug", "QuitGame"), &[], HOST, OWN_PLAYER, 0)), Some(Code::Row));
+    }
+
+    // an act whose cause is a quest stage every seat ran is the acting
+    // player's own game's already; one from a stage only the reporter ran
+    // goes there
+    #[test]
+    fn an_act_from_a_stage_every_seat_ran_is_folded() {
+        let teach = row("Game", "TeachWord");
+        let mut s = ScriptCalls::default();
+        let stage = Origin { kind: 1, form: 0x39645, n: 10 };
+        let acting = Facts { kind: SubjectKind::Actor, acting: GUEST, acting_other: true, origin: stage, ..hosted(OWN_PLAYER) };
+        for (relayed, delivered) in [(true, false), (false, true)] {
+            let shaped = match s.shape_forward(teach, &[Arg::Object(0x13e22)], HOST, OWN_PLAYER, 0) {
+                Ok(shaped) => shaped,
+                Err(r) => panic!("{r:?}"),
+            };
+            let verdict = s.owner(shaped, &Facts { origin_relayed: relayed, ..acting });
+            assert_eq!(matches!(verdict, Verdict::Accept(_)), delivered, "relayed {relayed}");
+            assert_eq!(matches!(verdict, Verdict::Folded { .. }), !delivered, "relayed {relayed}");
+        }
     }
 
     #[test]

@@ -644,9 +644,9 @@ TEST_CASE("A question about the guest's player goes to the guest's own game "
 // an act: what a script the host runs for the guest does to the guest's
 // player, skipped on the host and forwarded with the guest as its acting
 // player. The word wall's trigger 0x709d2 teaches WordFus (Skyrim.esm WOOP
-// 0x13e22) and fades the screen (IMAD 0x4e77b, LearnWordFadeLoop02;
-// lab/esm.py, 2026-11-24); the cause is the guest's relayed entry (kind 6, the
-// trigger, the scope's arm)
+// 0x13e22) and fades the screen (IMAD 0x4e77b, LearnWordFadeLoop02, by
+// lab/esm.py); the cause is the guest's relayed entry (kind 6, the trigger,
+// the scope's arm)
 constexpr uint32_t kWallTrigger = 0x709d2;
 constexpr uint32_t kWordFus = 0x13e22;
 constexpr uint32_t kLearnWordFade = 0x4e77b;

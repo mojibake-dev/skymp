@@ -7384,13 +7384,17 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // `akTarget.ProcessTrapHit(self, ...)`) hit an actor it simulates, noted
   // as that actor's death evidence (NoteTrapHit; R2, recorded, the numbers
   // never judged)
-  // the one script channel's question and answer: a read only a player's
-  // own game can answer (its camera's look), asked by a script another seat
-  // runs for that player, goes to that player's game alone as the same
-  // native on its own player (audience 4); that game's answer goes to the
-  // seats that asked (audience 5). Neither names a reference of the
-  // server's: the subject is a player's own
-  if (verdict.audience == 4 || verdict.audience == 5) {
+  // the one script channel's question, answer and act: a read only a
+  // player's own game can answer (its camera's look), asked by a script
+  // another seat runs for that player, goes to that player's game alone as
+  // the same native on its own player (audience 4); that game's answer goes
+  // to the seats that asked (audience 5); what such a script does to that
+  // player (a word taught, a screen effect, a message) runs on that player's
+  // game alone as the same native, a method on the player on that game's own
+  // (audience 6), never on the game that ran the script. None names a
+  // reference of the server's
+  if (verdict.audience == 4 || verdict.audience == 5 ||
+      verdict.audience == 6) {
     std::vector<std::optional<
       std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
       askArgs;
@@ -7402,6 +7406,19 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     const std::string askCls(verdict.relay_cls);
     const std::string askFn(verdict.relay_fn);
     SpSnippet ask(askCls.c_str(), askFn.c_str(), askArgs, verdict.relay_self);
+    if (verdict.audience == 6) {
+      const auto& form = partOne.worldState.LookupFormByIdNoLoad(facts.acting);
+      MpActor* player = form ? form->AsActor() : nullptr;
+      if (player) {
+        ask.Serve(player);
+      }
+      spdlog::info("[verb:scripts] {:x} acts {}.{} for {:x} (from {}.{}): {}",
+                   reporter->GetFormId(), msg.cls, msg.fn, facts.acting,
+                   msg.caller, msg.handler,
+                   player ? "sent to that player's own game alone"
+                          : "no such player, sent nowhere");
+      return;
+    }
     if (verdict.audience == 4) {
       const auto& form = partOne.worldState.LookupFormByIdNoLoad(facts.acting);
       if (MpActor* player = form ? form->AsActor() : nullptr) {

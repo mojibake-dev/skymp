@@ -3175,7 +3175,17 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
   if (!ContainerMoveWithinReach(*actor, ref, "put")) {
     return;
   }
+  const uint32_t before = ref.GetInventory().GetItemCount(entry.baseId);
   ref.PutItem(*actor, entry);
+  const uint32_t after = ref.GetInventory().GetItemCount(entry.baseId);
+  // a scripted container's owner runs its OnItemAdded for a move that landed
+  if (after > before) {
+    RelayedActivationMessage event;
+    event.event = RelayedActivationMessage::kEventItemAdded;
+    event.source = entry.baseId;
+    event.count = static_cast<int32_t>(after - before);
+    SendScriptEventToOwner(*actor, ref, event, "OnItemAdded");
+  }
 }
 
 void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
@@ -3220,7 +3230,17 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   if (!ContainerMoveWithinReach(*actor, ref, "take")) {
     return;
   }
+  const uint32_t before = ref.GetInventory().GetItemCount(entry.baseId);
   ref.TakeItem(*actor, entry);
+  const uint32_t after = ref.GetInventory().GetItemCount(entry.baseId);
+  // and its OnItemRemoved for a take that landed
+  if (after < before) {
+    RelayedActivationMessage event;
+    event.event = RelayedActivationMessage::kEventItemRemoved;
+    event.source = entry.baseId;
+    event.count = static_cast<int32_t>(before - after);
+    SendScriptEventToOwner(*actor, ref, event, "OnItemRemoved");
+  }
 }
 
 namespace {
@@ -7935,6 +7955,25 @@ bool ActionListener::IsScriptedWorldObject(const MpObjectReference& target)
   return target.IsEspmForm() && scripted(target.GetFormId());
 }
 
+void ActionListener::SendScriptEventToOwner(MpActor& actor,
+                                            MpObjectReference& target,
+                                            RelayedActivationMessage event,
+                                            const char* what)
+{
+  if (!IsScriptedWorldObject(target)) {
+    return;
+  }
+  event.target = target.GetFormId();
+  event.caster = actor.GetFormId();
+  const auto out = target.SendToOwnerAndActorListeners(
+    &actor, false, [&](MpActor& to, bool) { to.SendToUser(event, true); });
+  if (out.toOwner) {
+    spdlog::info("[verb:owner] {:x}'s {} on {:x}: sent to its owner {:x} as "
+                 "the script event",
+                 actor.GetFormId(), what, target.GetFormId(), out.owner);
+  }
+}
+
 // thuum D-W1 and D-C2 (playtest 50; docs/research/fifty-fixes-2026-11-07.md
 // 1(c)): a trigger volume's entry counts once, on its presser's owner, and a
 // world trigger's script runs on the cell's host, so a seat that does not
@@ -8227,6 +8266,20 @@ void ActionListener::RelayActivationToHost(MpActor& caster,
 {
   const auto& baseType = target.GetBaseType();
   if (baseType != "ACTI" && baseType != "FURN") {
+    // a player's press of a scripted door, container, book, flora or item:
+    // the server ran its own consequence (a door's crossing, a container's
+    // menu, a pickup), and the owner's engine runs the object's OnActivate
+    // as a script event, with no default processing
+    static const std::set<std::string> kPressed = {
+      "DOOR", "CONT", "BOOK", "FLOR", "MISC", "WEAP", "ARMO",
+      "AMMO", "ALCH", "INGR", "KEYM", "SCRL", "SLGM", "LIGH"
+    };
+    if (player && kPressed.count(baseType)) {
+      RelayedActivationMessage event;
+      event.event = RelayedActivationMessage::kEventActivate;
+      event.presserInventory = caster.GetInventory();
+      SendScriptEventToOwner(caster, target, event, "OnActivate");
+    }
     return;
   }
   if (!IsScriptedWorldObject(target)) {
@@ -13790,6 +13843,18 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
                                            MpObjectReference* target,
                                            const HitData& hitData)
 {
+  // a hit on a scripted world object: its owner's engine runs the object's
+  // OnHit (a web's, a destructible's) as a script event
+  if (aggressor && target && !target->AsActor()) {
+    RelayedActivationMessage event;
+    event.event = RelayedActivationMessage::kEventHit;
+    event.source = hitData.source;
+    event.projectile = hitData.projectile;
+    event.flags = (hitData.isPowerAttack ? 1u : 0u) |
+      (hitData.isSneakAttack ? 2u : 0u) | (hitData.isBashAttack ? 4u : 0u) |
+      (hitData.isHitBlocked ? 8u : 0u);
+    SendScriptEventToOwner(*aggressor, *target, event, "OnHit");
+  }
   auto& browser = partOne.worldState.GetEspm().GetBrowser();
   std::array<VarValue, 7> args;
   args[0] = VarValue(aggressor->ToGameObject()); // akAggressor

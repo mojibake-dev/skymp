@@ -322,6 +322,15 @@ public:
   void RelayActivationToHost(MpActor& caster, MpObjectReference& target,
                              bool player = true);
   bool IsScriptedWorldObject(const MpObjectReference& target);
+
+  // an act another game made on a scripted world object, to the object's
+  // owner alone as that script event (`event`'s kEvent*, the event's form,
+  // projectile, count and flags filled by the caller): never to another
+  // listener, and nothing when the actor's own game is the owner, its engine
+  // having run the event already
+  void SendScriptEventToOwner(MpActor& actor, MpObjectReference& target,
+                              RelayedActivationMessage event,
+                              const char* what);
   // thuum docs/verbs/prop-physics.md (ADR-071 decision 2's table): a pickup
   // is a take. True when `picker`'s activation of the item `target` is
   // refused, another player holding the prop grabbed (E_PROP_HELD) or

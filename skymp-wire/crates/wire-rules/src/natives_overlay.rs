@@ -73,7 +73,7 @@ const PUSH_FIGURE: &str = "ADR-073 decision 6's owner asked of the pushed actor 
 /// Its deleting condition.
 const PUSH_FIGURE_DELETES: &str = "when owner_of answers a knock's cause seat and the row is unstaged with its target the subject";
 /// Cited by Actor.HasLOS.
-const PLAYER_LOOK: &str = "Eli's pick A of 2026-11-23 (tracker #254, note 5077): a player's look is its own game's camera (R3), so a script another seat runs for that player asks that game through the server and answers from its reply";
+const PLAYER_LOOK: &str = "ADR-086's look, Eli's design A: a player's look is its own game's camera (R3), so a script another seat runs for that player asks that game through the server and answers from its reply";
 
 /// Every overlay entry: the live table's sixty-one rows in its order (rung
 /// 5's fifty, the two scene starts, AddToMap's quest marker, then the Undead

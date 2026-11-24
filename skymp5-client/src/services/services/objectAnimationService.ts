@@ -13,6 +13,7 @@ import { LOOK_KEEP_CODES, SpSnippetService } from './spSnippetService';
 import { ObjectReferenceEx } from '../../extensions/objectReferenceEx';
 import { localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
+import { HELD_PLAY_MS, HeldPlays } from '../../sync/heldPlays';
 
 // thuum docs/verbs/traps.md (ADR-059 decision 3): the cell's host runs the
 // world scripts, so guests see what the host's engine SHOWS. On every seat
@@ -359,6 +360,7 @@ export class ObjectAnimationService extends ClientListener {
     }
     this.controller.on('update', () => this.onUpdate());
     this.controller.on('update', () => this.pollLastAnimations());
+    this.controller.on('update', () => this.retryHeldPlays());
   }
 
   // a recorded lastAnimation arriving with a game-file reference's CreateActor
@@ -631,10 +633,51 @@ export class ObjectAnimationService extends ClientListener {
       // a later relay of the pillar supersedes a refused turn still queued
       this.pillarRelays.set(localId, (this.pillarRelays.get(localId) ?? 0) + 1);
     }
+    // a later relay of the reference supersedes a play held for it
+    this.heldPlays.drop(localId);
     const played = this.playRelayed(refr, event, "relayed", remoteRefr, true, keepSeq);
     const side = pillar && /^Trigger0[1-3]$/i.test(event) ? sideOfRecord(event) : undefined;
     if (!played && side !== undefined && this.controller.lookupListener(HostService).epochForActor(refr) === 0) {
       void this.settleRefusedTurn(localId, remoteRefr, event, side);
+    }
+    // a play the copy refused waits until its graph takes it (heldPlays.ts):
+    // a pillar's refused turn has its own settle above, and a play kept for a
+    // 3D not loaded yet is played at that load by the keep's poll
+    const keptForLoad = keepSeq !== undefined && this.keepEnabled && !refr.is3DLoaded() && this.keepsFor(refr, localId);
+    if (!played && !pillar && !keptForLoad) {
+      this.heldPlays.hold(localId, remoteRefr, event, Date.now());
+    }
+  }
+
+  // the held plays, each update: one whose copy's 3D is loaded is played
+  // again, and said once when its graph takes it or at the bound. A play
+  // taken here is no record of its own: its relay's keep already holds it.
+  // The update's context
+  private retryHeldPlays(): void {
+    if (this.heldPlays.size === 0) {
+      return;
+    }
+    const now = Date.now();
+    const { retry, expired } = this.heldPlays.due(now);
+    for (const play of expired) {
+      logLab('verb:scripts', `object animation ${play.remote.toString(16)} ${play.event} dropped: its copy's graph refused it for ${HELD_PLAY_MS} ms (relayed)`);
+    }
+    for (const play of retry) {
+      const refr = ObjectReference.from(this.sp.Game.getFormEx(play.id));
+      if (!refr) {
+        this.heldPlays.drop(play.id);
+        logLab('verb:scripts', `object animation ${play.remote.toString(16)} ${play.event} dropped: its reference is gone (relayed)`);
+        continue;
+      }
+      if (!refr.is3DLoaded()) {
+        continue;
+      }
+      const { played, jump } = this.playOn(refr, play.id, play.event, true);
+      if (!played) {
+        continue;
+      }
+      const taken = this.heldPlays.taken(play.id, now);
+      logLab('verb:scripts', `object animation ${play.remote.toString(16)} ${play.event} taken after ${taken ? taken.heldMs : 0} ms held: its copy's graph refused it first (relayed${jump})`);
     }
   }
 
@@ -1671,6 +1714,8 @@ export class ObjectAnimationService extends ClientListener {
   private pillars = new Set<number>();
   // R-C4: the relays each pillar took here, the queued turn's supersede test
   private pillarRelays = new Map<number, number>();
+  // relayed plays the copy's graph refused, tried again until taken
+  private heldPlays = new HeldPlays();
   private resyncing = new Set<number>();
   // this seat's script's animation acts per pillar (noteScriptSide), read by
   // placeOnSide's guard

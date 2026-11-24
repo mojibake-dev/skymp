@@ -27,6 +27,9 @@
 #include <cmath>
 #include <map>
 #include <optional>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 #include <vector>
 
 PartOne& GetPartOne();
@@ -63,6 +66,33 @@ const uint32_t kWhiterun = ToUnderlying(Constants::kWhiterunCell);
 // move an actor
 const NiPoint3 kHere{ 9000.f, 500.f, 0.f };
 const NiPoint3 kEast{ 13500.f, 500.f, 0.f };
+
+// the server's log lines while it lives (AliasFillTest's shape), restored
+// at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("cell-host-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 
 uint64_t NowMs()
 {
@@ -1175,6 +1205,73 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   REQUIRE(p.worldState.CellOf(*hod) == here);
   REQUIRE(p.SimulatorOf(*hod) == kC1);
   REQUIRE(p.GetFollows().empty());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kHod);
+}
+
+// A load door between two exterior worldspaces is a door too: Whiterun's
+// main gate (WRDoorMainGate01, 0x1b1f1 in Tamriel 0x3c and 0x1b1f3 in
+// Whiterun 0x1a26f, Skyrim.esm by lab/esm.py) has an exterior at both ends,
+// and a crossing through it is neither adjacent (two worldspaces) nor an
+// interior's door, so the judge refused every report of it unless the
+// reporting game hosted the far side
+TEST_CASE("A hosted actor through a load door between two worldspaces passes "
+          "it to the far side's host",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kHod = 0x1348a;
+  constexpr uint32_t kWhiterunWorld = 0x1a26f;
+  const NiPoint3 kOutsideGate{ 19312.f, -7700.f, -3520.f };
+  const NiPoint3 kInsideGate{ 19367.f, -7300.f, -3547.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(!p.worldState.IsInteriorCell(kTamriel));
+  REQUIRE(!p.worldState.IsInteriorCell(kWhiterunWorld));
+
+  Player(p, 0, kC1, kOutsideGate + NiPoint3{ 0.f, -200.f, 0.f });
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kInsideGate + NiPoint3{ 0.f, 200.f, 0.f }, 0,
+                kWhiterunWorld);
+  p.SetUserActor(1, kC2);
+  const auto outside = p.worldState.CellOf(kTamriel, kOutsideGate);
+  const auto inside = p.worldState.CellOf(kWhiterunWorld, kInsideGate);
+  REQUIRE(outside.has_value());
+  REQUIRE(inside.has_value());
+  CellLoaded(p, 0, *outside);
+  CellLoaded(p, 1, *inside);
+  REQUIRE(p.GetCellHost(*outside).player == kC1);
+  REQUIRE(p.GetCellHost(*inside).player == kC2);
+
+  auto& form = p.worldState.LookupFormById(kHod);
+  REQUIRE(form);
+  MpActor* hod = form->AsActor();
+  REQUIRE(hod);
+  hod->SetCellOrWorldObsolete(FormDesc::Tamriel());
+  hod->SetPos(kOutsideGate);
+  REQUIRE(p.worldState.CellOf(*hod) == outside);
+  REQUIRE(p.SimulatorOf(*hod) == kC1);
+
+  // his simulator's report of the gate's crossing passes
+  REQUIRE(p.worldState.npcDoorVerdict);
+  REQUIRE(p.worldState.npcDoorVerdict(p.worldState.GetFormAt<MpActor>(kC1),
+                                      *hod, kWhiterunWorld, kInsideGate));
+
+  // and a refusal says who reported it and who simulates the walker: the
+  // far side's host reporting a walker c1 simulates
+  {
+    LogCapture log;
+    REQUIRE_FALSE(
+      p.worldState.npcDoorVerdict(p.worldState.GetFormAt<MpActor>(kC2), *hod,
+                                  kWhiterunWorld, kInsideGate));
+    REQUIRE(log.Count(fmt::format(
+              "door verdict for {:x} reported by {:x}: from cell {:x} (its "
+              "simulator {:x}) to cell {:x} (its host {:x}); refused",
+              kHod, kC2, *outside, kC1, *inside, kC2)) == 1);
+  }
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

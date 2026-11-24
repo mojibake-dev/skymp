@@ -46,4 +46,8 @@ export interface ScriptCallMessage {
     // 0xff000000 and up stays a player's figure by its server id (rung 5)
     placed?: number;
     localArgs?: number;
+    // since SCHEMA_VERSION 68: true on a state call this game's engine
+    // skipped on a subject another seat owns, which the server sends to that
+    // owner alone to run; absent on every other call
+    forward?: boolean;
 }

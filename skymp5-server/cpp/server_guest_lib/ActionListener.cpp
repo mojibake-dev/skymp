@@ -7068,8 +7068,14 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // a row or arguments the table refuses, a subject the reporter may not
   // name; a refusal here costs no lookup
   auto& scriptCalls = partOne.GetScriptCalls();
-  const auto shape = scriptCalls.shape(at.row, argSlice, reporter->GetFormId(),
-                                       msg.selfId, MonotonicMs());
+  // the forward: a state call the reporter's engine skipped on
+  // a subject it does not own, for that subject's owner to run
+  const bool forward = msg.forward.value_or(false);
+  const auto shape = forward
+    ? scriptCalls.shape_forward(at.row, argSlice, reporter->GetFormId(),
+                                msg.selfId, MonotonicMs())
+    : scriptCalls.shape(at.row, argSlice, reporter->GetFormId(), msg.selfId,
+                        MonotonicMs());
   if (shape.code != skymp::rules::ScriptCallCode::Accepted) {
     refused(shape);
     return;
@@ -7184,7 +7190,9 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     } else if (subject->GetBaseType() == "DOOR" ||
                subject->GetBaseType() == "CONT") {
       facts.subject_kind = 2;
-      if (recordRow) {
+      // a forward to a door's or a container's owner reads its cell's host
+      // as a record row does (a guest's unlock of a gate the host owns)
+      if (recordRow || forward) {
         place.emplace(
           subject->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
           subject->GetPos());
@@ -7461,6 +7469,15 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                  reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
                  facts.cell, msg.epoch, msg.caller, msg.handler, seqWord,
                  relayed, whose, relayCls, relayFn);
+    return;
+  }
+  if (forward) {
+    spdlog::info("[verb:scripts] {:x} forwards {}.{} on {:x} in cell {:x} "
+                 "(from {}.{}): the call its own engine skipped, sent to the "
+                 "owner {:x}, seq {}, relayed to {} game(s)",
+                 reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
+                 facts.cell, msg.caller, msg.handler, facts.owner, verdict.seq,
+                 relayed);
     return;
   }
   if (verdict.event_arg >= 0) {

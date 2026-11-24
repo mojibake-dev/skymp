@@ -16,6 +16,7 @@ import { holdPcInventoryBase } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
 import { TrapResultService } from "./trapResultService";
 import { noteSpellAddedSinceLogin } from "../../sync/spell";
+import { forwardMark } from "../../sync/scriptForward";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
 // scripts-one-system-2026-11-05.md 6.2 to 6.4): the platform's one hook on the
@@ -223,6 +224,11 @@ export class ScriptCallService extends ClientListener {
             // placement and every call on what it placed, sent as they ran
             // here, in the engine's order with this seat's other calls
             if (call.kind === "created") {
+                this.queue({ call, record: false, key: undefined, dropped: false });
+            }
+            // a state call this seat's engine skipped on another seat's
+            // subject, sent on for that owner to run
+            if (call.kind === "forward") {
                 this.queue({ call, record: false, key: undefined, dropped: false });
             }
         }
@@ -538,6 +544,7 @@ export class ScriptCallService extends ClientListener {
             caller: call.caller,
             handler: call.handler,
             latent: call.latent,
+            ...forwardMark(call.kind),
         };
         // train 52 (D-R1 C's leveled gap): a leveled AddItem's roll as the
         // platform read it landing on this seat's own player, each base by its
@@ -546,6 +553,10 @@ export class ScriptCallService extends ClientListener {
             message.landed = call.landed.map((landing) => ({ item: landing.formId, count: landing.count }));
         }
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        if (call.kind === "forward") {
+            logLab("verb:scripts", `forwarded ${call.cls}.${call.fn} on ${call.self.toString(16)} to its owner: this seat's engine skipped it`);
+            return true;
+        }
         if (call.kind === "look") {
             logLab("verb:traps", `trigger look ${(localIdToRemoteId(subject) || subject).toString(16)} ${call.cls}.${call.fn} reported (D-W2)`);
             return true;

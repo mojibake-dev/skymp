@@ -485,6 +485,7 @@ enum CountKind : std::size_t
   kCountHelper,
   kCountEffectEnded,
   kCountCreated,
+  kCountForwarded,
   kCountKinds
 };
 
@@ -503,7 +504,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (effect)",
                                                     " (helper)",
                                                     " (effect ended)",
-                                                    " (created)" };
+                                                    " (created)",
+                                                    " (forwarded)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -1075,6 +1077,10 @@ struct QueuedCall
   bool created = false;
   std::optional<std::uint32_t> placed;
   std::uint16_t localArgs = 0;
+  // a state row's call this seat skipped on a subject another seat owns,
+  // from a stack only this seat runs (ForwardsFrom), raised as kind
+  // "forward" for the server to send to that owner
+  bool forward = false;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1152,6 +1158,7 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
                  call.touch       ? "touch"
                    : call.look    ? "look"
                    : call.created ? "created"
+                   : call.forward ? "forward"
                                   : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
@@ -1349,6 +1356,18 @@ void LogSkipped(std::size_t row, std::uint32_t selfId)
   if (SelfLineDue(g_skipLines[row], selfId)) {
     logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
                  "({})",
+                 g_natives[row].cls, g_natives[row].fn, selfId,
+                 LeverName(g_nonOwnerSkip));
+  }
+}
+
+// a skipped call queued for its subject's owner, its first selves logged as
+// the skip's are (the same window's slots)
+void LogForwarded(std::size_t row, std::uint32_t selfId)
+{
+  if (SelfLineDue(g_skipLines[row], selfId)) {
+    logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
+                 "({}), and forwarded to its owner",
                  g_natives[row].cls, g_natives[row].fn, selfId,
                  LeverName(g_nonOwnerSkip));
   }
@@ -2952,6 +2971,19 @@ QuestCause::Self SelfKindOfObject(RE::BSScript::IObjectHandlePolicy* policy,
   return QuestCause::Self::kNone;
 }
 
+// whether a skipped call's stack is one only this seat runs, so its state
+// call on another seat's subject goes to that owner instead of nowhere: a
+// relay applied here for another player (the acting scope), another player's
+// relayed trigger entry, and a world root (a dialogue, scene, package or perk
+// fragment, an interaction's event; QuestCause::Classify). A quest stage's
+// fragment runs on every seat, the owner's among them, so its calls are not
+// forwarded (the owner's own run makes them); a seat-own root (a lifecycle
+// or cell-load handler on this seat's copy) stays skipped
+constexpr bool ForwardsFrom(StagedRoot root)
+{
+  return root == kRootRelayed || root == kRootTrigger || root == kRootWorld;
+}
+
 // a staged call's root kind: the acting scope's root first (ScopeRootOf),
 // else the root frame's class (QuestCause::Classify, MarkQuestCause's one
 // rule, over the frame's script and function names, read without a copy,
@@ -3834,6 +3866,21 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     if (native.kind == NativeKind::State && SkipsBody(info)) {
       marks.skip = true;
       marks.result = info.result;
+      // forward, never drop: a stack only this seat runs made it, so it is
+      // queued for the subject's owner to run (a latent row is never
+      // forwarded: the owner's game would wait in it; this seat's own player
+      // and its created references are its own, never forwarded)
+      if (!info.latent && ref->formID != 0x14 && ref->formID < 0xff000000 &&
+          ForwardsFrom(StagedRootOf(stack, scope, policy))) {
+        if (auto call =
+              CallFromFrame(row, info, stack, top, page, ref->formID)) {
+          call->forward = true;
+          QueueCall(std::move(*call));
+          Count(row, kCountForwarded);
+          LogForwarded(row, ref->formID);
+          return marks;
+        }
+      }
       Count(row, kCountSkipped);
       LogSkipped(row, ref->formID);
       return marks;

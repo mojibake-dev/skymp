@@ -228,11 +228,13 @@ declare module "skyrimPlatform" {
     // a trap family trigger's own call on itself during a firing this seat's
     // presser started (its action rows, SetMotionType, ApplyHavokImpulse, and
     // Sound.Play, whose self is the Sound and whose subject is the source in
-    // its first argument), run here and reported from here
+    // its first argument), run here and reported from here. Kind "forward" is
+    // a state row's call this seat's engine skipped on a subject another seat
+    // owns, from a stack only this seat runs, sent on for that owner to run
     interface ScriptCall {
         cls: string;
         fn: string;
-        kind: "action" | "state" | "everyone" | "touch" | "look" | "created";
+        kind: "action" | "state" | "everyone" | "touch" | "look" | "created" | "forward";
         self: number;
         callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];

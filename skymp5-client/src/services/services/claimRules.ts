@@ -249,6 +249,11 @@ export class SceneMarks {
         if (!mark || !mark.own || !mark.byAction) {
             return null;
         }
+        return this.disownMark(sceneId, mark, how);
+    }
+
+    // the mark the cause seat's, and the claims made under it, to release
+    private disownMark(sceneId: number, mark: Mark, how: string): SceneClaim[] {
         mark.own = false;
         mark.byAction = false;
         mark.how = how;
@@ -260,6 +265,19 @@ export class SceneMarks {
             }
         });
         return out;
+    }
+
+    // an own mark whose quest's acting player turned out another seat's (a
+    // quest's scenes run on its acting player's game): that seat's, however
+    // this seat marked it; the claims made under the own mark, to release.
+    // null for a scene this seat does not hold as its own
+    cede(sceneId: number, how: string): SceneClaim[] | null {
+        const mark = this.marks.get(sceneId);
+        if (!mark || !mark.own) {
+            return null;
+        }
+        mark.byAction = false;
+        return this.disownMark(sceneId, mark, how);
     }
 
     has(sceneId: number): boolean {

@@ -8,6 +8,7 @@ import { PuppetService } from './puppetService';
 import { HostService } from './hostService';
 import { RemoteServer } from './remoteServer';
 import { ScriptStateService } from './scriptStateService';
+import { relayDropLine } from '../../sync/relayedEvent';
 
 const TAG = 'verb:traps';
 // this game's own player
@@ -183,6 +184,7 @@ export class RelayedActivationService extends ClientListener {
       this.sp.Game.getFormEx(remoteIdToLocalId(remoteCaster)),
     );
     if (!target || !caster) {
+      logLab(TAG, relayDropLine(remoteTarget, remoteCaster, !!target, !!caster));
       return;
     }
     this.markPlayed(target.getFormID(), caster.getFormID());

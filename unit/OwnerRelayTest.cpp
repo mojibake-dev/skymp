@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "HitMessage.h"
 #include "Messages.h"
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
@@ -6,6 +7,7 @@
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <vector>
 
 PartOne& GetPartOne();
@@ -29,6 +31,15 @@ constexpr uint32_t kLever = 0xaa8c3;
 constexpr uint32_t kDoor = 0x38dfb;
 constexpr uint32_t kChest = 0x3a7c1;
 constexpr uint32_t kUrn = 0x39005;
+// a script's own objects for its events: the web 0x1fc43
+// (MS13WebDestructibleSCRIPT) in the temple, a door with an on-activate
+// script 0xd88a5 in FortSnowhawk02 0x563e2, the safe TGTQ04Safe 0xd7771 in
+// WindhelmNiranyesHouseBasement 0x16775
+constexpr uint32_t kWeb = 0x1fc43;
+constexpr uint32_t kScriptedDoor = 0xd88a5;
+constexpr uint32_t kFort = 0x563e2;
+constexpr uint32_t kSafe = 0xd7771;
+constexpr uint32_t kBasement = 0x16775;
 const NiPoint3 kByThePlate{ 8589.f, -5438.f, -2054.f };
 // by the temple's entrance, out of the listeners of every object below
 const NiPoint3 kAtTheEntrance{ -4384.f, 1163.f, 577.f };
@@ -51,29 +62,31 @@ void Loaded(PartOne& p, Networking::UserId user, uint32_t cell)
   p.GetActionListener().OnCellLoaded(raw, loaded);
 }
 
-// the host (user 0) hosts the temple and the guest (user 1) has it loaded,
-// the guest at `guestAt`, the host's player at the entrance
-void Enter(PartOne& p, const NiPoint3& guestAt)
+// the host (user 0) hosts `cell` and the guest (user 1) has it loaded, the
+// guest at `guestAt`, the host's player at `hostAt` (the temple's entrance
+// unless named)
+void Enter(PartOne& p, const NiPoint3& guestAt, uint32_t cell = kTemple,
+           std::optional<NiPoint3> hostAt = std::nullopt)
 {
   DoConnect(p, 0);
-  p.CreateActor(kOwnerHost, guestAt, 0, kTemple);
+  p.CreateActor(kOwnerHost, guestAt, 0, cell);
   p.SetUserActor(0, kOwnerHost);
   DoConnect(p, 1);
-  p.CreateActor(kOwnerGuest, guestAt, 0, kTemple);
+  p.CreateActor(kOwnerGuest, guestAt, 0, cell);
   p.SetUserActor(1, kOwnerGuest);
   for (uint32_t id : { kOwnerHost, kOwnerGuest }) {
     p.worldState.GetFormAt<MpActor>(id).ForceSubscriptionsUpdate();
   }
   const auto past = OwnerNowMs() + skymp::rules::host_grace_ms() + 2'000;
   p.TickCellHosts(past);
-  Loaded(p, 0, kTemple);
+  Loaded(p, 0, cell);
   p.TickCellHosts(past);
-  Loaded(p, 1, kTemple);
-  REQUIRE(p.GetCellHost(kTemple).player == kOwnerHost);
+  Loaded(p, 1, cell);
+  REQUIRE(p.GetCellHost(cell).player == kOwnerHost);
   auto& host = p.worldState.GetFormAt<MpActor>(kOwnerHost);
-  host.SetPos(kAtTheEntrance);
+  host.SetPos(hostAt.value_or(kAtTheEntrance));
   host.ForceSubscriptionsUpdate();
-  REQUIRE(p.GetCellHost(kTemple).player == kOwnerHost);
+  REQUIRE(p.GetCellHost(cell).player == kOwnerHost);
   p.Messages().clear();
 }
 
@@ -106,6 +119,21 @@ std::vector<nlohmann::json> CallsTo(PartOne& p, Networking::UserId user,
         m.j["class"] == "ObjectReference" && m.j["function"] == function &&
         (m.j["selfId"].get<uint64_t>() & 0xffffffffull) == refr) {
       out.push_back(m.j);
+    }
+  }
+  return out;
+}
+
+// the relayed script events sent to `user`'s game of kind `event`
+std::vector<RelayedActivationMessage> EventsTo(PartOne& p,
+                                               Networking::UserId user,
+                                               uint32_t event)
+{
+  std::vector<RelayedActivationMessage> out;
+  for (auto& m : p.Messages()) {
+    auto typed = dynamic_cast<RelayedActivationMessage*>(m.message.get());
+    if (m.userId == user && typed && typed->event == event) {
+      out.push_back(*typed);
     }
   }
   return out;
@@ -250,5 +278,86 @@ TEST_CASE("A prop's owner word reaches the cell's host though the host's "
   REQUIRE(toHost[0].refr == kUrn);
   REQUIRE(toHost[0].player == kOwnerGuest);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  Leave(p);
+}
+
+TEST_CASE("A guest's press of a scripted door reaches the cell's host alone "
+          "as an OnActivate script event, the host's player far off",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& door = p.worldState.GetFormAt<MpObjectReference>(kScriptedDoor);
+  const NiPoint3 by = door.GetPos() + NiPoint3{ 60.f, 0.f, 0.f };
+  Enter(p, by, kFort, by + NiPoint3{ 40000.f, 0.f, 0.f });
+  REQUIRE_FALSE(Listens(p, door, kOwnerHost));
+  ActivateMessage msg;
+  msg.data.caster = 0x14;
+  msg.data.target = kScriptedDoor;
+  msg.data.isSecondActivation = false;
+  RawMessageData raw;
+  raw.userId = 1;
+  p.GetActionListener().OnActivate(raw, msg);
+  const auto toHost = EventsTo(p, 0, RelayedActivationMessage::kEventActivate);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kScriptedDoor);
+  REQUIRE(toHost[0].caster == kOwnerGuest);
+  REQUIRE(toHost[0].presserInventory.has_value());
+  REQUIRE(EventsTo(p, 1, RelayedActivationMessage::kEventActivate).empty());
+  Leave(p);
+}
+
+TEST_CASE("A guest's hit on a scripted world object reaches the cell's host "
+          "alone as an OnHit script event",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& web = p.worldState.GetFormAt<MpObjectReference>(kWeb);
+  Enter(p, web.GetPos() + NiPoint3{ 50.f, 0.f, 0.f });
+  RawMessageData raw;
+  raw.userId = 1;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = kWeb;
+  hit.data.source = 0x1f4; // bare hands, Skyrim.esm's Unarmed
+  p.GetActionListener().OnHit(raw, hit);
+  const auto toHost = EventsTo(p, 0, RelayedActivationMessage::kEventHit);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kWeb);
+  REQUIRE(toHost[0].caster == kOwnerGuest);
+  REQUIRE(toHost[0].source == 0x1f4u);
+  REQUIRE(EventsTo(p, 1, RelayedActivationMessage::kEventHit).empty());
+  Leave(p);
+}
+
+TEST_CASE("A guest's put into a scripted container reaches the cell's host "
+          "alone as an OnItemAdded script event, the host's player far off",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& safe = p.worldState.GetFormAt<MpObjectReference>(kSafe);
+  const NiPoint3 by = safe.GetPos() + NiPoint3{ 50.f, 0.f, 0.f };
+  Enter(p, by, kBasement, by + NiPoint3{ 40000.f, 0.f, 0.f });
+  REQUIRE_FALSE(Listens(p, safe, kOwnerHost));
+  safe.SetLock(MpChangeFormREFR::Lock{});
+  auto& guest = p.worldState.GetFormAt<MpActor>(kOwnerGuest);
+  safe.Activate(guest);
+  REQUIRE(safe.IsContainerOccupant(&guest));
+  guest.AddItem(0x12eb7, 1);
+  p.Messages().clear();
+  DoMessage(p, 1,
+            { { "t", MsgType::PutItem },
+              { "baseId", 0x12eb7 },
+              { "count", 1 },
+              { "target", kSafe } });
+  p.Tick();
+  REQUIRE(safe.GetInventory().GetItemCount(0x12eb7) >= 1);
+  const auto toHost =
+    EventsTo(p, 0, RelayedActivationMessage::kEventItemAdded);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kSafe);
+  REQUIRE(toHost[0].caster == kOwnerGuest);
+  REQUIRE(toHost[0].source == 0x12eb7u);
+  REQUIRE(toHost[0].count == 1);
+  REQUIRE(EventsTo(p, 1, RelayedActivationMessage::kEventItemAdded).empty());
   Leave(p);
 }

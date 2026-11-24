@@ -6,9 +6,14 @@
 # the copy is 0xff000004 on both stacks and both players listen to it from its creation (npc-lead's idiom; placed before
 # c2's login, the copy would take 0xff000003 and c2's actor 0xff000004, swapping the valid push and the refused one). At
 # 1 s of its own c2 reports the spawn's cell loaded: it hosts the cell (HostGrant {cell 0xbbb1, epoch 1}), so its game
-# simulates the copy (isHostedByOther false to c2 and true to c1). At 4 s c1 reports its own shout's push of the copy
-# (PushActor {caster 0xff000002, target 0xff000004, force 15}): the copy is c2's to simulate, so the wire stack has c2's
-# game run ObjectReference.PushActorAway(the copy, 15) with c1's figure as self (an SpSnippet to c2). At 4.5 s c1
+# simulates the copy (isHostedByOther false to c2 and true to c1). A script pushes from the effect a hit of the caster's
+# put on its target, so the server takes a push only after a hit of the caster's that one of its casts claimed, still
+# within the cast's window (OnPushActor's E_PUSH_NO_HIT, PartOne::ClaimedHit): at 1.5 s c1 learns TrapDiseaseWitbane
+# (Skyrim.esm 0x10A250, one touch effect with no health change, target-by-hit's spell), holds it in its right hand at
+# 2 s, casts it with target 0 at 3 s and hits the copy with it at 3.4 s, which claims the cast. At 4 s c1 reports its
+# own push of the copy (PushActor {caster 0xff000002, target 0xff000004, force 15}): the copy is c2's to simulate, so
+# the wire stack has c2's game run ObjectReference.PushActorAway(the copy, 15) with c1's figure as self (an SpSnippet
+# to c2). At 4.5 s c1
 # reports a push of c2's own actor: a player's throw is its own game's (E_PUSH_TARGET), refused, nothing sent. At 5 s c1
 # reports a push of the copy with a force of 1000, past PUSH_FORCE_MAX: the validator refuses it, nothing sent. The
 # legacy stack knows no MsgType 85 and drops all three. c2 steps aside at 6 s of its own so it outlives c1, as in every
@@ -22,6 +27,10 @@ clients:
 steps:
   - {client: c2, at_ms: 300, send: {t: 12, data: {t: 12, commandName: placeatme, args: [20, 0x1347a]}}, reliable: true}
   - {client: c2, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 1090128]}}}
+  - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, rightSpell: 1090128, numChanges: 1}}}
+  - {client: c1, at_ms: 3000, send: {t: 23, data: {caster: 20, target: 0, spell: 1090128, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 3400, send: {t: 17, data: {aggressor: 20, target: 4278190084, source: 1090128, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
   - {client: c1, at_ms: 4000, send: {t: 85, caster: 0xff000002, target: 0xff000004, force: 15.0}, reliable: true}
   - {client: c1, at_ms: 4500, send: {t: 85, caster: 0xff000002, target: 0xff000003, force: 15.0}, reliable: true}
   - {client: c1, at_ms: 5000, send: {t: 85, caster: 0xff000002, target: 0xff000004, force: 1000.0}, reliable: true}
@@ -77,6 +86,61 @@ divergences:
     legacy: 0
     wire: 1
     reason: c2 named for Lucan's copy at epoch 1's grant, told to the other player
+  - client: c1
+    msg: {t: 41, text: "addspell done: 10a250 recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddSpell writes the server's record of learned spells and answers with a line, as in target-by-hit; the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 1090128, type: Spell}, false]}
+    legacy: 0
+    wire: 1
+    reason: the recorded spell is told to c1's own game
+  - client: c1
+    msg: {t: 5, data: {rightSpell: 1090128}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes the learned spell in the right hand and relays it, c1's own game included (it listens to itself); the legacy stack refuses it
+  - client: c2
+    msg: {t: 5, data: {rightSpell: 1090128}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 1090128, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack refuses a spell c1 never learned and takes it from c1's game (upstream #2665)
+  - client: c1
+    msg: {"inventory": {"entries": [{"baseId": 10, "count": 10}, {"baseId": 15, "count": 140}, {"baseId": 77382, "count": 1}, {"baseId": 77385, "count": 1}, {"baseId": 77387, "count": 1}, {"baseId": 77389, "count": 1}, {"baseId": 77494, "count": 1}, {"baseId": 77495, "count": 1}, {"baseId": 79760, "count": 1}, {"baseId": 80253, "count": 23}, {"baseId": 80254, "count": 1}, {"baseId": 120044, "count": 2}, {"baseId": 236362, "count": 2}, {"baseId": 243042, "count": 1}, {"baseId": 256733, "count": 5}, {"baseId": 256736, "count": 5}, {"baseId": 256741, "count": 5}, {"baseId": 256810, "count": 1}, {"baseId": 256819, "count": 1}, {"baseId": 1017598, "count": 1}]}, "t": 28}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack's refusal of the spell sends c1 its inventory again (upstream #2665)
+  - client: c2
+    msg: {t: 23, data: {target: 0xff000004}}
+    legacy: 0
+    wire: 1
+    reason: the cast relayed at its first hit with the target the hit names, the copy, to c2, which sees c1 (the legacy server, which never learned the spell, relays no cast)
+  - client: c1
+    msg: {t: 43, idx: "refr:ff000004"}
+    legacy: 0
+    wire: 1
+    reason: the hit's effect on the copy, its conditions holding (ADR-039), shown once to every game that listens to the copy (MpActor::ApplyEffects, an effect with no duration); the legacy server saw no cast to claim the hit against
+  - client: c2
+    msg: {t: 43, idx: "refr:ff000004"}
+    legacy: 0
+    wire: 2
+    reason: the same set to c2 twice, once for c2's own player and once for the copy itself, a listener of its own whose sends go to the game that hosts it (MpActor::GetActorToSendTo)
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 0xff000004, arguments: [{formId: 0xff000002, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the claimed hostile hit begins a fight, and the copy's host is told, the copy against c1's figure (TellHostOfFight; the hit landed on c1's own copy, which the host's engine never sees)
+  - client: c2
+    msg: {t: 30, class: Actor, function: StartCombat, selfId: 0xff000002, arguments: [{formId: 0xff000004, type: Actor}]}
+    legacy: 0
+    wire: 1
+    reason: the same fight told the other way, c1's figure on c2's game against the copy (TellHostOfFight, both ways)
   - client: c2
     msg: {t: 30, class: ObjectReference, function: PushActorAway, selfId: 0xff000002, arguments: [{formId: 0xff000004, type: Actor}, 15]}
     legacy: 0

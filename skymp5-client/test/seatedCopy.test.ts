@@ -17,10 +17,10 @@ const RESIDENT = 0x1a69e;
 const WEB_AT = { x: 3917.94, y: -3313.38, z: -1778.89 };
 
 test("a copy is seated at sit state 3, or held in its linked furniture within a few units of it (a ceiling spider reads sit state 0 there)", () => {
-  // playtest 60: Arvel seated (sit state 3), the spider on its ceiling furniture 0.3 units off
+  // seated: Arvel at sit state 3, the spider in its ceiling furniture 0.3 units off it
   assert.equal(seated({ sitState: 3, furnitureIsLinked: true, unitsFromFurniture: 0.4 }), true);
   assert.equal(seated({ sitState: 0, furnitureIsLinked: true, unitsFromFurniture: 0.3 }), true);
-  // playtest 61: Arvel 13 units under his seat with no furniture yet, the spider 7 units off its ceiling
+  // not seated: Arvel 13 units under his seat with no furniture yet, the spider 7 units off its ceiling
   assert.equal(seated({ sitState: 0, furnitureIsLinked: false, unitsFromFurniture: 13 }), false);
   assert.equal(seated({ sitState: 0, furnitureIsLinked: true, unitsFromFurniture: 7 }), false);
 });
@@ -66,7 +66,7 @@ const { PuppetService } = require('../src/services/services/puppetService') as {
 };
 
 const service = () => {
-  // Arvel's engine state: 13 units under his seat, no furniture yet, as playtest 61's load had him
+  // Arvel's engine state at a load whose freeze came before his seat: 13 units under it, no furniture yet
   const arvel = { z: -1792, sit: 0, furniture: 0 };
   const web = {
     getFormID: () => WEB,

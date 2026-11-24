@@ -9,7 +9,7 @@ import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
-import { RefSweep } from "../../sync/frameCost";
+import { PASS_LONG_MS, PASS_SAY_MS, passClockMs, PassTimes, RefSweep } from "../../sync/frameCost";
 import { partsPast } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { liveNoRowHeld, noRowEntry } from "../../sync/kindCache";
@@ -1035,7 +1035,14 @@ export class PropService extends ClientListener {
         this.sweepEngineRefs(now);
         if (now - this.lastRescan >= RESCAN_MS) {
             this.lastRescan = now;
+            const rescanFrom = passClockMs();
+            this.rescanViews = 0;
             this.rescan(now);
+            this.rescanTimes.add(passClockMs() - rescanFrom, this.rescanViews);
+        }
+        const rescanLine = this.rescanTimes.close(now);
+        if (rescanLine !== undefined) {
+            logLab("frame-cost", rescanLine);
         }
         // thuum tracker #175 (playtest 56's look 4): the hand is read every
         // update and a knock tracked whenever one is queued. Gated on a
@@ -3219,6 +3226,7 @@ export class PropService extends ClientListener {
         const playerWorldOrCell = ObjectReferenceEx.getWorldOrCell(player);
         const views = view.getFormViews();
         const n = views.getFormViewsArrayLength();
+        this.rescanViews = n;
         type Found = { refr: number; localId: number; formIdx: number; distance: number; cell: number; baseId: number; world: boolean; parts: number };
         const found: Found[] = [];
         // the rows past TRACK_RADIUS (items and world bodies), by this engine's id, for wakeFar
@@ -4696,6 +4704,9 @@ export class PropService extends ClientListener {
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;
+    // the rescan's time a run and the views it read (frameCost's PassTimes)
+    private readonly rescanTimes = new PassTimes("rescan", PASS_SAY_MS, PASS_LONG_MS);
+    private rescanViews = 0;
     // ADR-068 D-S3 point 4: the trap bodies by the server's id; the batch's
     // motion calls, the owner words and the followed bodies' at-rest samples
     // since the last update (JS state from their handlers)

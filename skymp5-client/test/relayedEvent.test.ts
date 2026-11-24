@@ -1,8 +1,9 @@
-// A relayed press on the owner's game (src/sync/relayedEvent.ts), JS state alone: one whose target or presser this
-// game holds no copy of is said in a line, never dropped in silence.
+// A relayed press or script event on the owner's game (src/sync/relayedEvent.ts), JS state alone: one whose target or
+// presser this game holds no copy of is said in a line, never dropped in silence, and a script event is read from the
+// relay as the object's scripts take it.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { relayDropLine, scriptEventLine, scriptEventOf } from "../src/sync/relayedEvent";
+import { eventAnswerOf, relayDropLine, scriptEventLine, scriptEventOf } from "../src/sync/relayedEvent";
 
 const LEVER = 0xaa8c3;
 const GUEST = 0xff000001;
@@ -43,9 +44,16 @@ test("a relay with no event is an activation or an entry, and a code naming no e
   assert.strictEqual(scriptEventOf({ event: 2.5 }), null);
 });
 
-test("a sent event's line names the object, the presser, the event and the scripts' answer", () => {
+test("a sent event's line names the object, the presser, the event and the native's answer", () => {
   const hit = scriptEventOf({ event: 2, source: BOW, projectile: ARROW_PROJECTILE, flags: 2 })!;
-  assert.strictEqual(scriptEventLine(CHEST, GUEST, hit, true), "relayed OnHit on 371e9 by ff000001 (source 1397d, projectile 3be11, flags 2): sent to its scripts");
+  const taken = eventAnswerOf(JSON.stringify({ formId: CHEST, event: 2, sent: true, scripts: 1, armed: true, reason: "" }));
+  assert.strictEqual(scriptEventLine(CHEST, GUEST, hit, taken), "relayed OnHit on 371e9 by ff000001 (source 1397d, projectile 3be11, flags 2): sent to 1 script(s), as the presser's act");
   const add = scriptEventOf({ event: 3, source: 0xa, count: 2 })!;
-  assert.strictEqual(scriptEventLine(CHEST, GUEST, add, false), "relayed OnItemAdded on 371e9 by ff000001 (source a, count 2): no script took it");
+  const refused = eventAnswerOf(JSON.stringify({ formId: CHEST, event: 3, sent: false, scripts: 0, armed: false, reason: "no script" }));
+  assert.strictEqual(scriptEventLine(CHEST, GUEST, add, refused), "relayed OnItemAdded on 371e9 by ff000001 (source a, count 2): not sent (no script)");
+});
+
+test("a native's answer that is no JSON object, or no string, is said as it came", () => {
+  assert.deepEqual(eventAnswerOf(undefined), { sent: false, scripts: 0, armed: false, reason: "answered no string (undefined)" });
+  assert.deepEqual(eventAnswerOf("nope"), { sent: false, scripts: 0, armed: false, reason: "answered nope" });
 });

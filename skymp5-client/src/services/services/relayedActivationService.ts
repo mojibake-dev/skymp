@@ -8,7 +8,7 @@ import { PuppetService } from './puppetService';
 import { HostService } from './hostService';
 import { RemoteServer } from './remoteServer';
 import { ScriptStateService } from './scriptStateService';
-import { relayDropLine } from '../../sync/relayedEvent';
+import { ScriptEvent, eventAnswerOf, relayDropLine, scriptEventLine, scriptEventOf } from '../../sync/relayedEvent';
 
 const TAG = 'verb:traps';
 // this game's own player
@@ -152,6 +152,21 @@ export class RelayedActivationService extends ClientListener {
 
   private onRelayed(e: ConnectionMessage<RelayedActivationMessage>) {
     const { target, caster, entry, presserInventory } = e.message;
+    // a script event for the object's scripts alone (sync/relayedEvent): it
+    // waits for the object's cell's grant pass as an entry does
+    const ev = scriptEventOf(e.message);
+    if (ev === null) {
+      logLab(TAG, `relayed event ${String(e.message.event)} on ${target.toString(16)} by ${caster.toString(16)} names no script event: not sent`);
+      return;
+    }
+    if (ev !== undefined) {
+      this.controller.once('update', () => {
+        const object = ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(target)));
+        const cell = object?.getParentCell()?.getFormID() ?? 0;
+        this.controller.lookupListener(ScriptStateService).afterHosting(cell, () => this.playEvent(target, caster, ev, presserInventory ?? undefined));
+      });
+      return;
+    }
     if (entry === undefined || entry === null) {
       this.controller.once('update', () => this.play(target, caster, presserInventory ?? undefined));
       return;
@@ -243,6 +258,49 @@ export class RelayedActivationService extends ClientListener {
     logLab(TAG, `${head}${own ? ' (this seat\'s own player, its entry the gate blanked here)' : ''}: ${describeTriggerSend(raw, event)}`);
   }
 
+  // a script event another seat's player made on an object this seat owns,
+  // sent to the object's scripts alone through the platform's
+  // TESModPlatform.SendObjectEvent (never the engine's default processing),
+  // called as SendTriggerEvent is, the presser's figure the event's actor,
+  // inside the presser's acting scope as a relayed press runs
+  // (namePressActing's request for the object, which the native arms); this
+  // seat's own player, a press the gate blanked here, as itself. An update's
+  // context. A platform without the native throws "Native function not
+  // found": said once, and no script event is sent from then
+  private playEvent(remoteTarget: number, remoteCaster: number, ev: ScriptEvent, presserInventory?: Inventory) {
+    if (this.sendEventMissing) {
+      return;
+    }
+    const target = ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(remoteTarget)));
+    const own = this.isOwnPlayer(remoteCaster);
+    const caster = ObjectReference.from(this.sp.Game.getFormEx(own ? PLAYER_ID : remoteIdToLocalId(remoteCaster)));
+    if (!target || !caster) {
+      logLab(TAG, `relayed ${ev.name} on ${remoteTarget.toString(16)} by ${remoteCaster.toString(16)} not sent: no ${!target && !caster ? 'target or presser' : !target ? 'target' : 'presser'} here`);
+      return;
+    }
+    this.markRelayPlayed(target.getFormID());
+    if (!own) {
+      this.namePressActing(target, caster, remoteCaster, presserInventory);
+    }
+    // an event's form and projectile as this game names them, None for none
+    // or one not here
+    const form = (formId: number) => (formId === 0 ? null : this.sp.Game.getFormEx(remoteIdToLocalId(formId)));
+    let raw: unknown;
+    try {
+      raw = this.sp.callNative('TESModPlatform', 'SendObjectEvent', undefined, target, ev.code, caster, form(ev.source), form(ev.projectile), ev.count, ev.flags);
+    } catch (e) {
+      const text = String(e);
+      if (text.indexOf('Native function not found') !== -1) {
+        this.sendEventMissing = true;
+        logLab(TAG, `SendObjectEvent unavailable on this platform (${text}); relayed script events are not sent`);
+        return;
+      }
+      logLab(TAG, `relayed ${ev.name} on ${remoteTarget.toString(16)} by ${remoteCaster.toString(16)} not sent: the native threw (${text.slice(0, 32)})`);
+      return;
+    }
+    logLab(TAG, scriptEventLine(remoteTarget, remoteCaster, ev, eventAnswerOf(raw)));
+  }
+
   // Train 53, C-entry (lab/.cache/drafts/reads-53/r-c1-c2-c4-claw.md, R-C1):
   // the server sends a host's own entry back to it when the gate blanked it
   // here before the cell's grant (the seat's own presser entering a world
@@ -314,32 +372,10 @@ export class RelayedActivationService extends ClientListener {
     if (this.activationArmMissing) {
       return;
     }
-    const presserLocalId = caster.getFormID();
-    if (presserLocalId < FIRST_SERVER_ID || presserServerId < FIRST_SERVER_ID) {
-      return;
-    }
-    if (!this.controller.lookupListener(PuppetService).isFigure(presserLocalId)) {
-      return;
-    }
-    const cell = target.getParentCell()?.getFormID() ?? 0;
-    if (cell === 0 || !this.controller.lookupListener(HostService).hostsCell(cell)) {
+    if (!this.namePressActing(target, caster, presserServerId, presserInventory)) {
       return;
     }
     const head = `relayed activation ${target.getFormID().toString(16)} by ${presserServerId.toString(16)}`;
-    if (typeof this.sp.setActingPlayer !== 'function') {
-      this.activationArmMissing = true;
-      logLab(TAG, "setActingPlayer unavailable on this platform; a relayed press's script reads this seat's own player");
-      return;
-    }
-    try {
-      if (this.sp.setActingPlayer(target.getFormID(), ACTIVATION_SCOPE, presserLocalId, presserServerId, ACTIVATION_ACTING_TTL_MS, itemPairs(presserInventory)) !== true) {
-        logLab(TAG, `${head}: the platform refused the activation's acting player (stage ${ACTIVATION_SCOPE}); its script reads this seat's own player`);
-        return;
-      }
-    } catch (e) {
-      logError(this, `setActingPlayer threw for the ${head}`, e);
-      return;
-    }
     let raw: unknown;
     try {
       raw = this.sp.callNative('TESModPlatform', 'ArmActivation', undefined, target, caster);
@@ -354,6 +390,44 @@ export class RelayedActivationService extends ClientListener {
       return;
     }
     logLab(TAG, `${head}: ${describeArm(raw)}`);
+  }
+
+  // the presser named as the acting player for the object (setActingPlayer
+  // with stage ACTIVATION_SCOPE, the presser's inventory for its
+  // GetItemCount), which the platform's ArmActivation or SendObjectEvent
+  // takes for the object's scripts: only where this seat hosts the object's
+  // cell and only for another player's figure; true when named
+  private namePressActing(target: ObjectReference, caster: ObjectReference, presserServerId: number, presserInventory?: Inventory): boolean {
+    if (this.pressActingMissing) {
+      return false;
+    }
+    const presserLocalId = caster.getFormID();
+    if (presserLocalId < FIRST_SERVER_ID || presserServerId < FIRST_SERVER_ID) {
+      return false;
+    }
+    if (!this.controller.lookupListener(PuppetService).isFigure(presserLocalId)) {
+      return false;
+    }
+    const cell = target.getParentCell()?.getFormID() ?? 0;
+    if (cell === 0 || !this.controller.lookupListener(HostService).hostsCell(cell)) {
+      return false;
+    }
+    const head = `relayed press ${target.getFormID().toString(16)} by ${presserServerId.toString(16)}`;
+    if (typeof this.sp.setActingPlayer !== 'function') {
+      this.pressActingMissing = true;
+      logLab(TAG, "setActingPlayer unavailable on this platform; a relayed press's script reads this seat's own player");
+      return false;
+    }
+    try {
+      if (this.sp.setActingPlayer(target.getFormID(), ACTIVATION_SCOPE, presserLocalId, presserServerId, ACTIVATION_ACTING_TTL_MS, itemPairs(presserInventory)) !== true) {
+        logLab(TAG, `${head}: the platform refused the press's acting player (stage ${ACTIVATION_SCOPE}); its script reads this seat's own player`);
+        return false;
+      }
+    } catch (e) {
+      logError(this, `setActingPlayer threw for the ${head}`, e);
+      return false;
+    }
+    return true;
   }
 
   // Whether a relay played the reference here within FIRED_MS (local id, as
@@ -403,6 +477,10 @@ export class RelayedActivationService extends ClientListener {
   private readonly relayPlayed = new Map<number, number>();
   private sendTriggerMissing = false;
   private activationArmMissing = false;
+  // an older platform without setActingPlayer for a press, or without
+  // SendObjectEvent
+  private pressActingMissing = false;
+  private sendEventMissing = false;
   // an older platform without setActingPlayer (rung 5)
   private actingMissing = false;
 }

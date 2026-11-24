@@ -327,8 +327,13 @@ use bounded::{String, Vec};
 /// `answer` (a player's game's answer about itself); SpSnippet's `acting`,
 /// `question` and `answer`. A 67 peer would misread every ScriptCall and
 /// SpSnippet.
+/// 69: RelayedActivation's optional `event` (a script event the owner's
+/// engine sends to the object's scripts alone: OnActivate, OnHit,
+/// OnItemAdded, OnItemRemoved, OnMagicEffectApply) with its `source`,
+/// `projectile`, `count` and `flags`: an act another seat made on an object
+/// this seat owns. A 68 peer would misread every RelayedActivation.
 /// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 68;
+pub const SCHEMA_VERSION: u16 = 69;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -2307,10 +2312,12 @@ mod tests {
         // thuum D-C2 (SCHEMA_VERSION 40): the relay's longest entry is its
         // wire id, two five-byte varints and the entry's presence and byte,
         // and since SCHEMA_VERSION 60 (#117) the absent inventory's presence
-        // byte; the report's two ten-byte varints, the flag and the same two.
-        // The relay's cap is SetInventory's, for the presser's inventory
+        // byte, and since SCHEMA_VERSION 69 the absent script event's five
+        // presence bytes; the report's two ten-byte varints, the flag and the
+        // same two. The relay's cap is SetInventory's, for the presser's
+        // inventory
         let relay = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, entry: Some(skymp::ENTRY_LEAVE), ..Default::default() });
-        assert_eq!(postcard::to_allocvec(&relay).map(|b| b.len()), Ok(14));
+        assert_eq!(postcard::to_allocvec(&relay).map(|b| b.len()), Ok(19));
         assert_eq!(Message::max_len(relay.wire_id()), Some(2 * MIB));
         let report = Message::Activate(skymp::Activate {
             data: skymp::ActivateData { caster: u64::MAX, target: u64::MAX, entry: Some(skymp::ENTRY_ENTER), ..Default::default() },
@@ -2318,10 +2325,10 @@ mod tests {
         });
         assert_eq!(postcard::to_allocvec(&report).map(|b| b.len()), Ok(24));
         assert_eq!(Message::max_len(report.wire_id()), Some(64));
-        // an absent entry and an absent inventory cost their presence bytes
-        // alone
+        // an absent entry, an absent inventory and an absent script event
+        // cost their presence bytes alone
         let plain = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(13));
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(18));
     }
 
     #[test]

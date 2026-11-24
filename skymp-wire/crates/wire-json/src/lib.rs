@@ -1130,7 +1130,7 @@ mod tests {
         // the shape's verdict, and a client's (the relay is the server's,
         // which the transport refuses from a client by direction)
         type Verdict = (&'static str, Result<(), Reject>, Option<Result<(), Reject>>);
-        let verdicts: [Verdict; 6] = [
+        let verdicts: [Verdict; 9] = [
             ("06-Activate-2.json", Ok(()), Some(Ok(()))),
             ("06-Activate-3.json", Err(Reject::Range), Some(Err(Reject::Range))),
             ("70-RelayedActivation-2.json", Ok(()), None),
@@ -1140,6 +1140,14 @@ mod tests {
             // (the claw 0x39647, one stack), and the same record on an entry
             ("70-RelayedActivation-4.json", Ok(()), None),
             ("70-RelayedActivation-5.json", Err(Reject::Range), None),
+            // the one script channel's events (SCHEMA_VERSION 69): the
+            // guest's sneak arrow (Iron Arrow 0x1397d, projectile 0x3be11)
+            // hitting a training dummy 0x7f817 the host owns, sent to the
+            // host as OnHit; two lockpicks 0xa the guest put in the chest
+            // 0x371e9, OnItemAdded; and an OnHit carrying a count
+            ("70-RelayedActivation-6.json", Ok(()), None),
+            ("70-RelayedActivation-7.json", Ok(()), None),
+            ("70-RelayedActivation-8.json", Err(Reject::Range), None),
         ];
         for (name, shape, from_client) in verdicts {
             let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));

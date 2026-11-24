@@ -31,8 +31,20 @@ struct RelayedActivationMessage : public MessageBase<RelayedActivationMessage>
       .Serialize("target", target)
       .Serialize("caster", caster)
       .Serialize("entry", entry)
-      .Serialize("presserInventory", presserInventory);
+      .Serialize("presserInventory", presserInventory)
+      .Serialize("event", event)
+      .Serialize("source", source)
+      .Serialize("projectile", projectile)
+      .Serialize("count", count)
+      .Serialize("flags", flags);
   }
+
+  // RelayedActivation's script events (wire-schema SCRIPT_EVENT_*)
+  static constexpr uint32_t kEventActivate = 1;
+  static constexpr uint32_t kEventHit = 2;
+  static constexpr uint32_t kEventItemAdded = 3;
+  static constexpr uint32_t kEventItemRemoved = 4;
+  static constexpr uint32_t kEventEffectApply = 5;
 
   uint32_t target = 0; // the activated reference, never 0
   uint32_t caster = 0; // the reference that activated it, never 0
@@ -45,4 +57,15 @@ struct RelayedActivationMessage : public MessageBase<RelayedActivationMessage>
   // host's acting scope answers the press's GetItemCount from; absent on an
   // entry, on a press by no player and to every other game
   std::optional<Inventory> presserInventory;
+  // since SCHEMA_VERSION 69 (the one script channel's events): an act
+  // another seat made on an object the receiver owns, sent to the object's
+  // scripts alone (kEventActivate to kEventEffectApply, a u8 on the wire),
+  // with the event's form (OnHit's source, an item event's base item, an
+  // effect's apply's effect), OnHit's projectile and flags (wire-schema
+  // HIT_*), an item event's count; each absent on an activation and an entry
+  std::optional<uint32_t> event;
+  std::optional<uint32_t> source;
+  std::optional<uint32_t> projectile;
+  std::optional<int32_t> count;
+  std::optional<uint32_t> flags;
 };

@@ -419,7 +419,8 @@ TEST_CASE("A player's activation of a scripted world object goes to the "
 // a guest's press of a scripted world object goes to the object's owner,
 // the cell's host whose engine runs the object's script, wherever the
 // host's player stands in the cell: the pillar turned by the guest while the
-// host's player is across the temple by the pressure plate, out of the
+// host's player is across the temple by its entrance (a spot an entrance
+// bandit stands on, about 9900 units west of the pillar), out of the
 // pillar's listeners
 TEST_CASE("A guest's press of a scripted world object goes to the cell's "
           "host though the host's player stands across the temple",
@@ -432,7 +433,7 @@ TEST_CASE("A guest's press of a scripted world object goes to the cell's "
   auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
   guest.SetPos(kByThePillar);
   guest.ForceSubscriptionsUpdate();
-  host.SetPos(kByThePlate);
+  host.SetPos(NiPoint3{ -4384.f, 1163.f, 577.f });
   host.ForceSubscriptionsUpdate();
   const auto& listeners = pillar.GetActorListeners();
   REQUIRE(std::find(listeners.begin(), listeners.end(), &host) ==

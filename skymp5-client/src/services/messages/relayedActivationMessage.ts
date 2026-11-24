@@ -21,4 +21,17 @@ export interface RelayedActivationMessage {
     // seat's acting scope answers the press's GetItemCount from (the
     // keyhole's claw; a figure carries no inventory); absent otherwise
     presserInventory?: Inventory | null;
+    // since SCHEMA_VERSION 69 (the one script channel's events): an act
+    // another seat made on an object this seat owns, sent to the object's
+    // scripts alone, never the engine's default processing: 1 OnActivate,
+    // 2 OnHit, 3 OnItemAdded, 4 OnItemRemoved, 5 OnMagicEffectApply; with
+    // the event's form (OnHit's source, an item event's base item, an
+    // effect's apply's effect), OnHit's projectile and flags (1 power, 2
+    // sneak, 4 bash, 8 blocked), an item event's count; absent on an
+    // activation and an entry
+    event?: number | null;
+    source?: number | null;
+    projectile?: number | null;
+    count?: number | null;
+    flags?: number | null;
 }

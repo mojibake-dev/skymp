@@ -19,6 +19,7 @@
 #include "skymp_wire.h"
 #include <RE/A/Actor.h>
 #include <RE/B/BGSListForm.h>
+#include <RE/C/CodeTasklet.h>
 #include <RE/F/FormTypes.h>
 #include <RE/I/IFunction.h>
 #include <RE/I/IObjectHandlePolicy.h>
@@ -2276,8 +2277,30 @@ std::string ScopeText(const ActingScope::Scope& scope)
 // first, its live test before a join (a latent call the platform dispatched
 // roots at the very quest the client applies); the frame must be the
 // native's own, step (c)'s test, before its frame is read
+std::optional<ActingScope::Scope> ScopeOfStack(
+  const RE::BSScript::Stack* stack);
+
 std::optional<ActingScope::Scope> ScopeOfCall(
   const RE::BSScript::IFunction* fn, const RE::BSScript::Stack* stack)
+{
+  if (!ActingScope::Any() || !stack) {
+    return std::nullopt;
+  }
+  const RE::BSScript::StackFrame* top = stack->top;
+  if (!top || top->owningFunction.get() != fn) {
+    return std::nullopt;
+  }
+  return ScopeOfStack(stack);
+}
+
+// a stack's scope, the one ScopeOfCall reads for a native's own frame and
+// the object compare reads for an instruction's: the stack's own once it
+// joined one, else, inside an armed window, the arm's for its root subject,
+// joined here. A stack whose first instruction compares its activator with
+// a property holding the player has made no native call yet, so the
+// compare joins it as a native's call would
+std::optional<ActingScope::Scope> ScopeOfStack(
+  const RE::BSScript::Stack* stack)
 {
   if (!ActingScope::Any() || !stack) {
     return std::nullopt;
@@ -2285,10 +2308,6 @@ std::optional<ActingScope::Scope> ScopeOfCall(
   if (PlatformCall::Active() ||
       (g_nativeCallRequirements.stackId != 0 &&
        stack->stackID == g_nativeCallRequirements.stackId)) {
-    return std::nullopt;
-  }
-  const RE::BSScript::StackFrame* top = stack->top;
-  if (!top || top->owningFunction.get() != fn) {
     return std::nullopt;
   }
   if (auto scope = ActingScope::Of(stack->stackID)) {
@@ -4733,6 +4752,70 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
   }
   return result;
 }
+
+// The acting scope's object compare. A script's property that holds the
+// player (a trigger's triggerActor, a PlayerRef) is read inline by the
+// interpreter and compared through the VM's comparator
+// (Offsets::Hooks::ObjectCompare) with no native call between, so the
+// seam's swap of the player for the acting player's figure never reaches
+// `akActionRef == triggerActor`: the figure is another object and the
+// compare is unequal. Inside a stack joined to a scope that swaps, the
+// player's object and that scope's figure compare equal: the original
+// answers first, and only its unequal answer on that one pair, both plain
+// form handles, becomes equal. The ordering compares never reach here with
+// objects, and an array's Find inside the scope finds the figure where the
+// player is asked for, as the swap reads it elsewhere. HYPOTHESIS until the
+// first lines below are read beside the trigger's own effect
+using ObjectCompareFn =
+  std::int32_t (*)(RE::BSScript::Internal::CodeTasklet* tasklet,
+                   const RE::BSScript::Variable* lhs,
+                   const RE::BSScript::Variable* rhs);
+ObjectCompareFn g_objectCompareOriginal = nullptr;
+std::atomic<std::uint64_t> g_actingCompares{ 0 };
+
+constexpr std::uint32_t kPlayerFormId = 0x14;
+
+std::int32_t ActingObjectCompare(RE::BSScript::Internal::CodeTasklet* tasklet,
+                                 const RE::BSScript::Variable* lhs,
+                                 const RE::BSScript::Variable* rhs)
+{
+  const std::int32_t result = g_objectCompareOriginal(tasklet, lhs, rhs);
+  if (result == 0 || !ActingScope::Any() || !tasklet || !lhs || !rhs) {
+    return result;
+  }
+  const RE::BSScript::Object* left = ObjectOf(*lhs);
+  const RE::BSScript::Object* right = ObjectOf(*rhs);
+  if (!left || !right) {
+    return result;
+  }
+  const RE::VMHandle leftHandle = left->GetHandle();
+  const RE::VMHandle rightHandle = right->GetHandle();
+  if (!IsPlainFormHandle(leftHandle) || !IsPlainFormHandle(rightHandle)) {
+    return result;
+  }
+  const std::uint32_t leftId = FormIdOfHandle(leftHandle);
+  const std::uint32_t rightId = FormIdOfHandle(rightHandle);
+  if (leftId != kPlayerFormId && rightId != kPlayerFormId) {
+    return result;
+  }
+  const std::uint32_t other = leftId == kPlayerFormId ? rightId : leftId;
+  if (other == 0 || other == kPlayerFormId) {
+    return result;
+  }
+  const RE::BSScript::Stack* stack = tasklet->stack;
+  const auto scope = ScopeOfStack(stack);
+  if (!scope || !ActingScope::Swaps(*scope) || scope->player.figure != other) {
+    return result;
+  }
+  const std::uint64_t n =
+    g_actingCompares.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n <= 3 || n % 100 == 0) {
+    logger::info("[verb:quests] acting player {:x}: the player and its "
+                 "figure {:x} compared equal in stack {} ({} so far)",
+                 scope->player.serverId, other, stack->stackID, n);
+  }
+  return 0;
+}
 }
 
 void ScriptNatives::Tick()
@@ -5140,5 +5223,22 @@ void ScriptNatives::InstallHooks()
                   "refused the replacement; no table row is judged and "
                   "every body runs",
                   callAddress - gameBase);
+  }
+  // the acting scope's object compare, AE only as its id
+  if (REL::Module::IsAE()) {
+    const auto compareAddress = Offsets::Hooks::ObjectCompare.address();
+    if (Frida::HookHandler::GetSingleton()->Replace(
+          compareAddress, reinterpret_cast<void*>(&ActingObjectCompare),
+          reinterpret_cast<void**>(&g_objectCompareOriginal))) {
+      logger::info("[verb:quests] the VM's object compare replaced at +{:x} "
+                   "(Address Library 105220): inside an acting scope's "
+                   "stack the player and the scope's figure compare equal",
+                   compareAddress - gameBase);
+    } else {
+      logger::error("[verb:quests] the VM's object compare at +{:x}: Gum "
+                    "refused the replacement; a property holding the player "
+                    "still compares unequal to an acting player's figure",
+                    compareAddress - gameBase);
+    }
   }
 }

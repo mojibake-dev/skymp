@@ -458,16 +458,24 @@ declare module "skyrimPlatform" {
     // the first drain logs "impose drain on thread <tid>, Main's <tid>". True
     // when stored; false for 0, the player's own id, no pose, more than 64, a
     // value not a number, a quat off unit length by more than 0.01, or 64
-    // forms already held; a bone of another shape throws
-    function imposeBodies(formId: number, bones: BodyBone[], rest: boolean): boolean;
+    // forms already held; a bone of another shape throws. With velocities,
+    // one a bone, each driven part's target moves on by its velocity for the
+    // time between the store and the drain, and the drive adds the velocity
+    // to its correction (feedforward); another count, a value not a number,
+    // or a speed past 6000 game units or 1000 radians a second refuses the
+    // store. A platform before the argument ignores it
+    interface BodyVelocity { lin: number[]; ang: number[] }
+    function imposeBodies(formId: number, bones: BodyBone[], rest: boolean, velocities?: BodyVelocity[] | null): boolean;
     // the form's stored poses dropped, so the drain lays no more on it (a
     // take-over, a quiet stream, a follow's end); under K3 nothing else, the
     // parts' motion types never changed; true when poses were held, false
     // for 0, the player's own id or none held; a table operation on the JS
     // thread, no game call. The get-up hold is lifted with it (thuum tracker
     // #178); with place, a living ragdolled actor is first set there, then
-    // its hold lifted, in one task on the main thread
-    function releaseBodies(formId: number, place?: number[]): boolean;
+    // its hold lifted, in one task on the main thread; with apex too (game
+    // units, the flight's highest root), its character controller's fall
+    // start is set from it between the two, so its own get-up counts the fall
+    function releaseBodies(formId: number, place?: number[], apex?: number): boolean;
     // D-PH9 A (the native kill switch): the contact hook's world-body switch,
     // off by default (rung 3's filter: layers 4 and 10 at any motion); on, the
     // player's contact with a body of a dynamic motion type on any layer

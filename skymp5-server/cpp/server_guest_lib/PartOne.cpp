@@ -1677,6 +1677,9 @@ void PartOne::Init()
   worldState.propLiveOwnerOf = [this](uint32_t refr) {
     return pImpl->props->prop_live_owner(refr);
   };
+  worldState.propHeldOf = [this](uint32_t refr) {
+    return pImpl->props->prop_held(refr);
+  };
   // physics rung 5a (ADR-071 decision 5): and a body's row, the prop
   // table's, from its death to its stand-up, so the one owner table names
   // whose samples move a corpse
@@ -1743,8 +1746,22 @@ void PartOne::Init()
     // a judgment, not a move: nothing recorded until the host's report
     // (x-handoff-door 20261024-001915 read a follow removed at the exit
     // door before the host lookup, hence a false "no host")
-    return WouldMoveActor(sender, actor, destWorldOrCell, destPos) !=
-      MoveVerdict::Refuse;
+    const bool passes = WouldMoveActor(sender, actor, destWorldOrCell,
+                                       destPos) != MoveVerdict::Refuse;
+    if (!passes) {
+      // what the judge read: the reporting game, the walker's cell and its
+      // simulator there, the far side's cell and its host (0 for none)
+      const auto origin = worldState.CellOf(actor);
+      const auto dest = worldState.CellOf(destWorldOrCell, destPos);
+      spdlog::info(
+        "PartOne - npc-handoff: door verdict for {:x} reported by {:x}: from "
+        "cell {:x} (its simulator {:x}) to cell {:x} (its host {:x}); "
+        "refused",
+        actor.GetFormId(), sender.GetFormId(), origin.value_or(0),
+        origin ? pImpl->cells->simulator_of(actor.GetFormId(), *origin) : 0u,
+        dest.value_or(0), dest ? GetCellHost(*dest).player : 0u);
+    }
+    return passes;
   };
   // and a player's door: its thralls go through with it (thuum #48 leg D)
   worldState.commanderDoor =
@@ -4630,7 +4647,11 @@ std::optional<skymp::rules::CellMove> CellMoveFacts(WorldState& worldState,
                             static_cast<int>(std::floor(destPos.y / 4096.f)));
     adjacent = std::max(dx, dy) <= 1;
   }
-  const bool door = destInterior || originInterior;
+  // a load door between two exterior worldspaces (a city's gate, Tamriel to
+  // Whiterun) has an exterior at both ends and is no adjacent crossing, so a
+  // change of worldspace is a door's crossing as an interior at either end is
+  const bool door =
+    destInterior || originInterior || originWorldOrCell != destWorldOrCell;
   // the pass margin's fact (npc-handoff D22, 2026-10-26): how far inside the
   // destination's 4096-unit square the report stands, from its nearest edge;
   // an interior is deep by definition
@@ -9321,6 +9342,14 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
         browser.LookupById(mgefId).ToGlobalId(mgef.data.projectile),
         &worldState);
       reach = std::max(reach, proj.range);
+      // a cone's hits arrive as it reaches each actor, over its flight to
+      // its range, so its other targets claim the cast that long after its
+      // first (wire-rules casts::CastFacts::cone_ms)
+      if (proj.IsCone() && proj.speed > 0.f && proj.range > 0.f) {
+        facts.cone_ms =
+          std::max(facts.cone_ms,
+                   static_cast<uint64_t>(proj.range / proj.speed * 1000.f));
+      }
       // thuum docs/verbs/spell-cast.md (train-27): a rune's projectile is a
       // placed trigger whose hit comes when an actor walks into it, minutes
       // after the cast (playtest twenty-three: the rune's hits refused as
@@ -9465,6 +9494,11 @@ PartOne::CastClaim PartOne::ClaimCast(uint32_t actorFormId, uint32_t spell,
       break;
   }
   return res;
+}
+
+bool PartOne::ClaimedHit(uint32_t actorFormId, uint32_t target)
+{
+  return pImpl->spellCasts->claimed_on(actorFormId, target, SteadyNowMs());
 }
 
 PartOne::CastClaim PartOne::ClaimReached(uint32_t actorFormId, uint32_t spell,

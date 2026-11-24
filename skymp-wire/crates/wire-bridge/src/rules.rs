@@ -931,6 +931,10 @@ mod ffi {
         kind: CastKind,
         /// Whether the spell hits an area.
         area: bool,
+        /// How long its cone sweeps on after its first hit, milliseconds: a
+        /// cone projectile's flight to its range (wire-rules
+        /// casts::CastFacts::cone_ms), 0 for none.
+        cone_ms: u64,
         /// How far from the caster its hit can be, units (its projectile's
         /// range, from the records).
         reach: f32,
@@ -3334,6 +3338,9 @@ mod ffi {
             caster_z: f32,
             now_ms: u64,
         ) -> CastClaim;
+        /// Whether one of `actor`'s casts still in its window claimed a hit on
+        /// `target` (wire-rules casts::Casts::claimed_on).
+        fn claimed_on(self: &SpellCasts, actor: u32, target: u32, now_ms: u64) -> bool;
         /// The actor is gone: its casts and streams with it.
         fn forget(self: &mut SpellCasts, actor: u32);
 
@@ -5952,21 +5959,21 @@ fn new_spell_casts() -> Box<SpellCasts> {
 
 impl SpellCasts {
     fn start(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
-        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual } = facts;
+        let CastFacts { spell, hand, kind, area, cone_ms, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual } = facts;
         let kind = match kind {
             CastKind::Concentration => casts::CastKind::Concentration,
             _ => casts::CastKind::FireAndForget,
         };
-        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
+        self.0.start(actor, casts::CastFacts { spell, hand, kind, area, cone_ms, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
     }
 
     fn continues(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
-        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual } = facts;
+        let CastFacts { spell, hand, kind, area, cone_ms, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual } = facts;
         let kind = match kind {
             CastKind::Concentration => casts::CastKind::Concentration,
             _ => casts::CastKind::FireAndForget,
         };
-        self.0.continues(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
+        self.0.continues(actor, casts::CastFacts { spell, hand, kind, area, cone_ms, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
     }
 
     fn end(&mut self, actor: u32, hand: u8) {
@@ -5975,6 +5982,10 @@ impl SpellCasts {
 
     fn is_open(&self, actor: u32, hand: u8) -> bool {
         self.0.is_open(actor, hand)
+    }
+
+    fn claimed_on(&self, actor: u32, target: u32, now_ms: u64) -> bool {
+        self.0.claimed_on(actor, target, now_ms)
     }
 
     fn claim(&mut self, actor: u32, hit: CastHit, now_ms: u64) -> CastClaim {
@@ -8103,6 +8114,7 @@ mod tests {
             hand: 1,
             kind: CastKind::Concentration,
             area: false,
+            cone_ms: 0,
             reach: 1_000.0,
             x: 0.0,
             y: 0.0,
@@ -8135,7 +8147,7 @@ mod tests {
         let mut reached = [0; 8];
         reached[0] = 0xa102;
         let cloak =
-            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0, lands_on_target: false, hazard_ms: 0, dual: false };
+            CastFacts { spell: 0xa101, hand: 1, kind: CastKind::FireAndForget, area: false, cone_ms: 0, reach: 512.0, x: 0.0, y: 0.0, z: 0.0, reached, linger_ms: 60_000, reached_concentration: 0, lands_on_target: false, hazard_ms: 0, dual: false };
         let proc_on = |x| CastHit { spell: 0xa102, target: 2, x, y: 0.0, z: 0.0 };
         assert_eq!(c.claim_reached(7, proc_on(300.0), 0.0, 0.0, 0.0, 0).check, CastCheck::NoCast);
         c.start(7, cloak, 0);

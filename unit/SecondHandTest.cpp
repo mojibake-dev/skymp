@@ -96,6 +96,23 @@ float Health(PartOne& p)
     .actorValues.healthPercentage;
 }
 
+// whether `user`'s game was told an effect of `source` on the target
+bool ShownTo(PartOne& p, Networking::UserId user, uint32_t source)
+{
+  for (auto& m : p.Messages()) {
+    if (m.userId != user || m.j["t"] != MsgType::MagicEffects ||
+        !m.j.contains("effects")) {
+      continue;
+    }
+    for (const auto& effect : m.j["effects"]) {
+      if (effect.value("source", 0u) == source) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // a fight between the two, begun by another hit (ADR-023's record)
 void Fight(PartOne& p)
 {
@@ -160,6 +177,39 @@ TEST_CASE(
   // is judged by the effect's own IsHostileToActor and refused, and a hit
   // whose every effect is refused is no hit between the two
   Hits(p, kFlameCloakDmg);
+  REQUIRE(Health(p) == Catch::Approx(1.f));
+  REQUIRE_FALSE(p.GetFights().in_fight(kTarget));
+  Leave(p);
+}
+
+TEST_CASE("A cloak's spell's hit shows its effects in the target's own game "
+          "and the caster's",
+          "[SecondHand][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kFlameCloak);
+  Cast(p, kFlameCloak);
+  Fight(p);
+  p.Messages().clear();
+  Hits(p, kFlameCloakDmg);
+  REQUIRE(Health(p) == Catch::Approx(0.984f));
+  REQUIRE(ShownTo(p, 1, kFlameCloakDmg));
+  REQUIRE(ShownTo(p, 0, kFlameCloakDmg));
+  Leave(p);
+}
+
+TEST_CASE("A cloak's spell's hit is shown though its conditions fail on the "
+          "server, and changes nothing",
+          "[SecondHand][espm]")
+{
+  PartOne& p = GetPartOne();
+  Duel(p, kFlameCloak);
+  Cast(p, kFlameCloak);
+  // no fight: the damage effect's IsHostileToActor fails here, as a grip's
+  // condition on whom the caster's game holds always does
+  p.Messages().clear();
+  Hits(p, kFlameCloakDmg);
+  REQUIRE(ShownTo(p, 1, kFlameCloakDmg));
   REQUIRE(Health(p) == Catch::Approx(1.f));
   REQUIRE_FALSE(p.GetFights().in_fight(kTarget));
   Leave(p);

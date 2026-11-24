@@ -1,5 +1,6 @@
 #include "GetActorValue.h"
 #include "MpActor.h"
+#include "WorldState.h"
 #include "libespm/espm.h"
 
 const char* ConditionFunctions::GetActorValue::GetName() const
@@ -28,6 +29,16 @@ float ConditionFunctions::GetActorValue::Execute(
   // or an enchantment's, is not seen here.
   if (parameter1 > 0xff) {
     return 0.f;
+  }
+  // Grabbed (CommonLibSSE-NG include/RE/A/ActorValues.h:169) is the engine's
+  // mark on an actor another's grab holds, set only in the grabber's game;
+  // the server's prop table holds that grab, so it answers 1 while the grab
+  // holds the actor's body and 0 once it lets go
+  if (parameter1 == static_cast<uint32_t>(espm::ActorValue::Grabbed)) {
+    WorldState* worldState = actor.GetParent();
+    if (worldState && worldState->propHeldOf) {
+      return worldState->propHeldOf(actor.GetFormId()) ? 1.f : 0.f;
+    }
   }
   return actor.GetCurrentActorValue(static_cast<espm::ActorValue>(parameter1));
 }

@@ -471,16 +471,32 @@ CallNative::AnySafe CallNative::CallNativeSafe(Arguments& args_)
     const auto targetActorId = nativeTargetActor->formID;
     const auto mag = static_cast<float>(std::get<double>(args_.args[1]));
 
-    gameThrQ.AddTask([mag, nativeTargetActor, targetActorId](Viet::Void) {
+    // The pusher is the call's own self (ObjectReference.PushActorAway's
+    // self: the engine throws the target along the line from it) when it is
+    // an actor, which Offsets::PushActorAway takes; otherwise the target
+    // itself, which knocks it down in place. A pusher gone by the game
+    // thread's turn leaves the target its own pusher.
+    RE::Actor* nativePusher = nativeTargetActor;
+    if (rawSelf && rawSelf->formType == RE::FormType::ActorCharacter) {
+      nativePusher = static_cast<RE::Actor*>(rawSelf);
+    }
+    const auto pusherId = nativePusher->formID;
+
+    gameThrQ.AddTask([mag, nativeTargetActor, targetActorId, nativePusher,
+                      pusherId](Viet::Void) {
       if (RE::TESForm::LookupByID<RE::Actor>(targetActorId) !=
           nativeTargetActor)
         return;
       if (!g_nativeCallRequirements.vm)
         throw NullPointerException("g_nativeCallRequirements.vm");
 
+      RE::Actor* pusher =
+        RE::TESForm::LookupByID<RE::Actor>(pusherId) == nativePusher
+        ? nativePusher
+        : nativeTargetActor;
       Offsets::PushActorAway(g_nativeCallRequirements.vm,
-                             g_nativeCallRequirements.stackId,
-                             nativeTargetActor, nativeTargetActor, mag);
+                             g_nativeCallRequirements.stackId, pusher,
+                             nativeTargetActor, mag);
     });
     return ObjectPtr();
   }

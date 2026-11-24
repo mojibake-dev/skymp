@@ -411,6 +411,30 @@ TEST_CASE("A shout's hit staggers its target by the shout's Stagger effect",
   Leave(p, kShouter);
 }
 
+TEST_CASE("A shout's cone covers each actor it reaches over its flight",
+          "[Shouts][espm]")
+{
+  // VoiceUnrelentingForce1's effects carry no area, and its projectile,
+  // VoicePushProjectile01, is a cone of range 1000 at speed 1536 (Skyrim.esm):
+  // the cone strikes the nearer actor first and the farther as it reaches it
+  constexpr uint32_t kShouter = 0xff000ae0;
+  constexpr uint32_t kNear = 0xff000ae4;
+  constexpr uint32_t kFar = 0xff000ae8;
+  PartOne& p = GetPartOne();
+  Shouter(p, kShouter, true);
+  Shout(p, kFus);
+  REQUIRE(p.ClaimCast(kShouter, kFus, kNear, { 0, 300, 0 }).check ==
+          PartOne::CastCheck::Claimed);
+  REQUIRE(p.ClaimCast(kShouter, kFus, kFar, { 0, 625, 0 }).check ==
+          PartOne::CastCheck::Claimed);
+  REQUIRE(p.ClaimedHit(kShouter, kNear));
+  REQUIRE(p.ClaimedHit(kShouter, kFar));
+  // each once
+  REQUIRE(p.ClaimCast(kShouter, kFus, kFar, { 0, 625, 0 }).check ==
+          PartOne::CastCheck::NoCast);
+  Leave(p, kShouter);
+}
+
 TEST_CASE("A shout the record does not back is refused", "[Shouts][espm]")
 {
   PartOne& p = GetPartOne();

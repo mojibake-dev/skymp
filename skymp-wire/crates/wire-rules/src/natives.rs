@@ -231,6 +231,10 @@ pub enum Audience {
     /// The seats that asked a question about the reporter's own player: its
     /// answer.
     Askers,
+    /// The acting player's own game alone: an act a script another seat
+    /// runs for that player makes on the player ([`Scoped::ActingSeatAlone`]
+    /// rows: Game.TeachWord, ImageSpaceModifier.Apply, Debug.Notification).
+    Acting,
 }
 
 /// What a receiver runs for an accepted call.
@@ -1314,6 +1318,10 @@ enum Channel {
     /// A player's game's answer to a question about its own player, sent to
     /// the seats that asked.
     Answer,
+    /// An act on the player a script another seat runs for the acting
+    /// player makes ([`Scoped::ActingSeatAlone`]), run on that player's own
+    /// game.
+    Act,
 }
 
 /// The channel a forwarded call of `row` leaves by ("forward, never
@@ -1327,6 +1335,14 @@ fn forward_channel_of(row: &Row) -> Result<Channel, Refusal> {
     // a read only the player's own game can answer, asked of that game
     if row.hook == Hook::ActingLook {
         return Ok(Channel::Question);
+    }
+    // an act on the player, run on the acting player's own game; a quit is
+    // never another seat's to make
+    if row.scoped == Scoped::ActingSeatAlone {
+        if row.cls == "Debug" && row.func == "QuitGame" {
+            return Err(refusal(Code::Row, "a quit is the seat's own, never sent to another game".to_owned()));
+        }
+        return Ok(Channel::Act);
     }
     if row.staged {
         return Err(refusal(Code::Row, "a staged row: counted on its seat, never forwarded until its batch unstages".to_owned()));
@@ -1785,6 +1801,32 @@ fn question_accept(row: Row, facts: &Facts) -> Verdict {
     })
 }
 
+/// The owner step on an act (an [`Scoped::ActingSeatAlone`] row a script
+/// another seat runs for the acting player called, skipped on that seat):
+/// the acting player is a connected player other than the reporter; sent to
+/// that player's game alone ([`Audience::Acting`]) as the same native, on
+/// the subject for a method on a form (an image space modifier, a message)
+/// and as a static otherwise, every argument, no sequence and nothing kept.
+fn act(row: Row, subject: u32, facts: &Facts) -> Verdict {
+    if facts.acting == 0 || !facts.acting_other {
+        return refuse(Code::Owner, format!("an act for {:x}: no other connected player acts", facts.acting));
+    }
+    Verdict::Accept(Accept {
+        subject,
+        seq: 0,
+        relay_cls: row.cls,
+        relay_fn: row.func,
+        relay_args: EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
+        relay_self: if row.subject == Subject::SelfRef && subject != OWN_PLAYER { subject } else { 0 },
+        audience: Audience::Acting,
+        keep: Keep::Nothing,
+        graph_event_arg: None,
+        variable_kind: None,
+        look: false,
+        figure_args: false,
+    })
+}
+
 /// The owner step on an answer: the reporter answers about its own player,
 /// sent to the seats that asked ([`Audience::Askers`]) as the same native on
 /// the reporter's actor, every argument, no sequence and nothing kept.
@@ -1890,7 +1932,14 @@ impl ScriptCalls {
                 return Err(refusal(Code::Args, format!("argument {i} is {}, the row's {param:?}", arg.name())));
             }
         }
-        let Some(subject) = subject_of(row, self_id, args) else {
+        // an act of a static on no object names the player it is about as
+        // 0x14 (the acting player, ScriptCall's `acting`)
+        let subject = if channel == Channel::Act && row.subject == Subject::Nothing && self_id == OWN_PLAYER {
+            Some(OWN_PLAYER)
+        } else {
+            subject_of(row, self_id, args)
+        };
+        let Some(subject) = subject else {
             return Err(refusal(Code::Args, format!("no subject the reporter may name (selfId {self_id:x})")));
         };
         // a method whose subject is its first argument names its own self
@@ -1926,6 +1975,7 @@ impl ScriptCalls {
             Channel::Forward => return self.forward(row, subject, facts, now_ms),
             Channel::Question => return self.question(row, facts, now_ms),
             Channel::Answer => return answer(row, facts),
+            Channel::Act => return act(row, subject, facts),
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
@@ -2345,6 +2395,38 @@ mod tests {
         assert!(matches!(forward(&mut s, &Facts { origin_relayed: true, origin: Origin { n: 20, ..stage }, ..gate }, 0), Verdict::Folded { .. }));
         // no cause read: delivered as before
         assert!(matches!(forward(&mut s, &Facts { origin: Origin::default(), ..gate }, 700), Verdict::Accept(_)));
+    }
+
+    // the channel's OUT half: the host runs the word wall's script for the
+    // guest, whose Game.TeachWord (a static on the player) and the wall's
+    // image space modifier 0x6a8 go to the guest's own game; a quit never
+    #[test]
+    fn an_act_on_the_player_goes_to_the_acting_players_own_game() {
+        let teach = row("Game", "TeachWord");
+        let mut s = ScriptCalls::default();
+        let acting = Facts { kind: SubjectKind::Actor, acting: GUEST, acting_other: true, ..hosted(OWN_PLAYER) };
+        let shaped = match s.shape_forward(teach, &[Arg::Object(0x13e22)], HOST, OWN_PLAYER, 0) {
+            Ok(shaped) => shaped,
+            Err(r) => panic!("{r:?}"),
+        };
+        let a = accepted(&s.owner(shaped, &acting));
+        assert_eq!((a.audience, a.relay_self, a.relay_cls, a.relay_fn, a.seq), (Audience::Acting, 0, "Game", "TeachWord", 0));
+        // nobody else acting: nobody to send it to
+        let shaped = match s.shape_forward(teach, &[Arg::Object(0x13e22)], HOST, OWN_PLAYER, 0) {
+            Ok(shaped) => shaped,
+            Err(r) => panic!("{r:?}"),
+        };
+        assert_eq!(code(&s.owner(shaped, &Facts { acting_other: false, ..acting })), Some(Code::Owner));
+        // a method on a form: the form is the relay's self
+        let imod = row("ImageSpaceModifier", "Apply");
+        let shaped = match s.shape_forward(imod, &[Arg::Number], HOST, 0x6a8, 0) {
+            Ok(shaped) => shaped,
+            Err(r) => panic!("{r:?}"),
+        };
+        let a = accepted(&s.owner(shaped, &Facts { kind: SubjectKind::Record, ..acting }));
+        assert_eq!((a.audience, a.relay_self), (Audience::Acting, 0x6a8));
+        // a quit is never sent
+        assert_eq!(refused_by(s.shape_forward(row("Debug", "QuitGame"), &[], HOST, OWN_PLAYER, 0)), Some(Code::Row));
     }
 
     #[test]

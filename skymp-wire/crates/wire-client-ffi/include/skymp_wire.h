@@ -125,6 +125,13 @@
 #define SKYMP_NATIVE_AUDIENCE_ASKERS 5
 
 /**
+ * Audience: the acting player's own game alone (an act on the player a
+ * script another seat runs for that player makes); a route the server's
+ * rule gives, never a row's column.
+ */
+#define SKYMP_NATIVE_AUDIENCE_ACTING 6
+
+/**
  * Keep: nothing.
  */
 #define SKYMP_NATIVE_KEEP_NOTHING 0

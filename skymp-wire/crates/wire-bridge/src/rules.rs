@@ -1895,7 +1895,8 @@ mod ffi {
         /// the subject's cell's host alone (a look's CreateDetectionEvent,
         /// thuum ADR-068 D-W2 A; since the one script channel a forward's
         /// owner too), 4 the acting player's own game (a question), 5 the
-        /// seats that asked (an answer).
+        /// seats that asked (an answer), 6 the acting player's own game (an
+        /// act on the player).
         audience: u8,
         /// The call's graph event becomes the subject's lastAnimation.
         keep_last: bool,
@@ -6612,6 +6613,7 @@ impl ScriptCalls {
                     natives::Audience::Host => 3,
                     natives::Audience::Player => 4,
                     natives::Audience::Askers => 5,
+                    natives::Audience::Acting => 6,
                 };
                 out.keep_last = a.keep == natives::Keep::Last;
                 out.keep_var = a.variable_kind.unwrap_or(0);

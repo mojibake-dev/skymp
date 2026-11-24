@@ -80,6 +80,10 @@ pub const SKYMP_NATIVE_AUDIENCE_PLAYER: u8 = 4;
 /// Audience: the seats that asked a question (its answer); a route the
 /// server's rule gives, never a row's column.
 pub const SKYMP_NATIVE_AUDIENCE_ASKERS: u8 = 5;
+/// Audience: the acting player's own game alone (an act on the player a
+/// script another seat runs for that player makes); a route the server's
+/// rule gives, never a row's column.
+pub const SKYMP_NATIVE_AUDIENCE_ACTING: u8 = 6;
 
 /// Keep: nothing.
 pub const SKYMP_NATIVE_KEEP_NOTHING: u8 = 0;
@@ -262,6 +266,7 @@ fn audience_code(audience: Audience) -> u8 {
         Audience::Host => SKYMP_NATIVE_AUDIENCE_HOST,
         Audience::Player => SKYMP_NATIVE_AUDIENCE_PLAYER,
         Audience::Askers => SKYMP_NATIVE_AUDIENCE_ASKERS,
+        Audience::Acting => SKYMP_NATIVE_AUDIENCE_ACTING,
     }
 }
 

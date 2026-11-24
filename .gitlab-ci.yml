@@ -226,6 +226,7 @@ server-build:
           - skyrim-platform/src/platform_se/skyrim_platform/HookPairing.h
           - skyrim-platform/src/platform_se/skyrim_platform/HandOff.h
           - skyrim-platform/src/platform_se/skyrim_platform/PushRoute.h
+          - skyrim-platform/src/platform_se/skyrim_platform/FigureNoise.h
         compare_to: refs/heads/canon
   script:
     - |

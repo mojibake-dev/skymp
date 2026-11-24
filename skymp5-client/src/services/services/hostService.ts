@@ -1143,10 +1143,15 @@ export class HostService extends ClientListener {
     // houses and walked outside by their schedules, so their placement is
     // not where they stand) and places it there, if this game hosts the
     // cell of that position; its CreateActor and word follow, and from
-    // then on the actor is the host's to run and report. Only while this
-    // game hosts anything, and only while unknown actors remain.
+    // then on the actor is the host's to run and report. A sighting in a
+    // cell another game hosts tells this game's own copy to move to the
+    // record (PartOne::OnActorSighting), so a game that hosts nothing sends
+    // it too: its engine places the actors around its player by their own
+    // schedules, and a resident whose record another seat's engine walked
+    // through a city's gate would stand outside here, wordless and frozen.
+    // Only while unknown actors remain.
     private reportSightings(now: number) {
-        if (!this.enabled || this.hosted.size === 0 || now - this.lastSightings < HostService.sightingsMs) {
+        if (!this.enabled || now - this.lastSightings < HostService.sightingsMs) {
             return;
         }
         this.lastSightings = now;

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <fmt/format.h>
+#include <optional>
 #include <simdjson.h>
 
 PartOne& GetPartOne();
@@ -172,6 +173,23 @@ void Leave(PartOne& p, uint32_t actorId = kActor)
   p.DestroyActor(actorId);
   DoDisconnect(p, 0);
 }
+
+// the known flag the last Form.SetPlayerKnows user 0 was sent on a word
+// carried, if one was sent since the last clear (read after Told, which
+// ticks the deferred snippets)
+std::optional<bool> KnowsSent(PartOne& p, uint32_t word)
+{
+  std::optional<bool> sent;
+  for (auto& m : p.Messages()) {
+    if (m.userId != 0 || m.j["t"] != MsgType::SpSnippet ||
+        m.j["class"] != "Form" || m.j["function"] != "SetPlayerKnows" ||
+        !m.j.contains("selfId") || m.j["selfId"].get<uint64_t>() != word) {
+      continue;
+    }
+    sent = m.j["arguments"][0].get<bool>();
+  }
+  return sent;
+}
 }
 
 TEST_CASE("An admin's word and shout commands write the record and tell the "
@@ -211,6 +229,56 @@ TEST_CASE("An admin's word and shout commands write the record and tell the "
   // a form of the wrong kind is refused
   Console(p, "teachword", kShout);
   REQUIRE(ac.GetShoutRecord().wordsKnown.size() == 1);
+
+  p.worldState.enableConsoleCommandsForAll = forAll;
+  Leave(p);
+}
+
+TEST_CASE("An admin's RemoveShout takes the shout and its words off the "
+          "record and the player's game, and a login gives none back",
+          "[Shouts][espm]")
+{
+  PartOne& p = GetPartOne();
+  const bool forAll = p.worldState.enableConsoleCommandsForAll;
+  p.worldState.enableConsoleCommandsForAll = false;
+  auto& ac = Player(p);
+  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::Shout,
+                              FormDesc::FromString("13e07:Skyrim.esm")));
+  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordKnown,
+                              FormDesc::FromString("13e22:Skyrim.esm")));
+  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordUnlocked,
+                              FormDesc::FromString("13e22:Skyrim.esm")));
+
+  // a player's is refused, and the record keeps all three
+  ac.SetStaffRank(0);
+  Console(p, "removeshout", kShout);
+  REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+  REQUIRE(!Contains(Told(p), "Actor.RemoveShout 13e07"));
+
+  // a form of the wrong kind is refused
+  ac.SetStaffRank(2);
+  p.Messages().clear();
+  Console(p, "removeshout", kWord);
+  REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+  REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::WordKnown, kWord));
+
+  // the shout, its word known and its word unlocked leave the record; the
+  // game removes the shout and clears the word's known flag
+  p.Messages().clear();
+  Console(p, "removeshout", kShout);
+  const auto told = Told(p);
+  REQUIRE(Contains(told, "Actor.RemoveShout 13e07"));
+  REQUIRE(KnowsSent(p, kWord) == std::optional<bool>(false));
+  REQUIRE(ac.GetShoutRecord().Empty());
+
+  // a known word left behind would give its shout back at the login; none is
+  ac.SetMapMarkersPending(true);
+  p.Messages().clear();
+  Stand(p);
+  const auto again = Told(p);
+  REQUIRE(!Contains(again, "Actor.AddShout 13e07"));
+  REQUIRE(!KnowsSent(p, kWord).has_value());
+  REQUIRE(ac.GetShoutRecord().Empty());
 
   p.worldState.enableConsoleCommandsForAll = forAll;
   Leave(p);

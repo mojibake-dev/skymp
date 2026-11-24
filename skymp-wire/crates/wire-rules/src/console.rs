@@ -268,6 +268,14 @@ mod tests {
     }
 
     #[test]
+    fn an_admin_takes_a_shout_and_its_words_off_a_player() {
+        assert_eq!(decide("RemoveShout", Rank::Admin), Decision::Run);
+        assert_eq!(decide("removeshout", Rank::Owner), Decision::Run);
+        assert_eq!(decide("removeshout", Rank::Moderator), Decision::RankTooLow);
+        assert_eq!(decide("removeshout", Rank::Player), Decision::RankTooLow);
+    }
+
+    #[test]
     fn rank_numbers_past_the_owner_are_the_owner() {
         assert_eq!(Rank::from_number(0), Rank::Player);
         assert_eq!(Rank::from_number(2), Rank::Admin);

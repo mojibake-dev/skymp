@@ -594,6 +594,8 @@ constexpr const char* kStagedPlainName[kStagedPlains] = {
   "staged answered (a look its player's own game answers)"
 };
 
+}
+
 // thuum tracker #178: another player's figure on this seat, a dynamic form
 // id on base 0x7, the Player NPC record every player's actor is made from
 // (the server's MpActor::IsCreatedAsPlayer; the client's RaceMenuService
@@ -614,6 +616,8 @@ bool IsPlayerFigure(const RE::TESObjectREFR& ref)
   const RE::TESBoundObject* base = ref.GetBaseObject();
   return base && base->formID == 0x7;
 }
+
+namespace {
 
 std::array<std::array<std::atomic<std::uint32_t>, kStagedRoots>,
            kStagedVerdicts>

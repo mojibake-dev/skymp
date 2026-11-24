@@ -1007,8 +1007,6 @@ void InstallHostedResurrectHook()
  * detection runs; the thunks run on the detection job's threads, so they
  * read the target and the player's global and take no lock
  */
-bool IsPlayerFigure(const RE::TESObjectREFR& ref);
-
 namespace {
 // the global the engine reads its player from (Address Library 401069),
 // as the sites' own instructions name it

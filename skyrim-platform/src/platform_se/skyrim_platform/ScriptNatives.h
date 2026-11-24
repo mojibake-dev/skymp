@@ -4,6 +4,14 @@
 namespace RE::BSScript {
 class IFunction;
 }
+namespace RE {
+class TESObjectREFR;
+}
+
+// whether a reference is another player's figure on this game: an actor
+// with a dynamic form id on the Player record (base 0x7), read with no lock
+// and no form table, so any thread may ask (ScriptNatives.cpp)
+bool IsPlayerFigure(const RE::TESObjectREFR& ref);
 
 // thuum docs/DECISIONS.md ADR-068 (scripts as one system; rung 2, the one
 // seam, docs/research/scripts-one-system-2026-11-05.md 6.2): the VM's one

@@ -2687,10 +2687,11 @@ export class PropService extends ClientListener {
         }
     }
 
-    // The watched figures: one another player's, its engine reading it
-    // ragdolled within the window, is this seat's push's throw, so it is a row
-    // (its body pushed here, bodyRow.ts) claimed by touch 3, which the server
-    // grants on this seat's hit it took (OnPropClaim's ClaimedHit)
+    // The watched bodies: one another seat owns (another player's figure, a
+    // puppet), its engine reading it ragdolled within the window, is this
+    // seat's push's throw, so it is a row (its body pushed here, bodyRow.ts)
+    // claimed by touch 3 for the flight, which the server grants on this
+    // seat's hit it took (OnPropClaim); the other seats follow its stream
     private watchForced(now: number) {
         if (this.forced.size === 0) {
             return;
@@ -2721,10 +2722,10 @@ export class PropService extends ClientListener {
             } else if (myId === 0) {
                 logLab(TAG, `figure ${id}: knocked by this seat's push, not claimed: this seat has no server id yet`);
             } else if (this.ownedHere(row, myId)) {
-                logLab(TAG, `prop ${row.refr.toString(16)}: another player's figure this seat's push knocked, already this seat's`);
+                logLab(TAG, `prop ${row.refr.toString(16)}: another seat's body this seat's push knocked, already this seat's`);
             } else {
                 this.claim(row, TOUCH_IMPULSE, now);
-                logLab(TAG, `prop ${row.refr.toString(16)}: another player's figure this seat's push knocked; claimed by touch 3`);
+                logLab(TAG, `prop ${row.refr.toString(16)}: another seat's body this seat's push knocked; claimed by touch 3`);
             }
         }
     }
@@ -2742,7 +2743,7 @@ export class PropService extends ClientListener {
         const hosted = !figure && this.hostsHere(localId);
         const puppet = !figure && !hosted && this.othersHere(localId);
         const tracked = this.props.has(refr);
-        const c = tracked || (!figure && !hosted) ? null : this.bodyClass(localId);
+        const c = tracked || (!figure && !puppet && !hosted) ? null : this.bodyClass(localId);
         return { figure, puppet, hosted, tracked, ragdoll: c !== null && c.ragdoll };
     }
 

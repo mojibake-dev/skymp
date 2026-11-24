@@ -1,17 +1,16 @@
 #pragma once
 
 // Where a script's PushActorAway runs, by who pushes whom (the push-figure
-// hook, ScriptNatives.cpp). A player's body is its pusher's for the push's
-// throw, as it is its gripper's for a grip: the pusher's own game throws its
-// copy of the pushed player and claims the body for the flight, and the
-// pushed player's own game follows that stream until the body's rest hands
-// it back. So the push onto another player's figure runs on the game whose
-// own player pushes, and is skipped on every other game (the pushed player's
-// own, and a bystander's, where the pusher is a figure too); the push onto
-// this game's own player by another player's figure is skipped, since the
-// pusher's game throws it; a push onto a puppet (an actor another seat
-// simulates) is skipped and reported, its host throwing it; anything else
-// runs here.
+// hook, ScriptNatives.cpp). A body a player pushes is its pusher's for the
+// throw, as it is its gripper's for a grip, a player's body and an NPC's
+// alike: the pusher's own game throws its copy and claims the body for the
+// flight, and every other game (the pushed player's own, the NPC's host, a
+// bystander's) follows that stream until the body's rest hands it back. So a
+// push by this game's own player runs here, and a push by another player's
+// figure is skipped. An NPC's push onto another player's figure is skipped
+// too, that player's own game throwing it; an NPC's push onto a puppet (an
+// actor another seat simulates) is skipped and reported, its host throwing
+// it; anything else runs here.
 namespace PushRoute {
 
 enum class Route
@@ -37,11 +36,14 @@ struct Facts
 
 inline Route Of(const Facts& f)
 {
-  if (f.targetIsPlayerFigure) {
-    return f.pusherIsOwnPlayer ? Route::kRun : Route::kSkip;
+  if (f.pusherIsOwnPlayer) {
+    return Route::kRun;
   }
-  if (f.targetIsOwnPlayer) {
-    return f.pusherIsPlayerFigure ? Route::kSkip : Route::kRun;
+  if (f.pusherIsPlayerFigure) {
+    return Route::kSkip;
+  }
+  if (f.targetIsPlayerFigure) {
+    return Route::kSkip;
   }
   if (f.targetIsPuppet) {
     return Route::kSkipAndReport;

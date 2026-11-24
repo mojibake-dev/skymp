@@ -1,12 +1,14 @@
-// A figure this seat's own player's spell just reached (magicEffectApply,
-// PropService): its knock can only be this seat's push, since the push-figure
-// hook runs a push onto another player's figure on its pusher's game alone,
-// and neither the impulse report (the push's knock is no bracketed impulse)
-// nor the knock edge (the action hook passes the player and hosted actors
-// only) names it. So the figure is watched for WATCH_MS: its engine reading
-// it ragdolled makes it a row this seat claims by touch 3, which the server
-// grants on the hit it took; one already tracked (followed, gripped, owned)
-// or never knocked within the window is dropped from the watch.
+// A body another seat owns (another player's figure, or a puppet: an actor
+// another seat simulates) that this seat's own player's spell just reached
+// (magicEffectApply, PropService): its knock can only be this seat's push,
+// since the push-figure hook runs a player's push on its pusher's game alone
+// (PushRoute.h), and neither the impulse report (the push's knock is no
+// bracketed impulse) nor the knock edge (the action hook passes the player
+// and hosted actors only) names it. So it is watched for WATCH_MS: its engine
+// reading it ragdolled makes it a row this seat claims by touch 3 for the
+// flight, which the server grants on the hit it took; one already tracked
+// (followed, gripped, owned) or never knocked within the window is dropped
+// from the watch.
 export const WATCH_MS = 2000;
 
 export type WatchVerdict = "claim" | "drop" | "wait";
@@ -29,8 +31,8 @@ export const forceWatchVerdict = (f: { since: number; now: number; ragdoll: bool
 // action hook admits the master behaviour's graph alone)
 export type ForcedRead = { figure: boolean; puppet: boolean; hosted: boolean; tracked: boolean; ragdoll: boolean };
 
-// claim: another player's figure, claimed by touch 3; track: an actor this
-// seat hosts, its body a row this seat streams as the host's
+// claim: another player's figure or a puppet, claimed by touch 3; track: an
+// actor this seat hosts, its body a row this seat streams as the host's
 export type ForcedOutcome =
   | { localId: number; verdict: "claim" }
   | { localId: number; verdict: "track" }
@@ -78,10 +80,10 @@ export class ForceWatch {
     const out: ForcedOutcome[] = [];
     this.watched.forEach(({ since, relayed }, localId) => {
       const r = read(localId);
-      if (r === null || (!r.figure && !r.hosted) || (relayed && !r.hosted)) {
+      if (r === null || (!r.figure && !r.puppet && !r.hosted) || (relayed && !r.hosted)) {
         this.watched.delete(localId);
         out.push({ localId, verdict: "drop", why: r === null ? "no actor"
-          : relayed ? "a relayed push onto an actor this seat does not host" : "neither another player's figure nor this seat's" });
+          : relayed ? "a relayed push onto an actor this seat does not host" : "neither another seat's nor this seat's" });
         return;
       }
       const verdict = forceWatchVerdict({ since, now, ragdoll: r.ragdoll, tracked: r.tracked });
@@ -90,7 +92,7 @@ export class ForceWatch {
       }
       this.watched.delete(localId);
       if (verdict === "claim") {
-        out.push({ localId, verdict: r.figure ? "claim" : "track" });
+        out.push({ localId, verdict: r.figure || r.puppet ? "claim" : "track" });
       } else {
         out.push({ localId, verdict, why: r.tracked ? "already a row" : "never knocked" });
       }

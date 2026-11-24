@@ -3029,14 +3029,15 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
   }
   // The push-figure hook: where VoicePushEffectScript's
   // Caster.PushActorAway(Target, PushForce) and any other script's push runs
-  // (PushRoute.h). A player's body is its pusher's for the throw, as it is its
-  // gripper's for a grip: the pusher's own game throws its copy of the pushed
-  // player, its impulse claims the body for the flight (PropService), and the
-  // pushed player's own game follows that stream until the body's rest hands
-  // it back. So the push onto another player's figure runs on the game whose
-  // own player pushes and is skipped on any other, the push onto this game's
-  // own player by another player's figure is skipped, a push onto a puppet is
-  // skipped and reported (below), and the rest run as before. A skipped push
+  // (PushRoute.h). A body a player pushes is its pusher's for the throw, as it
+  // is its gripper's for a grip, a player's and an NPC's alike: the pusher's
+  // own game throws its copy, its impulse claims the body for the flight
+  // (PropService), and every other game follows that stream until the body's
+  // rest hands it back. So a push by this game's own player runs here, a push
+  // by another player's figure is skipped (on the pushed player's own game,
+  // on the NPC's host, on a bystander's), an NPC's push onto another player's
+  // figure is skipped, an NPC's push onto a puppet is skipped and reported
+  // (below), and the rest run as before. A skipped push
   // returns the body's empty result, counted. The target and the pusher read
   // through the VM's handle policy with no form table (RefOfObject's
   // crossCheck off, MUST 1). The platform's own pushActorAway (CallNative.cpp,
@@ -3068,13 +3069,17 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
                      target->formID, pusher ? pusher->formID : 0);
         return marks;
       }
-      if (target && facts.targetIsPlayerFigure) {
-        logger::info("[verb:push] PushActorAway onto {:x}, another player's "
-                     "figure, runs on this seat: its throw is this seat's, "
-                     "the body claimed by its impulse",
-                     target->formID);
+      if (target && route == PushRoute::Route::kRun &&
+          (facts.targetIsPlayerFigure || facts.targetIsPuppet)) {
+        logger::info("[verb:push] PushActorAway onto {:x}, {}, runs on this "
+                     "seat: its throw is this seat's, the body claimed by its "
+                     "impulse",
+                     target->formID,
+                     facts.targetIsPlayerFigure
+                       ? "another player's figure"
+                       : "an actor another seat simulates");
       }
-      // a push onto an actor another seat simulates (a puppet here,
+      // an NPC's push onto an actor another seat simulates (a puppet here,
       // Puppets.h) is skipped here as a figure's is, and reported: the script
       // keeps running on this seat, the throw goes to the actor's own
       // simulator (the client's PushActor, the server's OnPushActor), and

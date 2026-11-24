@@ -74,7 +74,7 @@ test("an actor no seat's word names (neither another player's figure, a puppet, 
   const w = new ForceWatch();
   w.reach(PLAYER, 0x29602, 1000);
   assert.deepEqual(w.update(1050, () => ({ figure: false, puppet: false, hosted: false, tracked: false, ragdoll: true })),
-    [{ localId: 0x29602, verdict: "drop", why: "neither another player's figure nor this seat's" }]);
+    [{ localId: 0x29602, verdict: "drop", why: "neither another seat's nor this seat's" }]);
 });
 
 test("a figure that never falls within the window is dropped, and one that reads as no actor is dropped at once", () => {

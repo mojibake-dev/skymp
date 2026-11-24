@@ -2,6 +2,7 @@
 #include "Messages.h"
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <spdlog/sinks/ostream_sink.h>
@@ -411,6 +412,101 @@ TEST_CASE("A player's activation of a scripted world object goes to the "
   p.Messages().clear();
   Linked(p, 1, kHostActor, kPillar);
   REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  Leave(p);
+}
+
+// a guest's press of a scripted world object goes to the object's owner,
+// the cell's host whose engine runs the object's script, wherever the
+// host's player stands in the cell: the pillar turned by the guest while the
+// host's player is across the temple by its entrance (a spot an entrance
+// bandit stands on, about 9900 units west of the pillar), out of the
+// pillar's listeners
+TEST_CASE("A guest's press of a scripted world object goes to the cell's "
+          "host though the host's player stands across the temple",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& pillar = p.worldState.GetFormAt<MpObjectReference>(kPillar);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHostActor);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  guest.SetPos(kByThePillar);
+  guest.ForceSubscriptionsUpdate();
+  host.SetPos(NiPoint3{ -4384.f, 1163.f, 577.f });
+  host.ForceSubscriptionsUpdate();
+  const auto& listeners = pillar.GetActorListeners();
+  REQUIRE(std::find(listeners.begin(), listeners.end(), &host) ==
+          listeners.end());
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Linked(p, 1, 0x14, kPillar);
+    REQUIRE(log.Count("relayed to 1 other game(s), the presser's record (") ==
+            1);
+  }
+  const auto toHost = RelayedTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kPillar);
+  REQUIRE(toHost[0].caster == kGuestActor);
+  REQUIRE(toHost[0].presserInventory.has_value());
+  REQUIRE(RelayedTo(p, 1).empty());
+  Leave(p);
+}
+
+// an actor's press goes to the object's owner too: the draugr the guest
+// simulates (its claim, as the case above has it) turns the pillar on the
+// guest's game, a run of the pillar's script only the cell's host owns; the
+// host alone gets it, never another listener, and the host's own simulated
+// actor's press is the owner's run already
+TEST_CASE("An actor's press reported by the game that simulates it goes to "
+          "the cell's host alone",
+          "[Traps][espm]")
+{
+  constexpr uint32_t kDraugr = 0x380b3;
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kPillar);
+  p.worldState.npcEnabled = true;
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  draugr.SetPos(kByThePillar);
+  guest.SetPos(kByThePillar);
+  guest.ForceSubscriptionsUpdate();
+  // the host's own actor: its press is the owner's run, relayed nowhere
+  REQUIRE(p.worldState.HostOf(draugr) ==
+          &p.worldState.GetFormAt<MpActor>(kHostActor));
+  p.Messages().clear();
+  Linked(p, 0, kDraugr, kPillar);
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  // the guest loads the temple and claims the draugr
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kTemple;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  {
+    static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+    RawMessageData raw;
+    raw.userId = 1;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    ActorClaimMessage claim;
+    claim.idx = draugr.GetIdx();
+    claim.claim = true;
+    p.GetActionListener().OnActorClaim(raw, claim);
+  }
+  REQUIRE(p.worldState.HostOf(draugr) == &guest);
+  p.Messages().clear();
+  Linked(p, 1, kDraugr, kPillar);
+  const auto toHost = RelayedTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].target == kPillar);
+  REQUIRE(toHost[0].caster == kDraugr);
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }

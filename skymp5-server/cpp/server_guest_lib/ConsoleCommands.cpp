@@ -8,6 +8,7 @@
 #include "WorldState.h"
 #include "libespm/CELL.h"
 #include "libespm/GroupUtils.h"
+#include "libespm/SHOU.h"
 #include "libespm/Utils.h"
 #include "papyrus-vm/CIString.h"
 #include "papyrus-vm/Utils.h"
@@ -612,6 +613,73 @@ std::string ExecuteShoutEntry(
                      added ? "recorded" : "already recorded");
 }
 
+// RemoveShout, an admin's, AddShout's mirror (thuum docs/verbs/shouts.md):
+// the shout and each word of its variations leave the target's record (the
+// shout, its words known and unlocked; a known word left behind would give
+// its shout back at the next login), then the target's own game removes the
+// shout (Actor.RemoveShout) and clears each word's known flag (SKSE's
+// Form.SetPlayerKnows, the flag the login sets). No Papyrus clears a word's
+// unlocked flag in a running game; the record's, which the cast rule reads,
+// is gone. The line counts what the record lost.
+std::string ExecuteRemoveShout(
+  MpActor& caller, const std::vector<ConsoleCommands::Argument>& args)
+{
+  MpActor& target = ActorOf(caller, args.at(0).GetInteger());
+  const auto shoutId = static_cast<uint32_t>(args.at(1).GetInteger());
+  auto& worldState = *caller.GetParent();
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(shoutId);
+  const auto* shou = espm::Convert<espm::SHOU>(lookup.rec);
+  if (!shou) {
+    throw std::runtime_error(fmt::format("{:x} is no shout", shoutId));
+  }
+  const auto& files = worldState.espmFiles;
+  const auto data = shou->GetData(worldState.GetEspmCache());
+  std::vector<uint32_t> words;
+  for (uint32_t i = 0; i < data.count; ++i) {
+    if (data.variations[i].word != 0) {
+      words.push_back(lookup.ToGlobalId(data.variations[i].word));
+    }
+  }
+
+  const bool shoutForgotten = target.ForgetShoutEntry(
+    MpActor::ShoutEntry::Shout, FormDesc::FromFormId(shoutId, files));
+  size_t known = 0;
+  size_t unlocked = 0;
+  for (const uint32_t word : words) {
+    const auto desc = FormDesc::FromFormId(word, files);
+    if (target.ForgetShoutEntry(MpActor::ShoutEntry::WordKnown, desc)) {
+      ++known;
+    }
+    if (target.ForgetShoutEntry(MpActor::ShoutEntry::WordUnlocked, desc)) {
+      ++unlocked;
+    }
+  }
+
+  SpSnippetObjectArgument shout;
+  shout.formId = shoutId;
+  shout.type = "Shout";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    removeArgs{ shout };
+  SpSnippet("Actor", "RemoveShout", removeArgs, target.GetFormId())
+    .Execute(&target, SpSnippetMode::kNoReturnResult);
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    unknows{ false };
+  for (const uint32_t word : words) {
+    SpSnippet("Form", "SetPlayerKnows", unknows, word)
+      .Execute(&target, SpSnippetMode::kNoReturnResult);
+  }
+
+  const std::string line = fmt::format(
+    "{:x} off {:x}: shout {}, {} of {} words known and {} unlocked forgotten",
+    shoutId, target.GetFormId(), shoutForgotten ? "forgotten" : "not recorded",
+    known, words.size(), unlocked);
+  spdlog::info("ConsoleCommands: {:x} removed the shout {}",
+               caller.GetFormId(), line);
+  return line;
+}
+
 // AddSpell, an admin's (thuum docs/verbs/cast-teleport.md, M2): the spell in
 // the target's learned spells on the server (R0), as the server's own
 // Actor.AddSpell, then the target's own game told the same. Typed in a
@@ -984,6 +1052,9 @@ void ConsoleCommands::Execute(
       return Reply(me,
                    judged + " done: " +
                      ExecuteShoutEntry(me, MpActor::ShoutEntry::Shout, args),
+                   false);
+    } else if (!Utils::stricmp(name, "RemoveShout")) {
+      return Reply(me, judged + " done: " + ExecuteRemoveShout(me, args),
                    false);
     } else if (!Utils::stricmp(name, "AddSpell")) {
       return Reply(me, judged + " done: " + ExecuteAddSpell(me, args), false);

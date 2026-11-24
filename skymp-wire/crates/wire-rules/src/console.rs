@@ -83,7 +83,7 @@ const fn cmd(name: &'static str, short: &'static str, class: Class, rank: Rank, 
 /// /teleportto, moderators'): `mp list` names the players online by number,
 /// `mp tp <n>` brings that player to the caller, `mp tpto <n>` takes the
 /// caller to it, through the server's teleport wherever the two are.
-pub const TABLE: [Command; 42] = [
+pub const TABLE: [Command; 43] = [
     cmd("additem", "", Class::Server, Rank::Admin, true),
     cmd("removeitem", "", Class::Server, Rank::Admin, true),
     cmd("equipitem", "", Class::Server, Rank::Admin, true),
@@ -117,6 +117,9 @@ pub const TABLE: [Command; 42] = [
     cmd("teachword", "", Class::Server, Rank::Admin, true),
     cmd("unlockword", "", Class::Server, Rank::Admin, true),
     cmd("addshout", "", Class::Server, Rank::Admin, true),
+    // AddShout's mirror: the shout and its words off the record and the
+    // player's game (thuum docs/verbs/shouts.md)
+    cmd("removeshout", "", Class::Server, Rank::Admin, true),
     cmd("addspell", "", Class::Server, Rank::Admin, true),
     cmd("setglobal", "", Class::Server, Rank::Admin, true),
     // thuum docs/verbs/locks.md: the server's lock state on a reference, so

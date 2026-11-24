@@ -3574,6 +3574,60 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 88: a look asked of a player's own game. Only a player's own
+    /// game can tell what its player sees: the engine's line-of-sight test
+    /// for anyone but its own player refuses a target that is no actor (a
+    /// word wall's look marker), so a script another seat runs for that
+    /// player, on an object it owns, cannot answer it there. Both directions,
+    /// reliable. Client to server: the asking seat ran that test on the
+    /// player's figure; `player` the looking player's actor by its server id,
+    /// `target` the reference looked at, a load-order form. Server to client:
+    /// sent to that player's game alone, `player` its own actor; that game
+    /// watches its own player's line of sight to `target` for
+    /// [`LOOK_WATCH_MS`] and answers each change with [`PlayerLook`]. Safe to
+    /// receive twice: a second ask extends the watch. Reason codes:
+    /// `E_VAL_RANGE` (a player below 0xff000000, a target of 0 or 0xff000000
+    /// and up).
+    pub struct PlayerLookAsk {
+        /// `"t": 88`.
+        #[serde(default)]
+        pub t: MsgT<88>,
+        /// The looking player's actor, by its server id.
+        pub player: u32,
+        /// The reference looked at, a load-order form.
+        pub target: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 89: a player's own game's answer to a look asked of it
+    /// ([`PlayerLookAsk`]): whether its player sees `target` now, by its own
+    /// engine's test (the camera's). Both directions, reliable. Client to
+    /// server: `player` the sender's own actor, by its server id, sent at the
+    /// watch's first read and at each change. Server to client: sent to the
+    /// seat that hosts `target`'s cell, the seat whose script asks, `player`
+    /// the looking player's actor. R3 for the look itself, the player's own;
+    /// the server routes it and keeps nothing. Safe to receive twice: the
+    /// latest answer stands. Reason codes: `E_VAL_RANGE` (as PlayerLookAsk's).
+    pub struct PlayerLook {
+        /// `"t": 89`.
+        #[serde(default)]
+        pub t: MsgT<89>,
+        /// The looking player's actor, by its server id.
+        pub player: u32,
+        /// The reference looked at, a load-order form.
+        pub target: u32,
+        /// Whether the player sees it.
+        pub los: bool,
+    }
+}
+
+/// How long a player's game watches a look asked of it (PlayerLookAsk),
+/// milliseconds: a script polls its look every few seconds (a word wall's
+/// every five), and each ask extends the watch.
+pub const LOOK_WATCH_MS: u32 = 10_000;
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

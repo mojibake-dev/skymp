@@ -324,8 +324,11 @@ use bounded::{String, Vec};
 /// skipped on a subject it does not own, sent on to that subject's owner (a
 /// guest's dialogue fragment unlocking a door the host's game owns). A 67
 /// peer would misread every ScriptCall.
-/// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 68;
+/// 69: PlayerLookAsk and PlayerLook (MsgType 88 and 89, wire ids 96 and 97):
+/// a look a script another seat runs for a player asks of that player's own
+/// game, and that game's answer.
+/// MsgTypes 84 to 89 (wire ids 92 to 97) are all built here; none is held.
+pub const SCHEMA_VERSION: u16 = 69;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -922,6 +925,10 @@ pub enum Message {
     Arrest(skymp::Arrest),
     /// 95, MsgType 87. See [`skymp::CrimeGold`].
     CrimeGold(skymp::CrimeGold),
+    /// 96, MsgType 88. See [`skymp::PlayerLookAsk`].
+    PlayerLookAsk(skymp::PlayerLookAsk),
+    /// 97, MsgType 89. See [`skymp::PlayerLook`].
+    PlayerLook(skymp::PlayerLook),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -959,7 +966,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// transport takes from a client. No real inventory nears it (a merchant's
 /// chest holds hundreds of stacks of a few dozen bytes each), and a message
 /// past its cap is refused at its encode, whole, never truncated.
-const TABLE: [Row; 96] = [
+const TABLE: [Row; 98] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1120,14 +1127,18 @@ const TABLE: [Row; 96] = [
     row("Arrest", 86, 16, C2S),
     // a faction, two sums and the paid gold at five-byte varints
     row("CrimeGold", 87, 32, C2S),
+    // two ids at five-byte varints (and an answer's byte): 16 bytes at the
+    // longest
+    row("PlayerLookAsk", 88, 16, Both),
+    row("PlayerLook", 89, 16, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 96;
-const _: () = assert!(TABLE.len() == 96, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 98;
+const _: () = assert!(TABLE.len() == 98, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1248,6 +1259,8 @@ impl Message {
             Message::PushActor(_) => 93,
             Message::Arrest(_) => 94,
             Message::CrimeGold(_) => 95,
+            Message::PlayerLookAsk(_) => 96,
+            Message::PlayerLook(_) => 97,
         }
     }
 
@@ -1302,6 +1315,8 @@ mod tests {
         assert_eq!(Message::CraftReport(skymp::CraftReport::default()).name(), "CraftReport");
         assert_eq!(Message::Arrest(skymp::Arrest::default()).name(), "Arrest");
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).name(), "CrimeGold");
+        assert_eq!(Message::PlayerLookAsk(skymp::PlayerLookAsk::default()).name(), "PlayerLookAsk");
+        assert_eq!(Message::PlayerLook(skymp::PlayerLook::default()).name(), "PlayerLook");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1388,7 +1403,15 @@ mod tests {
         // Arrest and CrimeGold, after 85: wire ids 94 and 95
         assert_eq!(name_of_msg_type(86), Some("Arrest"));
         assert_eq!(name_of_msg_type(87), Some("CrimeGold"));
-        assert_eq!(name_of_msg_type(88), None);
+        // a look asked of a player's own game and its answer: wire ids 96
+        // and 97, both directions
+        assert_eq!(name_of_msg_type(88), Some("PlayerLookAsk"));
+        assert_eq!(name_of_msg_type(89), Some("PlayerLook"));
+        assert_eq!(name_of_msg_type(90), None);
+        assert_eq!(Message::PlayerLookAsk(skymp::PlayerLookAsk::default()).wire_id(), 96);
+        assert_eq!(Message::PlayerLook(skymp::PlayerLook::default()).wire_id(), 97);
+        assert_eq!(Message::PlayerLookAsk(skymp::PlayerLookAsk::default()).direction(), Direction::Both);
+        assert_eq!(Message::PlayerLook(skymp::PlayerLook::default()).direction(), Direction::Both);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
@@ -1787,6 +1810,9 @@ mod tests {
             // an arrest and a bounty at their longest
             Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
             Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, paid_gold: Some(u32::MAX), ..Default::default() }),
+            // a look asked and answered at their longest
+            Message::PlayerLookAsk(skymp::PlayerLookAsk { player: u32::MAX, target: u32::MAX, ..Default::default() }),
+            Message::PlayerLook(skymp::PlayerLook { player: u32::MAX, target: u32::MAX, los: true, ..Default::default() }),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)

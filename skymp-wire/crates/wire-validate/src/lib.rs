@@ -342,6 +342,15 @@ pub struct ClientGuard {
     /// and a murder and a pickpocket in seconds, a login's pass names every
     /// hold, so 16 at once, then 4 a second (UNMEASURED).
     pub crime_gold_budget: TokenBucket,
+    /// Budget for the looks a seat asks of another player's game
+    /// (PlayerLookAsk): a script polls a look every few seconds and the
+    /// platform asks one pair at most once a second, so 32 at once, then 8
+    /// a second (UNMEASURED).
+    pub look_ask_budget: TokenBucket,
+    /// Budget for a player's game's answers (PlayerLook): one at a watch's
+    /// first read and one per change, so 32 at once, then 8 a second
+    /// (UNMEASURED).
+    pub look_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -399,6 +408,8 @@ impl Default for ClientGuard {
             push_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
             arrest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             crime_gold_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            look_ask_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            look_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
         }
     }
 }
@@ -1013,6 +1024,17 @@ fn check_crime_gold(m: &skymp::CrimeGold) -> Result<(), Reject> {
         return Err(Reject::Range);
     }
     if m.paid_gold.is_some_and(|gold| gold == 0 || gold > PAPYRUS_INT_MAX) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A look asked or answered (PlayerLookAsk, PlayerLook): the looking player
+/// by its server id, 0xff000000 and up, and the target a load-order form, 1
+/// to 0xfeffffff (`E_VAL_RANGE` otherwise). Whether the player is connected
+/// and the sender may name it is the server's rule.
+fn check_look(player: u32, target: u32) -> Result<(), Reject> {
+    if player < PLAYER_FORMS || target == 0 || target >= PLAYER_FORMS {
         return Err(Reject::Range);
     }
     Ok(())
@@ -2456,6 +2478,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PushActor(_) => take(&mut guard.push_budget, now_ms),
         Message::Arrest(_) => take(&mut guard.arrest_budget, now_ms),
         Message::CrimeGold(_) => take(&mut guard.crime_gold_budget, now_ms),
+        Message::PlayerLookAsk(_) => take(&mut guard.look_ask_budget, now_ms),
+        Message::PlayerLook(_) => take(&mut guard.look_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
         Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
@@ -2697,6 +2721,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PushActor(m) => check_push_actor(m),
         Message::Arrest(m) => check_arrest(m),
         Message::CrimeGold(m) => check_crime_gold(m),
+        Message::PlayerLookAsk(m) => check_look(m.player, m.target),
+        Message::PlayerLook(m) => check_look(m.player, m.target),
         Message::CraftItem(m) => check_owners(&m.data.craft_input_objects).and_then(|()| finite(msg)),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
@@ -4422,6 +4448,21 @@ mod tests {
         let mut nan = PutItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id: Some(0x28170), ..Default::default() };
         nan.health = Some(f32::NAN);
         assert_eq!(validate_server(&Message::PutItem(nan)), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn a_look_names_a_players_actor_and_a_load_order_target() {
+        use wire_schema::skymp::{PlayerLook, PlayerLookAsk};
+        // Bleak Falls' word wall's look marker 0x709d4, asked of the guest's
+        // game and answered by it
+        let ask = |player, target| Message::PlayerLookAsk(PlayerLookAsk { player, target, ..Default::default() });
+        let look = |player, target| Message::PlayerLook(PlayerLook { player, target, los: true, ..Default::default() });
+        assert_eq!(validate_server(&ask(0xff00_0001, 0x709d4)), Ok(()));
+        assert_eq!(validate_server(&look(0xff00_0001, 0x709d4)), Ok(()));
+        for (player, target) in [(0x14, 0x709d4), (0, 0x709d4), (0xff00_0001, 0), (0xff00_0001, 0xff00_0002)] {
+            assert_eq!(validate_server(&ask(player, target)), Err(Reject::Range), "{player:x} {target:x}");
+            assert_eq!(validate_server(&look(player, target)), Err(Reject::Range), "{player:x} {target:x}");
+        }
     }
 
     #[test]

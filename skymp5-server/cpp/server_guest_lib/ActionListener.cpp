@@ -53,6 +53,7 @@
 #include <random>
 #include <set>
 #include <spdlog/spdlog.h>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -11151,6 +11152,121 @@ void ActionListener::OnPushActor(const RawMessageData& rawMsgData,
                "host {:x}'s game throws it (D-PH5's amendment, tracker #175)",
                caster->GetFormId(), target->GetFormId(), msg.force,
                myActor->GetFormId(), host->GetFormId());
+}
+
+namespace {
+// a look line's due: the first per (sender, player, target, code) a minute,
+// the rest counted, so a script's poll of a look every few seconds says once
+// what it does
+bool LookLineDue(uint32_t sender, uint32_t player, uint32_t target,
+                 uint8_t code, uint32_t& since)
+{
+  static std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint8_t>,
+                  std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    lines;
+  const auto now = std::chrono::steady_clock::now();
+  auto& [at, count] = lines[{ sender, player, target, code }];
+  ++count;
+  if (at.time_since_epoch().count() != 0 &&
+      now - at < std::chrono::minutes(1)) {
+    return false;
+  }
+  since = count;
+  at = now;
+  count = 0;
+  return true;
+}
+}
+
+void ActionListener::OnPlayerLookAsk(const RawMessageData& rawMsgData,
+                                     const PlayerLookAskMessage& msg)
+{
+  MpActor* asker = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!asker) {
+    return;
+  }
+  auto* looker = dynamic_cast<MpActor*>(
+    partOne.worldState.LookupFormById(msg.player).get());
+  uint32_t since = 0;
+  if (!looker || looker == asker ||
+      partOne.serverState.UserByActor(looker) == Networking::InvalidUserId) {
+    if (LookLineDue(asker->GetFormId(), msg.player, msg.target, 1, since)) {
+      spdlog::info("[verb:look] E_LOOK_PLAYER: {:x} asks {:x}'s look at {:x}, "
+                   "which is no other connected player; dropped, {} since the "
+                   "last line",
+                   asker->GetFormId(), msg.player, msg.target, since);
+    }
+    return;
+  }
+  PlayerLookAskMessage out;
+  out.player = msg.player;
+  out.target = msg.target;
+  looker->SendToUser(out, true);
+  if (LookLineDue(asker->GetFormId(), msg.player, msg.target, 0, since)) {
+    spdlog::info("[verb:look] {:x} asks {:x}'s own game for its look at {:x}: "
+                 "sent, {} since the last line",
+                 asker->GetFormId(), msg.player, msg.target, since);
+  }
+}
+
+void ActionListener::OnPlayerLook(const RawMessageData& rawMsgData,
+                                  const PlayerLookMessage& msg)
+{
+  MpActor* looker = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!looker) {
+    return;
+  }
+  uint32_t since = 0;
+  if (msg.player != looker->GetFormId()) {
+    if (LookLineDue(looker->GetFormId(), msg.player, msg.target, 3, since)) {
+      spdlog::info("[verb:look] E_LOOK_PLAYER: {:x} answers {:x}'s look at "
+                   "{:x}: a player's look is its own game's; dropped, {} "
+                   "since the last line",
+                   looker->GetFormId(), msg.player, msg.target, since);
+    }
+    return;
+  }
+  // the seat whose script asks is the one that hosts the target's cell
+  uint32_t host = 0;
+  if (auto* target = dynamic_cast<MpObjectReference*>(
+        partOne.worldState.LookupFormById(msg.target).get())) {
+    const auto cell = partOne.worldState.CellOf(
+      target->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+      target->GetPos());
+    if (cell) {
+      const auto cellHost = partOne.GetCellHost(*cell);
+      if (cellHost.hosted) {
+        host = cellHost.player;
+      }
+    }
+  }
+  auto* hostActor = host != 0 && host != looker->GetFormId()
+    ? dynamic_cast<MpActor*>(
+        partOne.worldState.LookupFormByIdNoLoad(host).get())
+    : nullptr;
+  if (!hostActor) {
+    if (LookLineDue(looker->GetFormId(), msg.player, msg.target, 4, since)) {
+      spdlog::info(
+        "[verb:look] {:x}'s look at {:x} ({}): {}; dropped, {} "
+        "since the last line",
+        looker->GetFormId(), msg.target, msg.los ? "sees it" : "not",
+        host == 0 ? "no seat hosts its cell" : "its own game hosts its cell",
+        since);
+    }
+    return;
+  }
+  PlayerLookMessage out;
+  out.player = msg.player;
+  out.target = msg.target;
+  out.los = msg.los;
+  hostActor->SendToUser(out, true);
+  if (LookLineDue(looker->GetFormId(), msg.player, msg.target, msg.los ? 5 : 6,
+                  since)) {
+    spdlog::info("[verb:look] {:x}'s own game's look at {:x}: {}, sent to its "
+                 "cell's host {:x}, {} since the last line",
+                 looker->GetFormId(), msg.target,
+                 msg.los ? "sees it" : "does not see it", host, since);
+  }
 }
 
 void ActionListener::OnCraftReport(const RawMessageData& rawMsgData,

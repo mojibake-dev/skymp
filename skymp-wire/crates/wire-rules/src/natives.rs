@@ -499,14 +499,19 @@ pub enum Hook {
     /// ObjectReference.PushActorAway onto another player's figure, skipped on
     /// the seat whose script calls it: the figure is thrown by its player's
     /// own game alone, and every other screen follows that throw's stream
-    /// (thuum tracker #178; ADR-063: a player's body is its own game's). The
-    /// one hook on a staged row, read by the platform's OnStaged.
+    /// (thuum tracker #178; ADR-063: a player's body is its own game's). A
+    /// hook on a staged row, read by the platform's OnStaged.
     PushFigure,
+    /// Actor.HasLOS on the acting player's figure inside another player's
+    /// acting scope: answered from that player's own game's look, asked of
+    /// it through the server (PlayerLookAsk, PlayerLook); a staged row's,
+    /// read by the platform's OnStaged.
+    ActingLook,
 }
 
 impl Hook {
     /// Every code, in the order of its number.
-    pub const ALL: [Hook; 17] = [
+    pub const ALL: [Hook; 18] = [
         Hook::None,
         Hook::DeathReport,
         Hook::TrapDestroyed,
@@ -524,6 +529,7 @@ impl Hook {
         Hook::SceneStart,
         Hook::ActingInventory,
         Hook::PushFigure,
+        Hook::ActingLook,
     ];
 
     /// The code's number, skymp_wire.h's `SKYMP_NATIVE_HOOK_*`.
@@ -547,6 +553,7 @@ impl Hook {
             Hook::SceneStart => 14,
             Hook::ActingInventory => 15,
             Hook::PushFigure => 16,
+            Hook::ActingLook => 17,
         }
     }
 
@@ -571,6 +578,7 @@ impl Hook {
             Hook::SceneStart => "scene-start",
             Hook::ActingInventory => "acting-inventory",
             Hook::PushFigure => "push-figure",
+            Hook::ActingLook => "acting-look",
         }
     }
 
@@ -587,6 +595,7 @@ impl Hook {
             Hook::EffectHelper | Hook::HelperDelete => "second-hand.md",
             Hook::LeveledLanding => "papyrus-events.md",
             Hook::PushFigure => "push.md",
+            Hook::ActingLook => "player-look.md",
         }
     }
 
@@ -613,6 +622,7 @@ impl Hook {
             Hook::SceneStart => "Scene.Start and ForceStart are counted and run inside a scope rooted at a relay (train 53's V-scene, ADR-073 D-A2 C): a stopgap (decision 5 (c)), replaced by step 5a's scene row (decision 6, D-L2 B: the starting seat, the stage's cause seat, claims the scene's actors); deletes at 5a's scene row",
             Hook::ActingInventory => "ObjectReference.GetItemCount on the acting player's figure inside another player's acting scope answers the server's record of that player's inventory, carried in by the relayed press (thuum tracker #117, Eli's design B; ADR-063: one owner per inventory, no figure inventory): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory travels by its change form, every seat reading the one record); deletes when a figure's inventory reads take the player's record from that change form",
             Hook::PushFigure => "ObjectReference.PushActorAway onto another player's figure (an actor with a dynamic form id on base 0x7, the server's IsCreatedAsPlayer) runs on the seat whose own player pushes and is skipped on every other, and a push onto a seat's own player by another player's figure is skipped there, so the pusher's own game throws its copy and claims the body for the flight while every other screen follows that throw's live-body stream until its rest hands the body back (a player's body is its pusher's for the throw, as its gripper's for a grip): a stopgap (decision 5 (c)), replaced by the row's subject the pushed actor (Subject::Arg0Method) with its owner asked (decision 6), a player's figure answered by its pusher's seat for the throw and a knocked NPC by the seat whose cause moved it; deletes when owner_of answers a knock's cause seat and the row is unstaged with its target the subject",
+            Hook::ActingLook => "Actor.HasLOS on the acting player's figure inside another player's acting scope answers that player's own game's look at the target (the engine's test refuses a subject that is not its own player when the target is no actor): the seam asks that game through the server (PlayerLookAsk) and keeps its answers (PlayerLook, setPlayerLook), and answers false while none stands; decision 5 (a), a player's own camera (R3), its own game's",
         }
     }
 }
@@ -2638,10 +2648,14 @@ mod tests {
         assert_eq!(hooked(Hook::EffectHelper), ["ObjectReference.PlaceAtMe"]);
         assert_eq!(hooked(Hook::HelperDelete), ["ObjectReference.Delete"]);
         assert_eq!(hooked(Hook::LeveledLanding), ["ObjectReference.AddItem"]);
+        // the look hook rides a staged row, as the push figure's does
+        let staged_hooked = |hook: Hook| -> Vec<String> { TABLE.iter().filter(|r| r.hook == hook).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        assert_eq!(staged_hooked(Hook::ActingLook), ["Actor.HasLOS"]);
         assert_eq!(hooked(Hook::SceneStart), ["Scene.Start", "Scene.ForceStart"]);
-        // #178's push-figure, the one hook on a staged row (OnStaged's skip)
+        // the two hooks on staged rows, both read by the platform's OnStaged:
+        // the acting look and the push figure
         let staged_hooked: Vec<String> = TABLE.iter().filter(|r| r.staged && r.hook != Hook::None).map(|r| format!("{}.{}", r.cls, r.func)).collect();
-        assert_eq!(staged_hooked, ["ObjectReference.PushActorAway"]);
+        assert_eq!(staged_hooked, ["Actor.HasLOS", "ObjectReference.PushActorAway"]);
         for (i, hook) in Hook::ALL.iter().enumerate() {
             assert_eq!(usize::from(hook.code()), i, "{hook:?}");
             assert_eq!((hook.name().is_empty(), hook.verb().is_empty(), hook.line().is_empty()), (*hook == Hook::None, *hook == Hook::None, *hook == Hook::None), "{hook:?}");

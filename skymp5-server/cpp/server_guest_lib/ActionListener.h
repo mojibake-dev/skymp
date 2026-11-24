@@ -467,6 +467,16 @@ public:
   virtual void OnPushActor(const RawMessageData& rawMsgData,
                            const PushActorMessage& msg);
 
+  // a look a seat's script asks of another player's own game (the seat ran
+  // the line-of-sight test on that player's figure), sent on to that player's
+  // game alone; and that game's answer, its own player's look, sent on to the
+  // seat that hosts the target's cell. Routed only, nothing kept (R3: the look
+  // is the player's own)
+  virtual void OnPlayerLookAsk(const RawMessageData& rawMsgData,
+                               const PlayerLookAskMessage& msg);
+  virtual void OnPlayerLook(const RawMessageData& rawMsgData,
+                            const PlayerLookMessage& msg);
+
   // One sitting at a crafting bench as the sender's engine read it
   // (CraftService::OnCraftReport): the lost stacks taken from the record
   // when it holds every one (else nothing changes and the record goes back),

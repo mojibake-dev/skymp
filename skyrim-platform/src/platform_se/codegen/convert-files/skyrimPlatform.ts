@@ -426,6 +426,12 @@ export interface PushReportedEvent {
   force: number;
 }
 
+// a look a script this seat runs for another player asked of that player's figure (Actor.HasLOS inside that player's acting scope, whose engine test refuses a subject that is not its own player when the target is no actor), raised when the pair is due an ask (at most once in 5 s): the looking player by its server id and the target, a load-order form. The call itself was answered from the look table (setPlayerLook). No game call in its handler
+export interface LookAskedEvent {
+  player: number;
+  target: number;
+}
+
 // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next tick once per landed hit, cast or craft: the skill as its actor value (CommonLibSSE-NG include/RE/A/ActorValues.h, 6 One-handed to 23 Enchanting), the action's base amount (the weapon's base damage for a melee hit) and the source form's id (0 for none). No game call in its handler
 export interface SkillUseEvent {
   skill: number;
@@ -906,6 +912,8 @@ export declare function on(eventName: 'propImpulse', callback: (event: PropImpul
 export declare function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle
 export declare function on(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle
 export declare function once(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle
+export declare function on(eventName: 'lookAsked', callback: (event: LookAskedEvent) => void): EventHandle
+export declare function once(eventName: 'lookAsked', callback: (event: LookAskedEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function on(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle
@@ -1962,6 +1970,8 @@ export declare function setHosted(actorFormId: number, hosted: boolean): boolean
 export declare function isHosted(actorFormId: number): boolean;
 // thuum ADR-068 rung 5 (the acting scope; docs/research/rung5-quests-2026-11-09.md 1(c)): the acting player of a request the server relayed, written before the client applies it: stage 0 to 65535 a stage (the quest stage sink takes it at the pair's event and arms the quest's scope, so the stage's fragment runs for that player: Game.GetPlayer answers figureLocalId's figure, and the player's own actor in a native's frame is that figure), -1 a start and -2 a stop (the quest's scope armed at once), -3 a relayed trigger entry (questId the trigger; TESModPlatform.SendTriggerEvent takes its serverId), -4 a relayed activation (questId the pressed reference; TESModPlatform.ArmActivation takes it, tracker #117; items, its sixth argument and an activation's alone, the presser's recorded inventory as base id and count pairs, which the scope answers GetItemCount on the figure from); figureLocalId 0 when the acting player's figure is absent here (Game.GetPlayer answers None in the scope); ttlMs the request's life, 1 to 60000; false, nothing stored, for a quest 0, a stage outside -4 to 65535, a serverId 0 or the player's own id as the figure; stored with no game call
 export declare function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number, items?: number[]): boolean;
+// a player's own game's look at a target as the server relayed it (PlayerLook): the player by its server id (0xff000000 and up), the target a load-order form, whether the player sees it, kept in the look table the seam answers Actor.HasLOS on that player's figure from while an ask of the pair is within 10 s; false, nothing stored, for a player below 0xff000000 or a target of 0 or 0xff000000 and up; stored with no game call
+export declare function setPlayerLook(player: number, target: number, los: boolean): boolean;
 // thuum ADR-073 D-A2 C (train 53's V-scene: the stage's cause seat owns a scene a fragment starts): a stage (0 to 65535), start (-1) or stop (-2) this seat applies from a relay whose cause seat is elsewhere and whose acting player is this seat's own or unnamed (setActingPlayer covers another player): requested as setActingPlayer requests it, a start or a stop armed at once, rooted at the relay with no acting player, so nothing is swapped (Game.GetPlayer and the player's own actor stay this seat's, and a player's own global is written) while a Scene.Start or ForceStart in its fragment, or in the fragment of a stage it chains, is skipped on this seat (the cause seat starts the scene and claims its actors, ADR-073 step 5a's scene claim); ttlMs the request's life, 1 to 60000; false, nothing stored, for a quest 0, a stage outside -2 to 65535 or a ttl outside 1 to 60000; stored with no game call
 export declare function setRelayedScope(questId: number, stage: number, ttlMs: number): boolean;
 // thuum ADR-068 rung 5: the server id of the acting player whose scope requested (questId, stage) on this seat (stage -1 a start, -2 a stop), a relayed request or a stage, start or stop a scoped stack set, until the request expires; 0 for none; the C2S QuestStage's acting for a stage this seat set inside a scope; a table read, no game call

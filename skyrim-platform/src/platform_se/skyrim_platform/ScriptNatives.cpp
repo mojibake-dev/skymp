@@ -388,6 +388,9 @@ struct RowInfo
   bool lookOnly = false;
   // the Undead FX build: an actor's look row (its columns, ReadRow)
   bool actorLook = false;
+  // the acting-look hook (Actor.HasLOS): a look another player's own game
+  // answers
+  bool actingLook = false;
   // rung 5: the acting-return hook (Game.GetPlayer), and the row's quest
   // hook, None for every other row
   bool getPlayer = false;
@@ -577,13 +580,17 @@ enum StagedPlain : std::size_t
   kStagedFrame,
   kStagedUnresolved,
   kStagedFigurePush,
+  kStagedActingLook,
   kStagedPlains
 };
 
 constexpr const char* kStagedPlainName[kStagedPlains] = {
-  "staged local (R3, never sent)", "staged (platform)",
-  "staged (frame mismatch)", "staged (unresolved)",
-  "staged skipped (a push its pusher's own game throws)"
+  "staged local (R3, never sent)",
+  "staged (platform)",
+  "staged (frame mismatch)",
+  "staged (unresolved)",
+  "staged skipped (a push its pusher's own game throws)",
+  "staged answered (a look its player's own game answers)"
 };
 
 // thuum tracker #178: another player's figure on this seat, a dynamic form
@@ -1578,6 +1585,11 @@ struct Marks
   // kCompleted (SwapCount), the counted item's form beside it
   bool swapCount = false;
   std::uint32_t countItem = 0;
+  // the acting look (OnActingLook): Actor.HasLOS on the acting player's
+  // figure, its body skipped and its result the look that player's own game
+  // answered (ActingScope::Looks)
+  bool swapLook = false;
+  bool lookAnswer = false;
   ActingScope::Scope scope{};
   bool line = false;
   std::string caller;
@@ -3024,6 +3036,72 @@ Marks OnCreatedCall(std::size_t row, const RowInfo& info,
 // counted by their scope alone (ScopeRootOf), and an owned subject's
 // reference and its root frame's self are read through the VM's handle
 // policy (RefOfObject without its cross-check, SelfKindOfObject)
+// the acting look: Actor.HasLOS whose self is the acting player's figure
+// inside that player's scope (a word wall's look test the host runs for a
+// guest who entered its trigger). The engine's test refuses a subject that
+// is not its own player when the target is no actor, so the look is the
+// player's own game's: the body is skipped and the call answers that game's
+// last look at the target (ActingScope::Looks), false while none stands, and
+// when the pair is due an ask the platform raises lookAsked for the client
+// to send PlayerLookAsk. True when the call is answered so; false leaves it
+// to the staged count as before (a self that is no figure, a frame not the
+// native's own, a target that names no load-order reference)
+bool OnActingLook(std::size_t row, const RowInfo& info,
+                  const RE::BSScript::IFunction* fn,
+                  const RE::BSScript::Stack* stack,
+                  const ActingScope::Scope& scope, Marks& marks)
+{
+  if (!stack || scope.player.figure == 0 || scope.player.serverId == 0 ||
+      info.params == 0) {
+    return false;
+  }
+  const RE::BSScript::StackFrame* top = stack->top;
+  if (!top || top->owningFunction.get() != fn) {
+    return false;
+  }
+  const RE::BSScript::Object* self = ObjectOf(top->self);
+  const RE::VMHandle handle = self ? self->GetHandle() : 0;
+  if (!self || !IsPlainFormHandle(handle) ||
+      FormIdOfHandle(handle) != scope.player.figure) {
+    return false;
+  }
+  const std::uint32_t page = top->GetPageForFrame();
+  if (page == kNoPage) {
+    return false;
+  }
+  auto* vm = VM::GetSingleton();
+  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+  const RE::TESObjectREFR* target =
+    RefOfObject(policy, ObjectOf(top->GetStackFrameVariable(0, page)), false);
+  if (!target || target->formID == 0 || target->formID >= 0xff000000) {
+    return false;
+  }
+  bool ask = false;
+  const std::uint32_t player = scope.player.serverId;
+  const std::uint32_t looked = target->formID;
+  marks.skip = true;
+  marks.result = info.result;
+  marks.swapLook = true;
+  marks.lookAnswer = ActingScope::Looks::Answer(player, looked, ask);
+  CountStagedPlain(row, kStagedActingLook);
+  if (ask) {
+    logger::info("[verb:look] Actor.HasLOS on acting player {:x}'s figure "
+                 "{:x} at {:x}: answered {} from its own game's look, which "
+                 "is asked of it again",
+                 player, scope.player.figure, looked,
+                 marks.lookAnswer ? "yes" : "no");
+    if (auto* platform = SkyrimPlatform::GetSingleton()) {
+      platform->AddTickTask([player, looked](Napi::Env env) {
+        auto obj = Napi::Object::New(env);
+        AddObjProperty(&obj, "player", player);
+        AddObjProperty(&obj, "target", looked);
+        EventsApi::SendEvent("lookAsked", { obj });
+      });
+    }
+  }
+  return true;
+}
+
 Marks OnStaged(std::size_t row, const RowInfo& info,
                const RE::BSScript::IFunction* fn,
                const RE::BSScript::Stack* stack,
@@ -3039,6 +3117,10 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
   const bool actingSeatAlone =
     native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE && scope &&
     ActingScope::Swaps(*scope);
+  if (info.actingLook && scope && ActingScope::Swaps(*scope) &&
+      OnActingLook(row, info, fn, stack, *scope, marks)) {
+    return marks;
+  }
   if (native.kind == NativeKind::Local && !actingSeatAlone) {
     CountStagedPlain(row, kStagedLocal);
     return marks;
@@ -4005,6 +4087,7 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   info.itemCount = columns.hook == SKYMP_NATIVE_HOOK_ACTING_INVENTORY;
   info.globalSet = columns.hook == SKYMP_NATIVE_HOOK_PLAYER_GLOBAL;
   info.pushFigure = columns.hook == SKYMP_NATIVE_HOOK_PUSH_FIGURE;
+  info.actingLook = columns.hook == SKYMP_NATIVE_HOOK_ACTING_LOOK;
   info.placeAtMe = columns.hook == SKYMP_NATIVE_HOOK_EFFECT_HELPER;
   info.deletes = columns.hook == SKYMP_NATIVE_HOOK_HELPER_DELETE;
   info.addItem = columns.hook == SKYMP_NATIVE_HOOK_LEVELED_LANDING;
@@ -4736,8 +4819,12 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
   PlatformCall::PopStrandedCalls(sp);
   const Marks marks = OnCall(self, stack.get());
   if (marks.skip) {
-    // the body never runs: the call completes with the row's empty result
+    // the body never runs: the call completes with the row's empty result,
+    // or an acting look's answer
     SetEmptyResult(stack->returnValue, marks.result);
+    if (marks.swapLook) {
+      stack->returnValue.SetBool(marks.lookAnswer);
+    }
     return RE::BSScript::IFunction::CallResult::kCompleted;
   }
   // the level is left when the call returns or a C++ exception unwinds

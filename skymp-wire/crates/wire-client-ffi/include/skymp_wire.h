@@ -312,10 +312,16 @@
 #define SKYMP_NATIVE_HOOK_PUSH_FIGURE 16
 
 /**
+ * Hook: Actor.HasLOS on the acting player's figure inside another player's
+ * acting scope, answered from that player's own game's look (PlayerLook).
+ */
+#define SKYMP_NATIVE_HOOK_ACTING_LOOK 17
+
+/**
  * The largest hook code: a row with a larger one is a table this build does
  * not read.
  */
-#define SKYMP_NATIVE_HOOK_LAST 16
+#define SKYMP_NATIVE_HOOK_LAST 17
 
 /**
  * The callback `Tick` calls once per event: packet type, content and its
@@ -331,15 +337,16 @@ typedef void (*OnPacket)(int32_t, const char*, size_t, const char*, void*);
  * One row of the table, every string NUL-terminated and valid for the
  * process's life.
  */
-typedef struct SkympNativeRow {
+typedef struct SkympNativeRow
+{
   /**
    * The native's Papyrus class, as the table spells it.
    */
-  const char *cls;
+  const char* cls;
   /**
    * The native's name.
    */
-  const char *func;
+  const char* func;
   /**
    * Its kind (`SKYMP_NATIVE_KIND_*`).
    */
@@ -359,7 +366,7 @@ typedef struct SkympNativeRow {
   /**
    * What a receiver runs: "same", "twin:<Class.Name>" or "none".
    */
-  const char *relay;
+  const char* relay;
   /**
    * What the server keeps (`SKYMP_NATIVE_KEEP_*`).
    */
@@ -415,7 +422,7 @@ extern "C" {
 /**
  * The version string. Nothing in skymp5-client reads it; it marks the wire.
  */
-const char *MpCommonGetVersion(void);
+const char* MpCommonGetVersion(void);
 
 /**
  * Start connecting to `host:port`, replacing any client that exists.
@@ -424,7 +431,7 @@ const char *MpCommonGetVersion(void);
  * # Safety
  * `host` is null or a valid NUL-terminated string, borrowed for the call.
  */
-void CreateClient(const char *host, uint16_t port);
+void CreateClient(const char* host, uint16_t port);
 
 /**
  * Disconnect and forget the client.
@@ -447,7 +454,7 @@ bool IsConnected(void);
  * `on_packet` is null or a function with the [`OnPacket`] signature;
  * `state` is passed back to it untouched.
  */
-void Tick(OnPacket on_packet, void *state);
+void Tick(OnPacket on_packet, void* state);
 
 /**
  * Send one SkyMP message, given as its JSON (what skymp5-client's
@@ -456,7 +463,7 @@ void Tick(OnPacket on_packet, void *state);
  * # Safety
  * `json` is null or a valid NUL-terminated string, borrowed for the call.
  */
-void Send(const char *json, bool reliable);
+void Send(const char* json, bool reliable);
 
 /**
  * Send raw bytes. Nothing in skymp5-client emits a raw send; for the
@@ -467,7 +474,7 @@ void Send(const char *json, bool reliable);
  * `data` points to `size` readable bytes (or is null with `size` 0),
  * borrowed for the call.
  */
-void SendRaw(const void *data, size_t size, bool reliable);
+void SendRaw(const void* data, size_t size, bool reliable);
 
 /**
  * The natives table's rows, valid for the process's life, their count
@@ -478,10 +485,10 @@ void SendRaw(const void *data, size_t size, bool reliable);
  * # Safety
  * `count` is null or points to a writable `size_t`.
  */
-const struct SkympNativeRow *SkympNativeRows(size_t *count);
+const struct SkympNativeRow* SkympNativeRows(size_t* count);
 
 #ifdef __cplusplus
-}  // extern "C"
-#endif  // __cplusplus
+} // extern "C"
+#endif // __cplusplus
 
-#endif  /* SKYMP_WIRE_H */
+#endif /* SKYMP_WIRE_H */

@@ -32,6 +32,7 @@ import { LockService } from "./services/services/lockService";
 import { WeatherService } from "./services/services/weatherService";
 import { PerkService } from "./services/services/perkService";
 import { WordWallService } from "./services/services/wordWallService";
+import { LookService } from "./services/services/lookService";
 import { RelayedActivationService } from "./services/services/relayedActivationService";
 import { ObjectAnimationService } from "./services/services/objectAnimationService";
 import { TrapResultService } from "./services/services/trapResultService";
@@ -142,6 +143,7 @@ const main = () => {
       new WeatherService(sp, controller),
       new PerkService(sp, controller),
       new WordWallService(sp, controller),
+      new LookService(sp, controller),
       new RelayedActivationService(sp, controller),
       new ObjectAnimationService(sp, controller),
       new TrapResultService(sp, controller),

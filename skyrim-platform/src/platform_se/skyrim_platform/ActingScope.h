@@ -263,4 +263,28 @@ bool Is(uint32_t questFormId);
 bool Any();
 size_t Count();
 }
+
+// A player's own game's looks: whether that player sees a target, by its
+// own engine's test, as its game answered a look this seat asked of it
+// (setPlayerLook, the server's PlayerLook), keyed by the player's server id
+// and the target. The seam answers Actor.HasLOS on that player's figure
+// inside its acting scope from here (the engine's test refuses a subject
+// that is not its own player when the target is no actor). Mutex-guarded,
+// written with no game call, cleared at a game load
+namespace Looks {
+// the wire's LOOK_WATCH_MS: the player's game watches a pair this long after
+// each ask, so its last answer stands while an ask of the pair is that recent
+constexpr uint64_t kWatchMs = 10000;
+// a pair is asked again this often while a script keeps asking it, inside
+// the watch
+constexpr uint64_t kAskMs = 5000;
+// the bound, the pair asked longest ago dropped past it
+constexpr size_t kMaxLooks = 256;
+void Set(uint32_t player, uint32_t target, bool los);
+// the answer for the pair: its last stored look while an ask stands (one
+// within kWatchMs), else false; `ask` true when the pair is due an ask (none
+// within kAskMs), which this call records as made
+bool Answer(uint32_t player, uint32_t target, bool& ask);
+size_t Count();
+}
 }

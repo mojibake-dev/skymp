@@ -78,3 +78,23 @@ divergences:
     legacy: 0
     wire: 1
     reason: the wire stack relays c1's accepted cloak cast to c2, naming c1 as the server knows it; the legacy stack refuses a cast of a spell c1 never learned
+  - client: c1
+    msg: {t: 43, idx: "refr:ff000003", effects: [{caster: 4278190082, effect: 1100765, magnitude: 3.2160000801086426, remaining: 0, source: 177029}], modifiers: []}
+    legacy: 0
+    wire: 1
+    reason: c1's cloak reaches c2's actor with its first hit after the cast, and the wire shows the hit's effect once to every game that sees the target (MpActor::ApplyEffects, a reached stream's hit shown before its conditions are asked); the legacy stack refuses the cloak and applies nothing
+  - client: c1
+    msg: {t: 43, idx: "refr:ff000003", effects: [{caster: 4278190082, effect: 1100765, magnitude: 4, remaining: 0, source: 177029}], modifiers: []}
+    legacy: 0
+    wire: 1
+    reason: the cloak's second hit on c2's actor shown the same way
+  - client: c2
+    msg: {t: 43, idx: "refr:ff000003", effects: [{caster: 4278190082, effect: 1100765, magnitude: 3.2160000801086426, remaining: 0, source: 177029}], modifiers: []}
+    legacy: 0
+    wire: 1
+    reason: the same first hit shown to c2, the target's own game
+  - client: c2
+    msg: {t: 43, idx: "refr:ff000003", effects: [{caster: 4278190082, effect: 1100765, magnitude: 4, remaining: 0, source: 177029}], modifiers: []}
+    legacy: 0
+    wire: 1
+    reason: the same second hit shown to c2

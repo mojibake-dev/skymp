@@ -1602,6 +1602,9 @@ struct Marks
   // the body skipped (the lever), and the declared return's kind for the
   // result left in its place
   bool skip = false;
+  // a skipped Bool row answered true instead of the empty result (an owned
+  // latent action on a reference whose 3D this seat has not loaded)
+  bool resultTrue = false;
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
   // rung 5's acting scope (ActingScope.h): Game.GetPlayer's result written
@@ -4126,6 +4129,28 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     return marks;
   }
   marks.action = native.kind == NativeKind::Action;
+  // an owned latent action row on a reference whose 3D this seat has not
+  // loaded (TESObjectREFR::Is3DLoaded, CommonLibSSE-NG
+  // include/RE/T/TESObjectREFR.h:435): its body would wait on a graph event
+  // this seat's engine never raises without the 3D (PlayAnimationAndWait's
+  // end event), and the script that called it would stay busy past every
+  // later event on the reference. The call is answered at once (true for a
+  // Bool, as a played animation answers; kCompleted, H-F2's skipped latent),
+  // and its twin goes to the games that render the reference as queued
+  // above. HYPOTHESIS until a sitting's line: the wait never returned
+  // because the 3D was unloaded here
+  if (info.latent && native.kind == NativeKind::Action && !isActor &&
+      !ref->Is3DLoaded()) {
+    marks.skip = true;
+    marks.result = info.result;
+    marks.resultTrue = true;
+    marks.action = false;
+    logger::info("[verb:scripts] {}.{} on {:x}: an owned latent action on a "
+                 "reference whose 3D this seat has not loaded, answered at "
+                 "once (its wait would never end here); its twin relayed to "
+                 "the games that render it",
+                 native.cls, native.fn, ref->formID);
+  }
   return marks;
 }
 
@@ -4948,6 +4973,10 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
     SetEmptyResult(stack->returnValue, marks.result);
     if (marks.swapLook) {
       stack->returnValue.SetBool(marks.lookAnswer);
+    }
+    if (marks.resultTrue &&
+        marks.result == RE::BSScript::TypeInfo::RawType::kBool) {
+      stack->returnValue.SetBool(true);
     }
     return RE::BSScript::IFunction::CallResult::kCompleted;
   }

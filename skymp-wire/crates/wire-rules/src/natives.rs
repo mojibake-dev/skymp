@@ -1254,6 +1254,29 @@ enum Channel {
         /// The relay native's name.
         func: &'static str,
     },
+    /// A forwarded state call ([`ScriptCalls::shape_forward`]), run by the
+    /// subject's owner.
+    Forward,
+}
+
+/// The channel a forwarded call of `row` leaves by ("forward, never
+/// drop"): a live, non-latent state row's call the
+/// sender's engine skipped on a subject it does not own, which the subject's
+/// owner runs. A staged row is counted on its seat until its batch unstages,
+/// an action row relays from its owner, and a latent row would leave the
+/// owner's game waiting in a call no stack of its own made; each is refused
+/// by its row (`E_SCRIPTCALL_ROW`).
+fn forward_channel_of(row: &Row) -> Result<Channel, Refusal> {
+    if row.staged {
+        return Err(refusal(Code::Row, "a staged row: counted on its seat, never forwarded until its batch unstages".to_owned()));
+    }
+    if row.kind != Kind::State {
+        return Err(refusal(Code::Row, "not a state row: a forward carries a state call the sender's engine skipped".to_owned()));
+    }
+    if row.latent {
+        return Err(refusal(Code::Row, "a latent row: its owner's game would wait in a call no stack of its own made".to_owned()));
+    }
+    Ok(Channel::Forward)
 }
 
 /// The channel a call of `row` leaves by: an action row the table relays to
@@ -1704,7 +1727,18 @@ impl ScriptCalls {
     /// arguments and the subject's form. A call refused here costs the core
     /// no lookup.
     pub fn shape(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
-        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)) && !r.staged);
+        self.shape_with(row, args, sender, self_id, now_ms, false)
+    }
+
+    /// The shape step on a forwarded call: as
+    /// [`ScriptCalls::shape`], from the actions' budget, its row a live,
+    /// non-latent state row ([`forward_channel_of`]) whatever the row keeps.
+    pub fn shape_forward(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
+        self.shape_with(row, args, sender, self_id, now_ms, true)
+    }
+
+    fn shape_with(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64, forward: bool) -> Result<Shaped, Refusal> {
+        let record = !forward && row.is_some_and(|r| matches!(r.keep, Keep::Record(_)) && !r.staged);
         let (budgets, burst, per_second, whose) =
             if record { (&mut self.record_budgets, BURST_RECORD, PER_SECOND_RECORD, " (its record rows' own budget)") } else { (&mut self.budgets, BURST, PER_SECOND, "") };
         if !budgets.entry(sender).or_insert_with(|| Bucket::full(burst, now_ms)).take(burst, per_second, now_ms) {
@@ -1713,7 +1747,7 @@ impl ScriptCalls {
         let Some(row) = row else {
             return Err(refusal(Code::Row, "the pair has no row in the table".to_owned()));
         };
-        let channel = channel_of(row)?;
+        let channel = if forward { forward_channel_of(row)? } else { channel_of(row)? };
         if args.len() != row.params.len() {
             return Err(refusal(Code::Args, format!("{} argument(s), the row's {}", args.len(), row.params.len())));
         }
@@ -1755,6 +1789,7 @@ impl ScriptCalls {
         let Shaped { row, subject, channel, method_self, now_ms } = shaped;
         let (relay_cls, relay_fn) = match channel {
             Channel::Relay { cls, func } => (cls, func),
+            Channel::Forward => return self.forward(row, subject, facts),
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
@@ -1826,6 +1861,48 @@ impl ScriptCalls {
             variable_kind: row.variable_kind(),
             look: false,
             figure_args: false,
+        })
+    }
+
+    /// A forwarded call after its shape: its
+    /// subject a world object, a door or a container, a placement's record or
+    /// an actor, which some seat owns and the reporter does not
+    /// (`facts.owner`: a world object's cell host, an actor's simulator),
+    /// never the reporter's own player; relayed as the same native with every
+    /// argument to that owner alone ([`Audience::Host`]) with the subject's
+    /// next sequence, the reporter's own player among its object arguments
+    /// named as its figure, and kept nowhere: the owner's own run carries its
+    /// consequence as the object's change form or record. The epoch is not
+    /// read: the reporter claims no authority, and the owner standing now
+    /// runs it. A subject nobody owns is refused until the frozen cell's
+    /// record takes forwards.
+    fn forward(&mut self, row: Row, subject: u32, facts: &Facts) -> Verdict {
+        if facts.kind == SubjectKind::Unknown {
+            return refuse(Code::Owner, "the server holds no such reference".to_owned());
+        }
+        if subject == OWN_PLAYER {
+            return refuse(Code::Owner, "the reporter's own player: its calls are its own seat's".to_owned());
+        }
+        if facts.owner == 0 {
+            return refuse(Code::Owner, format!("nobody owns {subject:x}: a forward waits for a seat that hosts its cell"));
+        }
+        if facts.owner == facts.sender {
+            return refuse(Code::Owner, format!("the reporter owns {subject:x}: its own call runs on its own game"));
+        }
+        let seq = self.next_seq(subject);
+        Verdict::Accept(Accept {
+            subject,
+            seq,
+            relay_cls: row.cls,
+            relay_fn: row.func,
+            relay_args: EVERY_ARG.get(..row.params.len()).unwrap_or(&[]),
+            relay_self: if row.subject == Subject::SelfRef { subject } else { 0 },
+            audience: Audience::Host,
+            keep: Keep::Nothing,
+            graph_event_arg: None,
+            variable_kind: None,
+            look: false,
+            figure_args: true,
         })
     }
 
@@ -1989,6 +2066,52 @@ mod tests {
         // the sequence is per object: another subject starts at 1
         assert_eq!(accepted(&s.judge(row, &[Arg::String], &hosted(0xaa8cc), 20)).seq, 1);
         assert_eq!(s.seq_of(0xaa8cd), 0);
+    }
+
+    // the forward: a guest's dialogue fragment
+    // unlocking Whiterun's gate (Skyrim.esm 0x1b1f1, a door) in a cell the
+    // host's game hosts; the guest's engine skipped the call and forwards it
+    fn forwarded(s: &mut ScriptCalls, row: Option<&Row>, args: &[Arg], facts: &Facts) -> Verdict {
+        match s.shape_forward(row, args, facts.sender, facts.self_id, 0) {
+            Ok(shaped) => s.owner(shaped, facts),
+            Err(r) => Verdict::Refuse(r),
+        }
+    }
+
+    #[test]
+    fn a_guests_forwarded_state_call_goes_to_the_subjects_owner_alone() {
+        const GATE: u32 = 0x1b1f1;
+        let lock = row("ObjectReference", "Lock");
+        let args = [Arg::Bool, Arg::Bool];
+        let gate = Facts { sender: GUEST, kind: SubjectKind::DoorOrContainer, epoch: 0, ..hosted(GATE) };
+        let mut s = ScriptCalls::default();
+        let a = accepted(&forwarded(&mut s, lock, &args, &gate));
+        assert_eq!((a.subject, a.relay_self, a.seq), (GATE, GATE, 1));
+        assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("ObjectReference", "Lock", &[0u8, 1][..]));
+        assert_eq!((a.audience, a.keep, a.look, a.figure_args), (Audience::Host, Keep::Nothing, false, true));
+        // not as an action: the state row has no channel of its own
+        assert_eq!(code(&s.judge(lock, &args, &gate, 0)), Some(Code::Row));
+        // the owner's own call runs on its own game; nobody owning it, the
+        // server holding no such reference, and the reporter's own player
+        assert_eq!(code(&forwarded(&mut s, lock, &args, &Facts { sender: HOST, ..gate })), Some(Code::Owner));
+        assert_eq!(code(&forwarded(&mut s, lock, &args, &Facts { owner: 0, ..gate })), Some(Code::Owner));
+        assert_eq!(code(&forwarded(&mut s, lock, &args, &Facts { kind: SubjectKind::Unknown, ..gate })), Some(Code::Owner));
+        // an actor's owner is its simulator
+        let npc = Facts { kind: SubjectKind::Actor, ..gate };
+        assert_eq!(accepted(&forwarded(&mut s, lock, &args, &npc)).audience, Audience::Host);
+        // an action row relays from its owner, never forwarded
+        assert_eq!(code(&forwarded(&mut s, row("ObjectReference", "PlayAnimation"), &[Arg::String], &gate)), Some(Code::Row));
+        // a staged row and a latent state row are refused by their rows
+        if let Some(staged) = TABLE.iter().find(|r| r.staged && r.kind == Kind::State) {
+            let none = vec![Arg::Absent; staged.params.len()];
+            assert_eq!(refused_by(s.shape_forward(Some(staged), &none, GUEST, GATE, 0)), Some(Code::Row), "{}.{}", staged.cls, staged.func);
+        }
+        if let Some(latent) = live().find(|r| r.latent && r.kind == Kind::State) {
+            let none = vec![Arg::Absent; latent.params.len()];
+            assert_eq!(refused_by(s.shape_forward(Some(latent), &none, GUEST, GATE, 0)), Some(Code::Row), "{}.{}", latent.cls, latent.func);
+        }
+        // the arguments are the row's
+        assert_eq!(code(&forwarded(&mut s, lock, &[Arg::Bool], &gate)), Some(Code::Args));
     }
 
     #[test]

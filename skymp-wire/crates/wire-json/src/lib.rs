@@ -454,11 +454,16 @@ mod tests {
     /// x-spell-calls 20261115-034842: the PlaceAtMe of the wall 0x1a098529 on
     /// the player, its result the caster's ff0008fa (`placed`), and the
     /// wall's shader 0x1a0735e7 played on that reference, marked as the
-    /// sender's created one (`localArgs` bit 0).
+    /// sender's created one (`localArgs` bit 0). 9 (SCHEMA_VERSION 68, the
+    /// forward) is a guest's dialogue fragment's
+    /// unlock of Whiterun's gate, Skyrim.esm 0x1b1f1, which the host's game
+    /// owns: Lock(false, false) as the guest's engine skipped it, sent on to
+    /// the gate's owner (`forward`); the fragment's script is unread, so
+    /// `caller` and `handler` are empty.
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 9] = [
+        let verdicts: [(&str, Result<(), Reject>); 10] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
             ("75-ScriptCall-2.json", Ok(())),
@@ -468,6 +473,7 @@ mod tests {
             ("75-ScriptCall-6.json", Ok(())),
             ("75-ScriptCall-7.json", Ok(())),
             ("75-ScriptCall-8.json", Ok(())),
+            ("75-ScriptCall-9.json", Ok(())),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();

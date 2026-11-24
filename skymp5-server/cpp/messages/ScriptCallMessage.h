@@ -67,7 +67,8 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
       .Serialize("latent", latent)
       .Serialize("landed", landed)
       .Serialize("placed", placed)
-      .Serialize("localArgs", localArgs);
+      .Serialize("localArgs", localArgs)
+      .Serialize("forward", forward);
   }
 
   // the subject's owner epoch the sender holds (the cell's host epoch;
@@ -96,4 +97,8 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
   // reference by that id, which the server maps to its own copy
   std::optional<uint32_t> placed;
   std::optional<uint32_t> localArgs; // 16 bits on the wire (wire-schema)
+  // since SCHEMA_VERSION 68 (the forward): true on
+  // a state call the sender's engine skipped on a subject it does not own,
+  // which the server sends to that subject's owner alone; absent otherwise
+  std::optional<bool> forward;
 };

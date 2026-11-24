@@ -9,7 +9,7 @@ import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
-import { RefSweep } from "../../sync/frameCost";
+import { PASS_LONG_MS, PASS_SAY_MS, passClockMs, PassTimes, RefSweep } from "../../sync/frameCost";
 import { partsPast } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { liveNoRowHeld, noRowEntry } from "../../sync/kindCache";
@@ -28,6 +28,7 @@ import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
 import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
+import { knockKept } from "../../sync/knockKept";
 import { UndrivenSkeletons, sampleStep } from "../../sync/drivenParts";
 
 const TAG = "verb:prop-physics";
@@ -318,6 +319,7 @@ type Prop = {
     keyframeDue: boolean;          // a word named another seat: the copy goes Keyframed before any of its samples
     lastAppliedLog: number;
     lastClaimAt: number;
+    knockTrackedAt: number;        // a knock of a body this seat hosts tracked it then (its knock edge, a relayed push): kept until its stream starts (0 none)
     farWake: boolean;              // tracked in place by wakeFar (past TRACK_RADIUS or the TRACK_MAX cap): kept while awake (#120)
     restAt: number;                // the render clock applied the stream's asleep sample then, for the Dynamic set after it (0 none)
     // physics rung 4, a body of parts followed (route K3, D-PH26 A: each part
@@ -1035,7 +1037,14 @@ export class PropService extends ClientListener {
         this.sweepEngineRefs(now);
         if (now - this.lastRescan >= RESCAN_MS) {
             this.lastRescan = now;
+            const rescanFrom = passClockMs();
+            this.rescanViews = 0;
             this.rescan(now);
+            this.rescanTimes.add(passClockMs() - rescanFrom, this.rescanViews);
+        }
+        const rescanLine = this.rescanTimes.close(now);
+        if (rescanLine !== undefined) {
+            logLab("frame-cost", rescanLine);
         }
         // thuum tracker #175 (playtest 56's look 4): the hand is read every
         // update and a knock tracked whenever one is queued. Gated on a
@@ -2685,10 +2694,11 @@ export class PropService extends ClientListener {
         }
     }
 
-    // The watched figures: one another player's, its engine reading it
-    // ragdolled within the window, is this seat's push's throw, so it is a row
-    // (its body pushed here, bodyRow.ts) claimed by touch 3, which the server
-    // grants on this seat's hit it took (OnPropClaim's ClaimedHit)
+    // The watched bodies: one another seat owns (another player's figure, a
+    // puppet), its engine reading it ragdolled within the window, is this
+    // seat's push's throw, so it is a row (its body pushed here, bodyRow.ts)
+    // claimed by touch 3 for the flight, which the server grants on this
+    // seat's hit it took (OnPropClaim); the other seats follow its stream
     private watchForced(now: number) {
         if (this.forced.size === 0) {
             return;
@@ -2705,6 +2715,9 @@ export class PropService extends ClientListener {
                 // sample), so no claim: the knock edge's own path
                 // (trackKnocks), for a graph that queues no knock edge
                 const hosted = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by a push", false, true);
+                if (typeof hosted !== "string") {
+                    hosted.knockTrackedAt = now;
+                }
                 logLab(TAG, typeof hosted === "string"
                     ? `actor ${id}: this seat hosts it, knocked by a push, no row: ${hosted}`
                     : `prop ${hosted.refr.toString(16)}: an actor this seat hosts, knocked by a push; tracked`);
@@ -2716,10 +2729,10 @@ export class PropService extends ClientListener {
             } else if (myId === 0) {
                 logLab(TAG, `figure ${id}: knocked by this seat's push, not claimed: this seat has no server id yet`);
             } else if (this.ownedHere(row, myId)) {
-                logLab(TAG, `prop ${row.refr.toString(16)}: another player's figure this seat's push knocked, already this seat's`);
+                logLab(TAG, `prop ${row.refr.toString(16)}: another seat's body this seat's push knocked, already this seat's`);
             } else {
                 this.claim(row, TOUCH_IMPULSE, now);
-                logLab(TAG, `prop ${row.refr.toString(16)}: another player's figure this seat's push knocked; claimed by touch 3`);
+                logLab(TAG, `prop ${row.refr.toString(16)}: another seat's body this seat's push knocked; claimed by touch 3`);
             }
         }
     }
@@ -2735,14 +2748,21 @@ export class PropService extends ClientListener {
         }
         const figure = isFigureBase(ac);
         const hosted = !figure && this.hostsHere(localId);
+        const puppet = !figure && !hosted && this.othersHere(localId);
         const tracked = this.props.has(refr);
-        const c = tracked || (!figure && !hosted) ? null : this.bodyClass(localId);
-        return { figure, hosted, tracked, ragdoll: c !== null && c.ragdoll };
+        const c = tracked || (!figure && !puppet && !hosted) ? null : this.bodyClass(localId);
+        return { figure, puppet, hosted, tracked, ragdoll: c !== null && c.ragdoll };
     }
 
     // whether this seat's game runs the actor (HostService's word)
     private hostsHere(localId: number): boolean {
         return this.controller.lookupListener(HostService).isMineLocal(localId);
+    }
+
+    // whether another seat's game runs the actor (HostService's word: a
+    // puppet here)
+    private othersHere(localId: number): boolean {
+        return this.controller.lookupListener(HostService).isOthersLocal(localId);
     }
 
     private trackKnocks(now: number) {
@@ -2752,7 +2772,10 @@ export class PropService extends ClientListener {
             if (localId === 0x14) {
                 this.trackOwnBody(now);
             } else if (!this.byLocal.has(localId)) {
-                this.rowInPlace({ localId, formType: 0 }, now, "knocked here (ActionKnockDown)");
+                const row = this.rowInPlace({ localId, formType: 0 }, now, "knocked here (ActionKnockDown)");
+                if (row) {
+                    row.knockTrackedAt = now;
+                }
             }
         }
     }
@@ -3219,6 +3242,7 @@ export class PropService extends ClientListener {
         const playerWorldOrCell = ObjectReferenceEx.getWorldOrCell(player);
         const views = view.getFormViews();
         const n = views.getFormViewsArrayLength();
+        this.rescanViews = n;
         type Found = { refr: number; localId: number; formIdx: number; distance: number; cell: number; baseId: number; world: boolean; parts: number };
         const found: Found[] = [];
         // the rows past TRACK_RADIUS (items and world bodies), by this engine's id, for wakeFar
@@ -3404,8 +3428,9 @@ export class PropService extends ClientListener {
     // whose stream this seat follows (followLive: an awake sample on the
     // render clock within the quiet window, or a word naming another seat
     // whose first sample is on its way); one this seat claimed moments ago
-    // (an impact, an island, a contact), awaiting the word; a trap body is the
-    // trap bodies' loop's
+    // (an impact, an island, a contact), awaiting the word; one this seat's
+    // engine knocked moments ago, awaiting its stream's first sample
+    // (sync/knockKept.ts); a trap body is the trap bodies' loop's
     private keptAnywhere(prop: Prop, myId: number, now: number): boolean {
         const word = this.owners.get(prop.refr);
         if (myId !== 0 && word !== undefined && word.player === myId) {
@@ -3433,7 +3458,8 @@ export class PropService extends ClientListener {
         // out
         const farAwake = prop.farWake && now - prop.awakeAt < FAR_WAKE_KEEP_MS;
         return prop.streaming || prop.held || farAwake || this.followLive(prop, now)
-            || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS);
+            || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS)
+            || knockKept(prop.knockTrackedAt, now);
     }
 
     // whether the prop's reference stands with its 3D loaded in the player's
@@ -4332,6 +4358,7 @@ export class PropService extends ClientListener {
             keyframeDue: false,
             lastAppliedLog: 0,
             lastClaimAt: 0,
+            knockTrackedAt: 0,
             farWake: false,
             restAt: 0,
             imposing: false,
@@ -4696,6 +4723,9 @@ export class PropService extends ClientListener {
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;
+    // the rescan's time a run and the views it read (frameCost's PassTimes)
+    private readonly rescanTimes = new PassTimes("rescan", PASS_SAY_MS, PASS_LONG_MS);
+    private rescanViews = 0;
     // ADR-068 D-S3 point 4: the trap bodies by the server's id; the batch's
     // motion calls, the owner words and the followed bodies' at-rest samples
     // since the last update (JS state from their handlers)

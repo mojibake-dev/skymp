@@ -40,9 +40,12 @@ const figureActor = { getBaseObject: () => ({ getFormID: () => 0x7 }), getFormID
 // a draugr this seat hosts (a game-file actor whose graph is no humanoid's, so the action hook queues no knock for it)
 const DRAUGR = 0x380b3;
 const draugrActor = { getBaseObject: () => ({ getFormID: () => 0x4a59a }), getFormID: () => DRAUGR, isDead: () => false };
-const actors: Record<number, unknown> = { [FIGURE]: figureActor, [DRAUGR]: draugrActor };
+// a draugr another seat hosts, a puppet here
+const PUPPET = 0x380b5;
+const puppetActor = { getBaseObject: () => ({ getFormID: () => 0x567c8 }), getFormID: () => PUPPET, isDead: () => false };
+const actors: Record<number, unknown> = { [FIGURE]: figureActor, [DRAUGR]: draugrActor, [PUPPET]: puppetActor };
 const sp: any = new Proxy({
-  Actor: { from: (f: unknown) => (f === figureActor || f === draugrActor ? f : null) },
+  Actor: { from: (f: unknown) => (f === figureActor || f === draugrActor || f === puppetActor ? f : null) },
   Game: { getFormEx: (id: number) => actors[id] ?? null, getPlayer: () => null },
 }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
 
@@ -62,7 +65,8 @@ const service = () => {
   s.enabled = () => true;
   s.myId = () => 7;
   s.ownedHere = () => false;
-  s.bodyClass = (localId: number) => (localId === FIGURE || localId === DRAUGR ? { ragdoll: true, parts: [0], bones: [], cut: false } : null);
+  s.bodyClass = (localId: number) => (localId === FIGURE || localId === DRAUGR || localId === PUPPET
+    ? { ragdoll: true, parts: [0], bones: [], cut: false } : null);
   // the rows made, by local id, and whether this seat's push made them (rowInPlace's and rowOrRefusal's last argument)
   const rows: Array<{ localId: number; pushed: boolean }> = [];
   const rowFor = (r: { localId: number }, _now: number, _why: string, _gripped?: boolean, pushed?: boolean) => {
@@ -72,6 +76,7 @@ const service = () => {
   s.rowInPlace = rowFor;
   s.rowOrRefusal = rowFor;
   s.hostsHere = (localId: number) => localId === DRAUGR;
+  s.othersHere = (localId: number) => localId === PUPPET;
   s.claim = (prop: { refr: number }, touch: number) => { claims.push({ refr: prop.refr, touch }); };
   return { handlers, messages, claims, rows, s };
 };
@@ -113,6 +118,14 @@ test("the server's relayed push onto a draugr this seat hosts (another seat's sh
   handlers.update();
   assert.deepEqual(rows, [{ localId: DRAUGR, pushed: true }]);
   assert.deepEqual(claims, []);
+});
+
+test("a shout that reaches a draugr another seat hosts claims its body by touch 3 once its engine reads it knocked, with no knock queued", () => {
+  const { handlers, claims, rows } = service();
+  handlers.magicEffectApply({ caster: { getFormID: () => PLAYER }, target: { getFormID: () => PUPPET } });
+  handlers.update();
+  assert.deepEqual(rows, [{ localId: PUPPET, pushed: true }]);
+  assert.deepEqual(claims, [{ refr: PUPPET, touch: 3 }]);
 });
 
 test("another seat's shout on the figure is not this seat's to claim", () => {

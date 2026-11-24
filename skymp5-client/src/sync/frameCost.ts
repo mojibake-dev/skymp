@@ -145,3 +145,72 @@ export class RefSweep {
     return slice;
   }
 }
+
+// Every pass timer's line comes every PASS_SAY_MS; a run of PASS_LONG_MS or
+// more, half a frame at 60 fps, is counted as long.
+export const PASS_SAY_MS = 10000;
+export const PASS_LONG_MS = 8;
+
+// The clock a pass is timed on, ms: performance.now() where the platform's
+// Node exposes it (monotonic, sub-millisecond), else Date.now().
+const perf = (globalThis as unknown as { performance?: { now?: () => number } }).performance;
+export const passClockMs = (): number => (perf !== undefined && typeof perf.now === "function" ? perf.now() : Date.now());
+
+// The time a pass takes, said as one line every `sayMs` so a frame capture's
+// long frames can be laid against it: its runs since the last line, the
+// pieces a run on average (a rescan's views, a frame's movement applies),
+// the runs' mean and longest time, and how many took `longMs` or more. `add`
+// counts a piece's time toward the frame's run; `close`, once a frame, ends
+// that run and returns the line when one is due.
+export class PassTimes {
+  private runs = 0;
+  private pieces = 0;
+  private totalMs = 0;
+  private longestMs = 0;
+  private longRuns = 0;
+  private frameOpen = false;
+  private frameMs = 0;
+  private framePieces = 0;
+  private since: number | undefined = undefined;
+
+  constructor(readonly name: string, private readonly sayMs: number, private readonly longMs: number) {}
+
+  add(ms: number, pieces = 1): void {
+    this.frameOpen = true;
+    this.frameMs += Math.max(0, ms);
+    this.framePieces += pieces;
+  }
+
+  close(now: number): string | undefined {
+    if (this.frameOpen) {
+      this.runs += 1;
+      this.pieces += this.framePieces;
+      this.totalMs += this.frameMs;
+      this.longestMs = Math.max(this.longestMs, this.frameMs);
+      if (this.frameMs >= this.longMs) {
+        this.longRuns += 1;
+      }
+      this.frameOpen = false;
+      this.frameMs = 0;
+      this.framePieces = 0;
+    }
+    if (this.since === undefined) {
+      this.since = now;
+      return undefined;
+    }
+    if (now - this.since < this.sayMs) {
+      return undefined;
+    }
+    const span = `${this.name}: ${this.runs} runs in ${((now - this.since) / 1000).toFixed(1)} s`;
+    const line = this.runs === 0 ? span
+      : `${span}, ${(this.pieces / this.runs).toFixed(1)} pieces a run, mean ${(this.totalMs / this.runs).toFixed(1)} ms, ` +
+        `longest ${this.longestMs.toFixed(1)} ms, ${this.longRuns} at ${this.longMs} ms or more`;
+    this.runs = 0;
+    this.pieces = 0;
+    this.totalMs = 0;
+    this.longestMs = 0;
+    this.longRuns = 0;
+    this.since = now;
+    return line;
+  }
+}

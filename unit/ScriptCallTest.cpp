@@ -422,6 +422,64 @@ TEST_CASE("A container's script call is dropped quietly", "[ScriptCall][espm]")
   Leave(p);
 }
 
+// the forward ("forward, never drop"): a
+// state call a guest's engine skipped because the host's game owns the
+// subject (a dialogue fragment unlocking a door the host's game owns),
+// forwarded to that owner to run
+void Forward(PartOne& p, Networking::UserId user, uint32_t selfId,
+             std::vector<Arg> args)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = selfId;
+  msg.cls = "ObjectReference";
+  msg.fn = "Lock";
+  msg.args = std::move(args);
+  msg.caller = "TestTopicInfoFragment";
+  msg.handler = "Fragment_0";
+  msg.forward = true;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+TEST_CASE("A guest's forwarded state call on a container the host's game "
+          "owns is sent to the host alone, and the owner's own is refused",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = Enter(p, kByTheChest);
+  {
+    LogCapture log;
+    Forward(p, 1, kBanditChest, { Arg(false), Arg(false) });
+    const auto toHost = SnippetsTo(p, 0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0]["class"] == "ObjectReference");
+    REQUIRE(toHost[0]["function"] == "Lock");
+    REQUIRE(toHost[0]["selfId"] == kBanditChest);
+    REQUIRE(toHost[0]["arguments"] == nlohmann::json::array({ false, false }));
+    REQUIRE(toHost[0]["seq"] == 1);
+    // never back to the guest that skipped it
+    REQUIRE(SnippetsTo(p, 1).empty());
+    REQUIRE(log.Count(fmt::format("{:x} forwards ObjectReference.Lock on "
+                                  "{:x}",
+                                  kGuestActor, kBanditChest)) == 1);
+  }
+  p.Messages().clear();
+  // the owner's own call ran on its own game: nothing to forward (the
+  // refusal's line is one a minute per reporter and code, so the outcome is
+  // what is read here)
+  Forward(p, 0, kBanditChest, { Arg(false), Arg(false) });
+  REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(SnippetsTo(p, 1).empty());
+  // and the same call unforwarded is a state row with no channel
+  Call(p, 1, epoch, kBanditChest, "ObjectReference", "Lock",
+       { Arg(false), Arg(false) });
+  REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(SnippetsTo(p, 1).empty());
+  Leave(p);
+}
+
 TEST_CASE("A reporter's script calls past its budget are refused and relayed "
           "to nobody",
           "[ScriptCall][espm]")

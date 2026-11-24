@@ -3774,6 +3774,11 @@ mod ffi {
         /// the call then waiting for `owner`; Row, Args or Rate otherwise,
         /// and the core looks nothing up.
         fn shape(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
+        /// The shape step on a forwarded call (ScriptCall's `forward`): as `shape`, its row a live, non-latent
+        /// state row whatever the row keeps, which `owner` then sends to the
+        /// subject's owner alone (audience 3) when that owner is not the
+        /// sender.
+        fn shape_forward(self: &mut ScriptCalls, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict;
         /// thuum ADR-068 rung 5: whether a shaped call's object arguments at
         /// 0xff000000 and up each name a connected player's actor (`players`,
         /// the core's list), the acting player's figure a scoped call names
@@ -6475,10 +6480,20 @@ fn refused_script_call(r: natives::Refusal) -> ScriptCallVerdict {
 
 impl ScriptCalls {
     fn shape(&mut self, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict {
+        self.shape_with(row, args, sender, self_id, now_ms, false)
+    }
+
+    fn shape_forward(&mut self, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64) -> ScriptCallVerdict {
+        self.shape_with(row, args, sender, self_id, now_ms, true)
+    }
+
+    fn shape_with(&mut self, row: i32, args: &[ScriptArg], sender: u32, self_id: u32, now_ms: u64, forward: bool) -> ScriptCallVerdict {
         let row = usize::try_from(row).ok().and_then(|i| natives::TABLE.get(i));
         // one call at a time: a shape step drops a call no owner step took
         self.1 = None;
-        match self.0.shape(row, &native_args(args), sender, self_id, now_ms) {
+        let args = native_args(args);
+        let shaped = if forward { self.0.shape_forward(row, &args, sender, self_id, now_ms) } else { self.0.shape(row, &args, sender, self_id, now_ms) };
+        match shaped {
             Ok(shaped) => {
                 let mut out = quiet_script_call();
                 out.code = ScriptCallCode::Accepted;

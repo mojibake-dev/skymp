@@ -1,7 +1,7 @@
 // The per-frame work's bounds (src/sync/frameCost.ts), JS state alone.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten, RefSweep } from "../src/sync/frameCost";
+import { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten, RefSweep, PassTimes } from "../src/sync/frameCost";
 
 test("45 hosted actors due at once are sampled 8 a frame, each within 6 frames", () => {
   const ids = Array.from({ length: 45 }, (_, i) => 0x1000 + i);
@@ -143,4 +143,31 @@ test("a ref added during a pass is read in the next one; an empty set reads noth
   }
   assert.ok(seen.has(9999));
   assert.deepStrictEqual(new RefSweep(500, 64).next(() => [], 0), []);
+});
+
+test("a pass's pieces in one frame are one run; its line every sayMs gives runs, pieces, mean, longest and the long runs", () => {
+  const t = new PassTimes("far apply", 10000, 8);
+  assert.strictEqual(t.close(0), undefined);
+  // 20 frames of 6 pieces at 0.5 ms each (3 ms a run), every 500 ms, and two of them 27 ms
+  let line: string | undefined;
+  for (let f = 1; f <= 20; f += 1) {
+    for (let k = 0; k < 6; k += 1) {
+      t.add(f === 7 || f === 14 ? 4.5 : 0.5);
+    }
+    line = t.close(f * 500);
+    if (f < 20) {
+      assert.strictEqual(line, undefined);
+    }
+  }
+  assert.strictEqual(line, "far apply: 20 runs in 10.0 s, 6.0 pieces a run, mean 5.4 ms, longest 27.0 ms, 2 at 8 ms or more");
+  // a frame the pass did not run in is no run
+  assert.strictEqual(t.close(15000), undefined);
+  assert.strictEqual(t.close(20000), "far apply: 0 runs in 10.0 s");
+});
+
+test("a run with no pieces still counts: a rescan that found no views took its time", () => {
+  const t = new PassTimes("rescan", 1000, 8);
+  t.close(0);
+  t.add(12.25, 0);
+  assert.strictEqual(t.close(1000), "rescan: 1 runs in 1.0 s, 0.0 pieces a run, mean 12.3 ms, longest 12.3 ms, 1 at 8 ms or more");
 });

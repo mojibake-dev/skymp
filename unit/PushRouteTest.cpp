@@ -41,13 +41,29 @@ TEST_CASE("A bystander's game skips one figure's push onto another player's "
   REQUIRE(Route(false, true, false, true, false) == PushRoute::Route::kSkip);
 }
 
+TEST_CASE("This game's player's push onto a puppet runs here: the pusher's "
+          "game throws its copy of the NPC another seat simulates",
+          "[PushRoute]")
+{
+  REQUIRE(Route(true, false, false, false, true) == PushRoute::Route::kRun);
+}
+
+TEST_CASE(
+  "Another player's figure's push onto an NPC is skipped, on the NPC's "
+  "host as on a bystander's game: the pusher's game throws it, and "
+  "this copy follows its stream",
+  "[PushRoute]")
+{
+  REQUIRE(Route(false, true, false, false, false) == PushRoute::Route::kSkip);
+  REQUIRE(Route(false, true, false, false, true) == PushRoute::Route::kSkip);
+}
+
 TEST_CASE("A push onto a puppet is skipped and reported, and everything else "
           "runs here as before",
           "[PushRoute]")
 {
-  REQUIRE(Route(true, false, false, false, true) ==
-          PushRoute::Route::kSkipAndReport);
-  REQUIRE(Route(false, true, false, false, true) ==
+  // an NPC's push onto a puppet: its host throws it
+  REQUIRE(Route(false, false, false, false, true) ==
           PushRoute::Route::kSkipAndReport);
   // an NPC this game simulates, by its own player or by an NPC
   REQUIRE(Route(true, false, false, false, false) == PushRoute::Route::kRun);

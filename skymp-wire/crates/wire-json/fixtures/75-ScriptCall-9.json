@@ -1,0 +1,15 @@
+{
+  "args": [
+    false,
+    false
+  ],
+  "caller": "",
+  "cls": "ObjectReference",
+  "epoch": 1,
+  "fn": "Lock",
+  "forward": true,
+  "handler": "",
+  "latent": false,
+  "selfId": 110065,
+  "t": 75
+}

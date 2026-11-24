@@ -2897,6 +2897,19 @@ wire_struct! {
         /// object argument of 0xff000000 and up stays what rung 5 made it, a
         /// player's figure by the server's id.
         pub local_args: Option<u16>,
+        /// Since SCHEMA_VERSION 68 ("forward, never drop"): true on a state row's call the sender's own engine
+        /// skipped because the sender does not own the subject, made by a
+        /// stack a world cause roots on that seat alone (a dialogue, scene or
+        /// package fragment, another player's relayed entry or press), which
+        /// the server sends to the subject's owner alone to run; absent on
+        /// every other call, and never false. R2, the sender's word: the
+        /// server judges the row a live state row, the subject one the
+        /// sender does not own and one some seat does, and never the value.
+        /// Delivered once on the reliable channel; a duplicate would run the
+        /// call twice on the owner, as a second skip on the sender would
+        /// forward it twice (a lock or an enable twice is the same; an item
+        /// given twice is not, and the server folds no repeat yet).
+        pub forward: Option<bool>,
     }
 }
 

@@ -4,7 +4,9 @@ import { WorldModel } from './model';
 import { FormViewArray } from './formViewArray';
 import { PlayerCharacterDataHolder } from './playerCharacterDataHolder';
 import { ClientListener, CombinedController, Sp } from '../services/services/clientListener';
-import { logTrace } from "../logging";
+import { logLab, logTrace } from "../logging";
+import { movementApplyTimes } from "./formView";
+import { passClockMs } from "../sync/frameCost";
 import { SinglePlayerService } from "../services/services/singlePlayerService";
 import { RemoteServer } from "../services/services/remoteServer";
 import { PuppetService } from "../services/services/puppetService";
@@ -146,6 +148,14 @@ export class WorldView extends ClientListener {
       state.cloneFormViews.updateAll(model, false, true);
     } else {
       state.cloneFormViews.resize(0);
+    }
+
+    const now = passClockMs();
+    for (const times of [movementApplyTimes.near, movementApplyTimes.far]) {
+      const line = times.close(now);
+      if (line !== undefined) {
+        logLab("frame-cost", line);
+      }
     }
   }
 

@@ -11,7 +11,7 @@ import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, app
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
 import { itemReferenceLook } from "../sync/itemReference";
-import { distanceBetween, LastWritten, movementApplyDue, Timed } from "../sync/frameCost";
+import { distanceBetween, LastWritten, movementApplyDue, PASS_LONG_MS, PASS_SAY_MS, passClockMs, PassTimes, Timed } from "../sync/frameCost";
 import { farMovementMs, nearUnits } from "../sync/movementSettings";
 import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
@@ -63,6 +63,14 @@ export const getScreenResolution = (): ScreenResolution => {
   }
   return _screenResolution;
 }
+
+// The views' movement applies a frame, near and past nearUnits apart: each
+// applyMovement's time adds to its side's run, and the world view closes both
+// once a frame (frameCost's PassTimes)
+export const movementApplyTimes = {
+  near: new PassTimes("near apply", PASS_SAY_MS, PASS_LONG_MS),
+  far: new PassTimes("far apply", PASS_SAY_MS, PASS_LONG_MS),
+};
 
 export class FormView {
   constructor(private remoteRefrId?: number) { }
@@ -1383,9 +1391,10 @@ export class FormView {
 
       // a new movement near the player lands at once, a far one at the far
       // rate, and any view again after the reassert (sync/frameCost.ts)
+      const distance = distanceBetween(model.movement.pos, PlayerCharacterDataHolder.getPos());
       if (movementApplyDue({
         changed: +(model.numMovementChanges as number) !== this.movState.lastNumChanges,
-        distance: distanceBetween(model.movement.pos, PlayerCharacterDataHolder.getPos()),
+        distance,
         nearUnits: nearUnits(),
         sinceLastApplyMs: Date.now() - this.movState.lastApply,
         farRateMs: farMovementMs(),
@@ -1433,7 +1442,9 @@ export class FormView {
             // the mark stays this apply's alone
             const movement = this.placeOnFirstApply ? { ...model.movement, placed: true } : model.movement;
             this.placeOnFirstApply = false;
+            const applyFrom = passClockMs();
             applyMovement(refr, movement, !!model.isMyClone, puppet, settle);
+            (distance > nearUnits() ? movementApplyTimes.far : movementApplyTimes.near).add(passClockMs() - applyFrom);
             loaded3DNow = refr.is3DLoaded();
           } catch (e) {
             if (e instanceof RespawnNeededError) {

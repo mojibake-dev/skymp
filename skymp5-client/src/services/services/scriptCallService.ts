@@ -16,7 +16,7 @@ import { holdPcInventoryBase } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
 import { TrapResultService } from "./trapResultService";
 import { noteSpellAddedSinceLogin } from "../../sync/spell";
-import { forwardMark } from "../../sync/scriptForward";
+import { callMessage } from "../../sync/scriptChannel";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
 // scripts-one-system-2026-11-05.md 6.2 to 6.4): the platform's one hook on the
@@ -227,8 +227,9 @@ export class ScriptCallService extends ClientListener {
                 this.queue({ call, record: false, key: undefined, dropped: false });
             }
             // a state call this seat's engine skipped on another seat's
-            // subject, sent on for that owner to run
-            if (call.kind === "forward") {
+            // subject, sent on for that owner to run; a look only another
+            // player's own game can make, sent for the server to ask that game
+            if (call.kind === "forward" || call.kind === "question") {
                 this.queue({ call, record: false, key: undefined, dropped: false });
             }
         }
@@ -534,27 +535,26 @@ export class ScriptCallService extends ClientListener {
         // (a look row whose self is the Sound, D-W2)
         const subject = ScriptCallService.subjectOf(call);
         const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(subject));
-        const message: ScriptCallMessage = {
-            t: MsgType.ScriptCall,
-            epoch: refr ? host.epochForActor(refr) : 0,
-            selfId,
-            cls: call.cls,
-            fn: call.fn,
-            args,
-            caller: call.caller,
-            handler: call.handler,
-            latent: call.latent,
-            ...forwardMark(call.kind),
-        };
         // train 52 (D-R1 C's leveled gap): a leveled AddItem's roll as the
-        // platform read it landing on this seat's own player, each base by its
-        // id (a load-order form: the same on every seat and the server)
-        if (call.landed !== undefined) {
-            message.landed = call.landed.map((landing) => ({ item: landing.formId, count: landing.count }));
+        // platform read it landing on this seat's own player goes with it,
+        // each base by its id (a load-order form: the same on every seat and
+        // the server); a forward names its cause and acting player, a question
+        // its acting player (scriptChannel.ts)
+        const message = callMessage(call, selfId, refr ? host.epochForActor(refr) : 0, args);
+        if (message === undefined) {
+            this.unsent++;
+            return false;
         }
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         if (call.kind === "forward") {
-            logLab("verb:scripts", `forwarded ${call.cls}.${call.fn} on ${call.self.toString(16)} to its owner: this seat's engine skipped it`);
+            const cause = message.cause ? `, cause ${message.cause.kind} ${message.cause.form.toString(16)} ${message.cause.n}` : "";
+            const acting = message.acting !== undefined ? `, acting ${message.acting.toString(16)}` : "";
+            logLab("verb:scripts", `forwarded ${call.cls}.${call.fn} on ${call.self.toString(16)} to its owner: this seat's engine skipped it${cause}${acting}`);
+            return true;
+        }
+        if (call.kind === "question") {
+            const target = args[0] !== null && typeof args[0] === "object" ? args[0].formId.toString(16) : "none";
+            logLab("verb:scripts", `asked ${(message.acting ?? 0).toString(16)} ${call.cls}.${call.fn} at ${target}: only that player's game can read it`);
             return true;
         }
         if (call.kind === "look") {

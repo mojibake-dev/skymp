@@ -11,6 +11,8 @@ import { gameFileIdOfLongId, remoteIdToLocalId, snippetIdToLocalId } from '../..
 import { NATIVE_GRAPH_VAR_KINDS, NATIVE_LOOK_ONLY_FNS, NATIVE_LOOK_RELAYS } from "../../lib/nativeRows.generated";
 import { logError, logLab, logTrace } from "../../logging";
 import { noteSpellAddedSinceLogin } from "../../sync/spell";
+import { actingLine, answerMessage, lookAnswer, lookQuestion, snippetRole } from "../../sync/scriptChannel";
+import { LOOK_CHECK_MS, LookWatches } from "../../sync/lookWatch";
 import { WorldView } from "../../view/worldView";
 
 // D-C3 A (PENDING ELI): the graph variable setters a relayed script call
@@ -74,6 +76,7 @@ export class SpSnippetService extends ClientListener {
     });
     this.spAny = sp as Record<string, any>;
     this.controller.on("update", () => this.flushHeld());
+    this.controller.on("update", () => this.watchLooks());
   }
 
   // thuum ADR-073 decision 13, the spell channel (#54): a relayed call (a
@@ -129,6 +132,68 @@ export class SpSnippetService extends ClientListener {
     }
   }
 
+  // a question about this game's own player: its target's watch runs from
+  // now (lookWatch.ts), said when it starts. JS state alone
+  private onLookQuestion(msg: SpSnippetMessage): void {
+    const target = lookQuestion(msg);
+    if (target === 0) {
+      logLab("verb:scripts", `look question ${msg.class}.${msg.function} on ${msg.selfId.toString(16)} dropped: no target, or not about this game's own player`);
+      return;
+    }
+    const now = Date.now();
+    const watched = this.lookWatches.targets(now).includes(target);
+    this.lookWatches.ask(target, now);
+    if (!watched) {
+      logLab("verb:scripts", `look question at ${target.toString(16)}: this game's own player watched`);
+    }
+  }
+
+  // the watched looks, every LOOK_CHECK_MS: each target read with the
+  // engine's own test from this game's own player, and a read the watch says
+  // is due sent back as the answer. The update's context
+  private watchLooks(): void {
+    const now = Date.now();
+    if (now - this.lookCheckedAt < LOOK_CHECK_MS) {
+      return;
+    }
+    this.lookCheckedAt = now;
+    const targets = this.lookWatches.targets(now);
+    if (targets.length === 0) {
+      return;
+    }
+    const player = this.sp.Game.getPlayer();
+    if (!player) {
+      return;
+    }
+    for (const target of targets) {
+      const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(snippetIdToLocalId(target)));
+      const los = !!ref && player.hasLOS(ref);
+      if (this.lookWatches.read(target, los)) {
+        this.controller.emitter.emit("sendMessage", { message: answerMessage(target, los), reliability: "reliable" });
+        logLab("verb:scripts", `look answer at ${target.toString(16)}: ${los ? "sees it" : "does not see it"}${ref ? "" : " (no reference here)"}`);
+      }
+    }
+  }
+
+  // another player's answer: its look written into the platform's look table
+  // by that player's server id and the target as this game names it, where
+  // this seat's script's Actor.HasLOS on the player's figure reads it. The
+  // update's context
+  private onLookAnswer(msg: SpSnippetMessage): void {
+    const look = lookAnswer(msg);
+    if (look === undefined) {
+      logLab("verb:scripts", `look answer from ${msg.selfId.toString(16)} dropped: no target`);
+      return;
+    }
+    const target = snippetIdToLocalId(look.target) || look.target;
+    if (typeof this.sp.setPlayerLook !== "function") {
+      logLab("verb:scripts", `look answer from ${look.player.toString(16)} at ${target.toString(16)} not written: this platform has no setPlayerLook`);
+      return;
+    }
+    const stored = this.sp.setPlayerLook(look.player, target, look.los);
+    logLab("verb:scripts", `look answer from ${look.player.toString(16)} at ${target.toString(16)}: ${look.los ? "sees it" : "does not see it"}${stored ? "" : " (not stored)"}`);
+  }
+
   // thuum tracker #168b: the server's Actor.AddSpell on this seat's own
   // player (its self 0x14, or the player's server id, which the view maps to
   // 0x14) is noted at its arrival, JS state alone, so the login's first spell
@@ -146,6 +211,19 @@ export class SpSnippetService extends ClientListener {
 
   private onSpSnippetMessage(event: ConnectionMessage<SpSnippetMessage>): void {
     const msg = event.message;
+    // the script channel (scriptChannel.ts): a question about this game's own
+    // player starts or renews its look watch, and another player's answer to
+    // a question this seat asked is written for this seat's scripts. Neither
+    // carries a seq, and neither is run
+    const role = snippetRole(msg);
+    if (role === "question") {
+      this.onLookQuestion(msg);
+      return;
+    }
+    if (role === "answer") {
+      this.controller.once("update", () => this.onLookAnswer(msg));
+      return;
+    }
     const inOrder = this.takeSeq(msg);
     if (inOrder) {
       SpSnippetService.noteOwnSpellAdd(msg);
@@ -234,6 +312,12 @@ export class SpSnippetService extends ClientListener {
   // other three rows, run as before (relayedLook). Every other snippet runs as
   // it always has
   private apply(snippet: SpSnippetMessage, arrived: number): Promise<unknown> {
+    // a relayed call names the player whose act it is (0x14 for this game's
+    // own); no scope is armed for a snippet's run, so the line says it alone
+    const acting = actingLine(snippet);
+    if (acting !== undefined) {
+      logLab("verb:scripts", acting);
+    }
     const event = snippet.arguments[0];
     const look = this.lookSubject(snippet);
     // nothing else checks that a look's subject is a trigger: a modified guest
@@ -630,6 +714,9 @@ export class SpSnippetService extends ClientListener {
   };
 
   private spAny: Record<string, any>;
+  // this game's watch of the looks other seats ask of its own player
+  private readonly lookWatches = new LookWatches();
+  private lookCheckedAt = 0;
   // the last seq taken per subject (takeSeq), this connection's
   private readonly lastSeq = new Map<number, number>();
   // 4.2's line per long id: its window's start and the lines said in it

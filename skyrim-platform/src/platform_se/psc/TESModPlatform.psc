@@ -172,6 +172,7 @@ String Function SendTriggerEvent(ObjectReference trigger, String name, ObjectRef
 ; the client's activation request (setActingPlayer with stage -4) names that
 ; presser (a JSON string: formId, armed, scripts, reason)
 String Function ArmActivation(ObjectReference refr, ObjectReference actionRef) global native
+String Function SendObjectEvent(ObjectReference refr, Int event, ObjectReference actionRef, Form source, Form projectile, Int count, Int flags) global native
 
 ; thuum ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's held entries (an
 ; NPC's enter to a world trigger blanked at this seat's own load, its owner

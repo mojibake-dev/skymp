@@ -136,6 +136,27 @@ std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
 std::string ArmActivation(RE::TESObjectREFR* refr,
                           RE::TESObjectREFR* actionRef);
 
+// SendObjectEvent(refr, event, actionRef, source, projectile, count, flags):
+// the one script channel's events. An act another seat made on a reference
+// this seat owns, sent to the reference's scripts alone and relayed to its
+// aliases, never the engine's default processing, with actionRef as the
+// actor the event names: 1 OnActivate(akActionRef); 2 OnHit(akAggressor,
+// akSource, akProjectile, abPowerAttack, abSneakAttack, abBashAttack,
+// abHitBlocked) by flags 1, 2, 4 and 8; 3 OnItemAdded(akBaseItem,
+// aiItemCount, None, akSourceContainer); 4 OnItemRemoved(akBaseItem,
+// aiItemCount, None, akDestContainer); 5 OnMagicEffectApply(akCaster,
+// akEffect). The client's activation request (setActingPlayer with stage
+// -4) naming this actionRef as the acting player's figure arms the
+// reference's acting scope first, as ArmActivation does. A JSON object as a
+// string: { formId, event, sent, scripts, armed, reason }; refused for a
+// None reference or actionRef, an actor, an unknown event, an item event
+// with no item or a count below 1, an effect's apply with no effect, and a
+// reference with no attached script
+std::string SendObjectEvent(RE::TESObjectREFR* refr, std::int32_t event,
+                            RE::TESObjectREFR* actionRef, RE::TESForm* source,
+                            RE::TESForm* projectile, std::int32_t count,
+                            std::int32_t flags);
+
 // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
 // 8(b); D-V1 B: every seat reports a listed condition-read variable it
 // changes; D-T2 B: a marked quest's scalar variables kept per player as

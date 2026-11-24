@@ -1990,6 +1990,16 @@ RE::BSFixedString TESModPlatform::ArmActivation(IVM* vm, StackID stackId,
   return RE::BSFixedString(ScriptState::ArmActivation(refr, actionRef));
 }
 
+// the one script channel's events (ScriptState.h)
+RE::BSFixedString TESModPlatform::SendObjectEvent(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr,
+  std::int32_t event, RE::TESObjectREFR* actionRef, RE::TESForm* source,
+  RE::TESForm* projectile, std::int32_t count, std::int32_t flags)
+{
+  return RE::BSFixedString(ScriptState::SendObjectEvent(
+    refr, event, actionRef, source, projectile, count, flags));
+}
+
 // thuum ADR-068 D-W3 B: the presser rule's held entries whose presser is this
 // seat's now, replayed once each through SendTriggerEvent's body under the
 // platform's mark, at skymp5-client's update after the one that saw its own
@@ -2468,6 +2478,14 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::BSFixedString, RE::StaticFunctionTag*,
                                      RE::TESObjectREFR*, RE::TESObjectREFR*>(
       "ArmActivation", "TESModPlatform", ArmActivation));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SendObjectEvent),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::int32_t,
+                                     RE::TESObjectREFR*, RE::TESForm*,
+                                     RE::TESForm*, std::int32_t, std::int32_t>(
+      "SendObjectEvent", "TESModPlatform", SendObjectEvent));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(ReplayHeldEntries),

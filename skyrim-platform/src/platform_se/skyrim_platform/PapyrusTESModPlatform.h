@@ -277,6 +277,17 @@ RE::BSFixedString ArmActivation(IVM* vm, StackID stackId,
                                 RE::StaticFunctionTag*,
                                 RE::TESObjectREFR* refr,
                                 RE::TESObjectREFR* actionRef);
+// the one script channel's events: an act another seat made on a reference
+// this seat owns, sent to its scripts alone (OnActivate, OnHit, OnItemAdded,
+// OnItemRemoved, OnMagicEffectApply), the presser's scope armed as
+// ArmActivation arms it (a JSON string: formId, event, sent, scripts, armed,
+// reason; ScriptState.h)
+RE::BSFixedString SendObjectEvent(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*,
+                                  RE::TESObjectREFR* refr, std::int32_t event,
+                                  RE::TESObjectREFR* actionRef,
+                                  RE::TESForm* source, RE::TESForm* projectile,
+                                  std::int32_t count, std::int32_t flags);
 // thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
 // held entries (an NPC's enter to a world trigger blanked at this seat's own
 // load, its owner undecided then) whose presser is this seat's now, with the

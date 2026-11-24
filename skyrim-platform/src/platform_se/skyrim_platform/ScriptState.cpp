@@ -212,6 +212,8 @@ std::atomic<std::uint64_t> g_sendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerSendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerArmLines{ 0 };
 std::atomic<std::uint64_t> g_activationArmLines{ 0 };
+// SendObjectEvent's lines, the first ones (LogThis)
+std::atomic<std::uint64_t> g_objectEventLines{ 0 };
 std::atomic<std::uint64_t> g_registrationLines{ 0 };
 std::atomic<std::uint64_t> g_varReadLines{ 0 };
 std::atomic<std::uint64_t> g_varWriteLines{ 0 };
@@ -1687,6 +1689,130 @@ std::string ArmActivationImpl(RE::TESObjectREFR* refr,
   return DumpText(answer);
 }
 
+// the one script channel's events (ScriptState.h's SendObjectEvent): the
+// event's arguments packed as the engine's own sinks pack them
+// (CommonLibSSE-NG include/RE/F/FunctionArguments.h:27-73, a form pointer
+// through Variable::Pack, a null one as None: src/RE/P/PackUnpack.cpp:48-55)
+std::string SendObjectEventImpl(RE::TESObjectREFR* refr, std::int32_t event,
+                                RE::TESObjectREFR* actionRef,
+                                RE::TESForm* source, RE::TESForm* projectile,
+                                std::int32_t count, std::int32_t flags)
+{
+  const RE::FormID formId = refr ? refr->formID : 0;
+  const RE::FormID actionRefId = actionRef ? actionRef->formID : 0;
+  nlohmann::json answer = nlohmann::json::object();
+  answer["formId"] = formId;
+  answer["event"] = event;
+  answer["sent"] = false;
+  answer["armed"] = false;
+  answer["scripts"] = 0;
+  answer["reason"] = "";
+  auto refuse = [&](const std::string& reason) {
+    answer["reason"] = reason;
+    if (LogThis(g_objectEventLines)) {
+      logger::info("[verb:scripts] SendObjectEvent {} to {:x} by {:x} not "
+                   "sent: {}",
+                   event, formId, actionRefId, reason);
+    }
+    return DumpText(answer);
+  };
+  constexpr const char* kNames[] = { "",
+                                     "OnActivate",
+                                     "OnHit",
+                                     "OnItemAdded",
+                                     "OnItemRemoved",
+                                     "OnMagicEffectApply" };
+  if (!refr) {
+    return refuse("no reference");
+  }
+  if (!actionRef) {
+    return refuse("no actionRef (None)");
+  }
+  if (event < 1 || event > 5) {
+    return refuse("no script event of the channel's");
+  }
+  // an actor's scripts run where it is simulated (ADR-062), never by a relay
+  if (refr->GetFormType() == RE::FormType::ActorCharacter) {
+    return refuse("an actor");
+  }
+  if ((event == 3 || event == 4) && (!source || count < 1)) {
+    return refuse("an item event with no item or a count below 1");
+  }
+  RE::EffectSetting* effect =
+    source ? source->As<RE::EffectSetting>() : nullptr;
+  if (event == 5 && !effect) {
+    return refuse("an effect's apply with no magic effect");
+  }
+  EventTarget target;
+  std::string why;
+  const bool reachable = TargetOf(refr, target, why);
+  answer["scripts"] = target.scripts;
+  if (!reachable) {
+    return refuse(why);
+  }
+  const char* name = kNames[event];
+  // the presser's scope, as ArmActivationImpl arms it: the client's
+  // activation request naming this actionRef as the acting player's figure
+  if (const auto taken = ActingScope::Take(formId, ActingScope::kActivation);
+      taken && taken->player.figure == actionRefId) {
+    ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
+                     ActingScope::RootKind::kTrigger, target.scripts);
+    answer["armed"] = true;
+  }
+  RE::TESObjectREFR* actor = actionRef;
+  RE::TESObjectREFR* none = nullptr;
+  switch (event) {
+    case 1: {
+      RE::FunctionArguments<RE::TESObjectREFR*> args{ std::move(actor) };
+      SendAndRelay(target, name, &args);
+      break;
+    }
+    case 2: {
+      RE::TESForm* weapon = source;
+      RE::BGSProjectile* shot =
+        projectile ? projectile->As<RE::BGSProjectile>() : nullptr;
+      bool power = (flags & 1) != 0;
+      bool sneak = (flags & 2) != 0;
+      bool bash = (flags & 4) != 0;
+      bool blocked = (flags & 8) != 0;
+      RE::FunctionArguments<RE::TESObjectREFR*, RE::TESForm*,
+                            RE::BGSProjectile*, bool, bool, bool, bool>
+        args{ std::move(actor),  std::move(weapon), std::move(shot),
+              std::move(power),  std::move(sneak),  std::move(bash),
+              std::move(blocked) };
+      SendAndRelay(target, name, &args);
+      break;
+    }
+    case 3:
+    case 4: {
+      RE::TESForm* item = source;
+      std::int32_t n = count;
+      RE::FunctionArguments<RE::TESForm*, std::int32_t, RE::TESObjectREFR*,
+                            RE::TESObjectREFR*>
+        args{ std::move(item), std::move(n), std::move(none),
+              std::move(actor) };
+      SendAndRelay(target, name, &args);
+      break;
+    }
+    default: {
+      RE::FunctionArguments<RE::TESObjectREFR*, RE::EffectSetting*> args{
+        std::move(actor), std::move(effect)
+      };
+      SendAndRelay(target, name, &args);
+      break;
+    }
+  }
+  answer["sent"] = true;
+  if (LogThis(g_objectEventLines)) {
+    logger::info("[verb:scripts] SendObjectEvent {} to {:x} by {:x}: sent to "
+                 "{} script(s) and relayed{}",
+                 name, formId, actionRefId, target.scripts,
+                 answer["armed"].get<bool>() ? ", the presser's scope armed"
+                                             : "");
+  }
+  return DumpText(answer);
+}
+
 // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
 // 8(b); D-V1 B: every seat reports a listed variable it changes, the latest
 // write winning; D-T2 B: a marked quest's scalar variables travel as
@@ -2214,6 +2340,29 @@ std::string ScriptState::ArmActivation(RE::TESObjectREFR* refr,
   } catch (...) {
   }
   return ExceptionAnswer(formId, "armed", what.c_str());
+}
+
+std::string ScriptState::SendObjectEvent(
+  RE::TESObjectREFR* refr, std::int32_t event, RE::TESObjectREFR* actionRef,
+  RE::TESForm* source, RE::TESForm* projectile, std::int32_t count,
+  std::int32_t flags)
+{
+  const std::uint32_t formId = refr ? refr->formID : 0u;
+  std::string what;
+  try {
+    return SendObjectEventImpl(refr, event, actionRef, source, projectile,
+                               count, flags);
+  } catch (const std::exception& e) {
+    what = e.what();
+  } catch (...) {
+    what = "a non-standard exception";
+  }
+  try {
+    logger::error("[verb:scripts] SendObjectEvent {:x} threw: {}", formId,
+                  what);
+  } catch (...) {
+  }
+  return ExceptionAnswer(formId, "sent", what.c_str());
 }
 
 // rung 5's two natives (ReadScriptVariables, WriteScriptVariables): the

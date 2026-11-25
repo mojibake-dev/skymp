@@ -3667,6 +3667,33 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 88: a player's jail term as the server's record holds it,
+    /// told to that player's own game alone. Server to client, reliable. The
+    /// term's end is a time on the shared clock (R0), which runs while the
+    /// player is away, so the game learns it from the record rather than
+    /// from its own clock: at the arrest's record, at every login while the
+    /// term stands, and once when the shared clock passes the end. The game
+    /// keeps the newest; its jail bed's answer reads the time left from it,
+    /// and a served term starts the release on that game once it is in the
+    /// world. No message ends a term: the game's own release or escape does,
+    /// and the server records the move out. Safe to receive twice: the game
+    /// keeps the newest, and a served term releases once. Reason codes: `E_VAL_RANGE` (a
+    /// faction of 0, an end below 0), `E_VAL_NONFINITE`.
+    pub struct JailTerm {
+        /// `"t": 88`.
+        #[serde(default)]
+        pub t: MsgT<88>,
+        /// The crime faction that jailed the player; never 0.
+        pub faction: u32,
+        /// The shared clock's days passed (GameDaysPassed) at which the
+        /// sentence ends; finite, at least 0.
+        pub release_at: f32,
+        /// Whether the shared clock has passed the end.
+        pub served: bool,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

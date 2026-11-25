@@ -156,5 +156,8 @@ enum class MsgType : uint8_t
                         // jail term the server's record
   CrimeGold = 87,       // one hold's bounty as the player's own game
                         // holds it, the server's record (R0)
+  JailTerm = 88,        // a player's jail term as the server's record holds
+                        // it, told to that player's own game, its end on the
+                        // shared clock
   Max
 };

@@ -89,5 +89,6 @@ export enum MsgType {
   CraftReport = 84, // one sitting at a crafting bench, its lost and gained stacks and learned enchantments as this engine read them, a created form by its definition (CraftService, sync/createdForms.ts)
   PushActor = 85, // a script's push in this game onto an actor another seat simulates, skipped here and reported, so its simulator throws it
   Arrest = 86, // the arrest this game's own engine started (GoToPrison), the faction and the sentence, before the strip's moves; the server records the jail term on the shared clock and takes the strip and the outfit as this game's
-  CrimeGold = 87 // one hold's bounty as this game holds it, when it changes; the server's record (R0), given back at a login
+  CrimeGold = 87, // one hold's bounty as this game holds it, when it changes; the server's record (R0), given back at a login
+  JailTerm = 88 // this game's player's jail term as the server's record holds it, its end on the shared clock: at the arrest's record, at each login while it stands, and once when the clock passes the end
 }

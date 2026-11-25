@@ -88,3 +88,25 @@ TEST_CASE("An NPC this game runs that sees the player keeps the eye at its "
   REQUIRE(PuppetDetection::HighestWithRelayed(40, relayed.data(),
                                               relayed.size()) == 40);
 }
+
+TEST_CASE("A bandit the host runs that attacks the guest shows on the guest's "
+          "compass for as long as its host targets the guest, beside the "
+          "engine's own",
+          "[PuppetDetection]")
+{
+  // the engine listed this game's own bandit 0x1a; the host's bandit 0x2b
+  // targets the guest and is loaded
+  const auto adds = PuppetDetection::CompassAdds(
+    { 0x1a }, { { 0x2b, false, true } });
+  REQUIRE(adds == std::vector<std::uint32_t>{ 0x2b });
+}
+
+TEST_CASE("The compass shows a bandit once, and never one that is dead or "
+          "out of its 3D",
+          "[PuppetDetection]")
+{
+  const auto adds = PuppetDetection::CompassAdds(
+    { 0x2b }, { { 0x2b, false, true }, { 0x3c, true, true },
+                { 0x4d, false, false } });
+  REQUIRE(adds.empty());
+}

@@ -67,6 +67,14 @@ export class JailService extends ClientListener {
         if (!term || !term.served || !this.spawnSettled) {
             return;
         }
+        // the move out is a far move, whose close of an open Dialogue Menu is
+        // a soft hide that can leave the menu on the stack with its input
+        // contexts and the player's controls waiting on its close (40438's
+        // PositionPlayerEvent, MenuTopicManager's sink 35273, DialogueMenu's
+        // ProcessMessage 51506), so it waits for the dialogue to close
+        if (this.sp.Ui.isMenuOpen("Dialogue Menu")) {
+            return;
+        }
         this.term = undefined;
         const hex = term.faction.toString(16);
         const faction = Faction.from(this.sp.Game.getFormEx(term.faction));

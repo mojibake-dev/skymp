@@ -13,6 +13,7 @@ import { placesAtPromote, runsActorHere } from "../../sync/hostPuppet";
 import { SEAT_WAIT_MS, seatVerdict, seated } from "../../sync/seatWait";
 import { RemoteServer } from "./remoteServer";
 import { levelFor } from "../../sync/detectionRelay";
+import { hostileFlip } from "../../sync/hostileFlip";
 import { SceneClaimService } from "./sceneClaimService";
 
 // thuum docs/verbs/npc-puppet.md (ADR-045): every NPC this game does not host
@@ -1089,6 +1090,18 @@ export class PuppetService extends ClientListener {
             this.relayedTargets.set(refrId, target);
         } else {
             this.relayedTargets.delete(refrId);
+        }
+        // thuum docs/verbs/guest-witness.md: the platform's registry holds the
+        // puppets whose host fights this seat's player, and the compass shows
+        // them steadily, whatever this engine's own combat on the puppet does
+        const flip = hostileFlip(before, target, me);
+        if (flip !== undefined) {
+            const local = remoteIdToLocalId(refrId);
+            const api = this.sp as unknown as { setPuppetHostileToPlayer?: (actorFormId: number, hostile: boolean) => boolean };
+            if (local && typeof api.setPuppetHostileToPlayer === "function") {
+                api.setPuppetHostileToPlayer(local, flip);
+                logLab("verb:guest-witness", `${refrId.toString(16)} ${flip ? "on" : "off"} this game's compass: its host's target ${flip ? "is" : "is no longer"} this seat's player`);
+            }
         }
         this.aggroHeldUntil.delete(refrId);
         if (me === 0 || (target !== me && before !== me)) {

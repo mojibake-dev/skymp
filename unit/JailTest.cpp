@@ -379,6 +379,7 @@ TEST_CASE("A served term is its prisoner's own game's to release: told "
   PinnedClock clock(p, 20.f);
   auto& prisoner = Arrive(p);
   prisoner.AddItem(kDagger, 1);
+  const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
   Arrest(p, kFalkreath, 1);
   const auto jail = p.JailOf(kFalkreath);
   REQUIRE(jail.has_value());
@@ -407,7 +408,7 @@ TEST_CASE("A served term is its prisoner's own game's to release: told "
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
           jail->landingWorldOrCell);
   REQUIRE((prisoner.GetPos() - jail->landingPos).Length() < 1.f);
-  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == 0);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 1);
   REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChest);
 
   // told once: the tick's next pass tells nothing more

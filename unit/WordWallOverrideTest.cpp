@@ -128,13 +128,23 @@ std::vector<std::string> SentAboutTheWall(PartOne& p, Networking::UserId user)
 }
 }
 
-TEST_CASE("A player who lacks a fired word wall's word gets the wall's "
-          "player-decided state put back on its owner's copy, by name, and "
-          "its walk-up raised there, once",
+TEST_CASE("A guest who lacks a word wall's word gets nothing while the wall "
+          "has not fired, then, once it has, the wall's player-decided state "
+          "put back on its owner's copy by name and its walk-up raised, once",
           "[WordWallOverride][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p);
+  // the wall's scripts still listening, or no record: the engine's own first
+  // run plays the wall, nothing is put back
+  RecordWall(p, "Listening");
+  ReportWall(p, 1);
+  REQUIRE(SentAboutTheWall(p, 0).empty());
+  p.worldState.GetFormAt<MpObjectReference>(kTrigger).SetScriptState(
+    std::nullopt);
+  ReportWall(p, 1);
+  REQUIRE(SentAboutTheWall(p, 0).empty());
+  // the wall fired for someone: put back, then the guest's walk-up raised
   RecordWall(p, "done");
   ReportWall(p, 1);
   REQUIRE(SentAboutTheWall(p, 0) ==
@@ -170,40 +180,21 @@ TEST_CASE("A player who lacks a fired word wall's word gets the wall's "
   Leave(p);
 }
 
-TEST_CASE("The host of a fired word wall's cell who lacks its word gets the "
-          "wall put back on its own copy and its own walk-up raised",
+TEST_CASE("At a fired word wall a guest who knows the word gets nothing, and "
+          "the host of the wall's cell who lacks it gets the wall put back on "
+          "its own copy and its own walk-up raised",
           "[WordWallOverride][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p);
   RecordWall(p, "done");
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  guest.RecordShoutEntry(MpActor::ShoutEntry::WordKnown,
+                         FormDesc::FromFormId(kWord, p.worldState.espmFiles));
+  ReportWall(p, 1);
+  REQUIRE(SentAboutTheWall(p, 0).empty());
   ReportWall(p, 0);
   REQUIRE(SentAboutTheWall(p, 0) ==
           std::vector<std::string>{ "override", "enter ff000f7a" });
-  Leave(p);
-}
-
-TEST_CASE("A word wall that has not fired, or a player who knows its word, "
-          "gets no override",
-          "[WordWallOverride][espm]")
-{
-  PartOne& p = GetPartOne();
-  Enter(p);
-  // the wall's scripts still listening: the engine's own first run plays it
-  RecordWall(p, "Listening");
-  ReportWall(p, 1);
-  REQUIRE(SentAboutTheWall(p, 0).empty());
-  // no record at all
-  p.worldState.GetFormAt<MpObjectReference>(kTrigger).SetScriptState(
-    std::nullopt);
-  ReportWall(p, 1);
-  REQUIRE(SentAboutTheWall(p, 0).empty());
-  // a player who knows the word, at a wall that fired
-  RecordWall(p, "done");
-  auto& host = p.worldState.GetFormAt<MpActor>(kHostActor);
-  host.RecordShoutEntry(MpActor::ShoutEntry::WordKnown,
-                        FormDesc::FromFormId(kWord, p.worldState.espmFiles));
-  ReportWall(p, 0);
-  REQUIRE(SentAboutTheWall(p, 0).empty());
   Leave(p);
 }

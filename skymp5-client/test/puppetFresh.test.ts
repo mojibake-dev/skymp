@@ -38,6 +38,8 @@ const copy = stub({
   getPositionY: () => at[1],
   getPositionZ: () => at[2],
   getAngleZ: () => 0,
+  // out of any furniture
+  getFurnitureReference: () => null,
 });
 const feeds: Array<{ at: number; args: unknown[] }> = [];
 let now = 1_000_000;

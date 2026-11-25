@@ -3723,6 +3723,70 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One variable a script override sets (thuum ADR-088, docs/verbs/
+    /// word-wall.md's rule: a script variable the player's own record
+    /// decides): named as the type's chain declares it (an auto property's
+    /// backing variable, `::WordLearned_var`), matched without case as the VM
+    /// finds a variable by name, `k` rung 3's folded kinds an override sets
+    /// (3 an int, 4 a float, 5 a bool) and that kind's one field.
+    pub struct ScriptOverrideVar {
+        /// The variable; never empty, no NUL.
+        pub name: String<{ cap::PAPYRUS_NAME }>,
+        /// The kind, 3 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4); finite.
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+    }
+}
+
+wire_struct! {
+    /// One attached script an override names: its type, the state it goes
+    /// back to ("" the empty state) and the variables it sets.
+    pub struct ScriptOverrideScript {
+        /// The script type; never empty, no NUL.
+        #[serde(rename = "type")]
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+        /// The state to set; "" for the empty state; no NUL.
+        pub state: String<{ cap::PAPYRUS_NAME }>,
+        /// The variables to set, each name once.
+        pub vars: Vec<ScriptOverrideVar, { cap::SCRIPT_OVERRIDE_VARS }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 89: the state of a world object's scripts that a player's own
+    /// record decides, put back on the copy the object's owner runs (thuum
+    /// ADR-088, a word wall teaches each player once). Server to the owner's
+    /// game alone, reliable, R0: the server decides it from the player's
+    /// record (a word wall's learned flag and its scripts' states, for a
+    /// player who lacks the wall's word at a wall that has fired), and the
+    /// owner's game writes it by name over its copy (the platform's script
+    /// state read and apply), before the relayed entry that follows it on the
+    /// same channel runs the scripts for that player. A script the copy does
+    /// not carry, or a variable or state its chain does not declare, is left
+    /// as it is. Safe to receive twice: it sets values, it adds nothing.
+    /// Reason codes: `E_VAL_RANGE` (a reference of 0 or 0xff000000 and up, no
+    /// script, a type empty or carrying a NUL, a state carrying a NUL, a
+    /// variable empty or carrying a NUL, a type twice, a variable twice in a
+    /// script, a kind outside 3 to 5 or a payload not exactly its kind's),
+    /// `E_VAL_NONFINITE`.
+    pub struct ScriptStateOverride {
+        /// `"t": 89`.
+        #[serde(default)]
+        pub t: MsgT<89>,
+        /// The world object whose scripts are set, a reference of the load
+        /// order both ends share; never 0 nor 0xff000000 and up.
+        pub refr_id: u32,
+        /// The scripts, each type once; at least one.
+        pub scripts: Vec<ScriptOverrideScript, { cap::SCRIPT_OBJECTS }>,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

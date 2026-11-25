@@ -159,5 +159,8 @@ enum class MsgType : uint8_t
   JailTerm = 88,        // a player's jail term as the server's record holds
                         // it, told to that player's own game, its end on the
                         // shared clock
+  ScriptStateOverride = 89, // the state of a world object's scripts a
+                            // player's own record decides, put back by name
+                            // on its owner's copy (thuum ADR-088)
   Max
 };

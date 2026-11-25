@@ -74,6 +74,7 @@ import { PushActorMessage } from "./pushActorMessage";
 import { ArrestMessage } from "./arrestMessage";
 import { CrimeGoldMessage } from "./crimeGoldMessage";
 import { JailTermMessage } from "./jailTermMessage";
+import { ScriptStateOverrideMessage } from "./scriptStateOverrideMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
@@ -170,6 +171,7 @@ export type AnyMessage = ActivateMessage
     | ArrestMessage
     | CrimeGoldMessage
     | JailTermMessage
+    | ScriptStateOverrideMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

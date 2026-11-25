@@ -345,8 +345,12 @@ use bounded::{String, Vec};
 /// 72: JailTerm (MsgType 88, wire id 96): a player's jail term as the
 /// server's record holds it, told to that player's own game, its end a time
 /// on the shared clock. A 71 peer has no wire id 96.
-/// MsgTypes 84 to 88 (wire ids 92 to 96) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 72;
+/// 73: ScriptStateOverride (MsgType 89, wire id 97): the state of a world
+/// object's scripts a player's own record decides, by name, put back on the
+/// copy the object's owner runs (thuum ADR-088, the second learner at a word
+/// wall). A 72 peer has no wire id 97.
+/// MsgTypes 84 to 89 (wire ids 92 to 97) are all built here; none is held.
+pub const SCHEMA_VERSION: u16 = 73;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -505,6 +509,10 @@ pub mod cap {
     /// TrapSwingingWall over MovingTrap over TrapBase, has 52 (thuum
     /// docs/research/adr065-papyrus-state-2026-11-03.md Q1).
     pub const SCRIPT_VARS: usize = 512;
+    /// Variables one script override sets in one script (thuum ADR-088,
+    /// ScriptStateOverride): a word wall's learned flag is one. UNMEASURED
+    /// beyond it.
+    pub const SCRIPT_OVERRIDE_VARS: usize = 16;
     /// A string variable's value in a script record. UNMEASURED: a save
     /// read's string histogram (rung 3's script-save-trace.js v2.1) sets it.
     pub const SCRIPT_STRING: usize = 1024;
@@ -949,6 +957,8 @@ pub enum Message {
     CrimeGold(skymp::CrimeGold),
     /// 96, MsgType 88. See [`skymp::JailTerm`].
     JailTerm(skymp::JailTerm),
+    /// 97, MsgType 89. See [`skymp::ScriptStateOverride`].
+    ScriptStateOverride(skymp::ScriptStateOverride),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -986,7 +996,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// transport takes from a client. No real inventory nears it (a merchant's
 /// chest holds hundreds of stacks of a few dozen bytes each), and a message
 /// past its cap is refused at its encode, whole, never truncated.
-const TABLE: [Row; 97] = [
+const TABLE: [Row; 98] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1149,14 +1159,17 @@ const TABLE: [Row; 97] = [
     row("CrimeGold", 87, 32, C2S),
     // a faction at a five-byte varint, the end's four bytes and the flag
     row("JailTerm", 88, 16, S2C),
+    // 16 scripts, each with two names and 16 variables at PAPYRUS_NAME and
+    // every payload field carried: 41,047 bytes at the caps
+    row("ScriptStateOverride", 89, 48 * KIB, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 97;
-const _: () = assert!(TABLE.len() == 97, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 98;
+const _: () = assert!(TABLE.len() == 98, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1278,6 +1291,7 @@ impl Message {
             Message::Arrest(_) => 94,
             Message::CrimeGold(_) => 95,
             Message::JailTerm(_) => 96,
+            Message::ScriptStateOverride(_) => 97,
         }
     }
 
@@ -1333,6 +1347,7 @@ mod tests {
         assert_eq!(Message::Arrest(skymp::Arrest::default()).name(), "Arrest");
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).name(), "CrimeGold");
         assert_eq!(Message::JailTerm(skymp::JailTerm::default()).name(), "JailTerm");
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).name(), "ScriptStateOverride");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1421,7 +1436,10 @@ mod tests {
         assert_eq!(name_of_msg_type(87), Some("CrimeGold"));
         // JailTerm, after 87: wire id 96, the server's word to one player
         assert_eq!(name_of_msg_type(88), Some("JailTerm"));
-        assert_eq!(name_of_msg_type(89), None);
+        // ScriptStateOverride, after 88: wire id 97, the server's word to an
+        // object's owner
+        assert_eq!(name_of_msg_type(89), Some("ScriptStateOverride"));
+        assert_eq!(name_of_msg_type(90), None);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
@@ -1437,6 +1455,9 @@ mod tests {
         assert_eq!(Message::JailTerm(skymp::JailTerm::default()).wire_id(), 96);
         assert_eq!(Message::JailTerm(skymp::JailTerm::default()).msg_type(), Some(88));
         assert_eq!(Message::JailTerm(skymp::JailTerm::default()).direction(), Direction::ServerToClient);
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).wire_id(), 97);
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).msg_type(), Some(89));
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).direction(), Direction::ServerToClient);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1595,6 +1616,36 @@ mod tests {
             served: true,
             ..Default::default()
         }
+    }
+
+    /// A ScriptStateOverride at its caps (thuum ADR-088): 16 scripts, each
+    /// with both names and 16 variables at PAPYRUS_NAME and every payload
+    /// field carried.
+    fn script_state_override_at_its_caps() -> skymp::ScriptStateOverride {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        let var = || skymp::ScriptOverrideVar { name: name(), k: u8::MAX, i: Some(i32::MIN), f: Some(f32::MAX), b: Some(true) };
+        let script = || skymp::ScriptOverrideScript {
+            cls: name(),
+            state: name(),
+            vars: (0..cap::SCRIPT_OVERRIDE_VARS).map(|_| var()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+        };
+        skymp::ScriptStateOverride {
+            refr_id: u32::MAX,
+            scripts: (0..cap::SCRIPT_OBJECTS).map(|_| script()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_script_state_override_at_its_caps_fits_its_byte_cap() {
+        let full = script_state_override_at_its_caps();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!(full.scripts.len(), cap::SCRIPT_OBJECTS);
+        assert!(full.scripts.iter().all(|s| s.vars.len() == cap::SCRIPT_OVERRIDE_VARS));
+        let m = Message::ScriptStateOverride(full);
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        assert_eq!(bytes.len(), 41_047);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
     }
 
     #[test]
@@ -1836,6 +1887,9 @@ mod tests {
             Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
             Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, paid_gold: Some(u32::MAX), ..Default::default() }),
             Message::JailTerm(skymp::JailTerm { faction: u32::MAX, release_at: f32::MAX, served: true, ..Default::default() }),
+            // the scripts of a world object a player's record decides, at
+            // their caps (thuum ADR-088)
+            Message::ScriptStateOverride(script_state_override_at_its_caps()),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)

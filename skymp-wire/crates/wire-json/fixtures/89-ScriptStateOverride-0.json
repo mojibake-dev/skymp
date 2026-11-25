@@ -1,0 +1,22 @@
+{
+  "t": 89,
+  "refrId": 461266,
+  "scripts": [
+    {
+      "type": "WordWallTriggerScript",
+      "state": "",
+      "vars": [
+        {
+          "name": "::WordLearned_var",
+          "k": 5,
+          "b": false
+        }
+      ]
+    },
+    {
+      "type": "WordWallTriggerBleakFallsScript",
+      "state": "Listening",
+      "vars": []
+    }
+  ]
+}

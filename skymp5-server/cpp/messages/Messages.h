@@ -65,6 +65,7 @@
 #include "ScriptCallMessage.h"
 #include "ScriptStateApplyMessage.h"
 #include "ScriptStateMessage.h"
+#include "ScriptStateOverrideMessage.h"
 #include "ScriptVariablesMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
@@ -176,4 +177,5 @@
   REGISTER_MESSAGE(PushActorMessage)                                          \
   REGISTER_MESSAGE(ArrestMessage)                                             \
   REGISTER_MESSAGE(CrimeGoldMessage)                                          \
-  REGISTER_MESSAGE(JailTermMessage)
+  REGISTER_MESSAGE(JailTermMessage)                                           \
+  REGISTER_MESSAGE(ScriptStateOverrideMessage)

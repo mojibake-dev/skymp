@@ -1,0 +1,22 @@
+{
+  "t": 89,
+  "refrId": 698571,
+  "scripts": [
+    {
+      "type": "defaultPuzzlePillarScript",
+      "state": "position01",
+      "vars": [
+        {
+          "name": "::currentPosition_var",
+          "k": 3,
+          "i": 1
+        },
+        {
+          "name": "::turnTime_var",
+          "k": 4,
+          "f": 0.5
+        }
+      ]
+    }
+  ]
+}

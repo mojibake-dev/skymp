@@ -1705,6 +1705,41 @@ fn check_jail_term(m: &skymp::JailTerm) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A script override (thuum ADR-088, ScriptStateOverride): a reference of the
+/// shared load order, at least one script, each type named once and without a
+/// NUL, each state without a NUL, each variable named once in its script and
+/// without a NUL, and each value exactly its kind's (3 an int, 4 a float, 5 a
+/// bool), every float finite; the transport refuses it from a client by
+/// direction.
+fn check_script_state_override(m: &skymp::ScriptStateOverride) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.refr_id == 0 || m.refr_id >= PLAYER_FORMS || m.scripts.is_empty() {
+        return Err(Reject::Range);
+    }
+    for (n, script) in m.scripts.iter().enumerate() {
+        let twice = m.scripts.iter().take(n).any(|s| s.cls.eq_ignore_ascii_case(&script.cls));
+        if script.cls.is_empty() || has_nul(&script.cls) || has_nul(&script.state) || twice {
+            return Err(Reject::Range);
+        }
+        for (v, var) in script.vars.iter().enumerate() {
+            let carried = [var.i.is_some(), var.f.is_some(), var.b.is_some()];
+            let fits = match var.k {
+                3 => carried == [true, false, false],
+                4 => carried == [false, true, false],
+                5 => carried == [false, false, true],
+                _ => false,
+            };
+            let named_twice = script.vars.iter().take(v).any(|w| w.name.eq_ignore_ascii_case(&var.name));
+            if !fits || named_twice || var.name.is_empty() || has_nul(&var.name) {
+                return Err(Reject::Range);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -2715,6 +2750,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::LockPrompt(m) => check_lock_prompt(m),
         Message::SetWeather(m) => check_set_weather(m),
         Message::JailTerm(m) => check_jail_term(m),
+        Message::ScriptStateOverride(m) => check_script_state_override(m),
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
@@ -5005,6 +5041,37 @@ mod tests {
     }
 
     #[test]
+    fn script_overrides_name_a_shared_reference_and_set_named_values_of_their_kinds() {
+        use wire_schema::skymp::{ScriptOverrideScript, ScriptOverrideVar, ScriptStateOverride};
+        let name = |s: &str| s.try_into().unwrap_or_default();
+        let flag = |n: &str, k: u8, b: Option<bool>| ScriptOverrideVar { name: name(n), k, i: None, f: None, b };
+        let script = |cls: &str, state: &str, vars: std::vec::Vec<ScriptOverrideVar>| ScriptOverrideScript { cls: name(cls), state: name(state), vars: vars.try_into().unwrap_or_default() };
+        let word = |refr_id: u32, scripts: std::vec::Vec<ScriptOverrideScript>| Message::ScriptStateOverride(ScriptStateOverride { refr_id, scripts: scripts.try_into().unwrap_or_default(), ..Default::default() });
+        let wall = || vec![
+            script("WordWallTriggerScript", "", vec![flag("::WordLearned_var", 5, Some(false))]),
+            script("WordWallTriggerBleakFallsScript", "Listening", vec![]),
+        ];
+        // Bleak Falls Sanctum's word wall trigger, put back for a second learner
+        assert_eq!(validate_server(&word(0x709d2, wall())), Ok(()));
+        assert_eq!(validate_server(&word(0, wall())), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0xff00_0001, wall())), Err(Reject::Range), "a server-made reference is no shared form");
+        assert_eq!(validate_server(&word(0x709d2, vec![])), Err(Reject::Range), "no script");
+        assert_eq!(validate_server(&word(0x709d2, vec![script("", "", vec![])])), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A\0", "", vec![])])), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "do\0ne", vec![])])), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![]), script("a", "", vec![])])), Err(Reject::Range), "a type twice, without case");
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![flag("", 5, Some(true))])])), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![flag("x", 5, Some(true)), flag("X", 5, Some(false))])])), Err(Reject::Range), "a variable twice, without case");
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![flag("x", 3, Some(true))])])), Err(Reject::Range), "a bool under an int's kind");
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![flag("x", 2, None)])])), Err(Reject::Range), "a string is no override's kind");
+        let float = |f: f32| ScriptOverrideVar { name: name("x"), k: 4, i: None, f: Some(f), b: None };
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![float(0.5)])])), Ok(()));
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![float(f32::NAN)])])), Err(Reject::NonFinite));
+        let int = ScriptOverrideVar { name: name("x"), k: 3, i: Some(-1), f: None, b: None };
+        assert_eq!(validate_server(&word(0x709d2, vec![script("A", "", vec![int])])), Ok(()));
+    }
+
+    #[test]
     fn weather_words_name_a_place_and_may_release() {
         use wire_schema::skymp::SetWeather;
         let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
@@ -5282,6 +5349,16 @@ mod tests {
             } else {
                 Ok(())
             };
+            prop_assert_eq!(validate_server(&m), want);
+        }
+
+        #[test]
+        fn script_overrides_never_panic(refr_id in any::<u32>(), k in any::<u8>(), b in any::<bool>(), state in "[A-Za-z\\x00]{0,4}") {
+            use wire_schema::skymp::{ScriptOverrideScript, ScriptOverrideVar, ScriptStateOverride};
+            let var = ScriptOverrideVar { name: "x".try_into().unwrap_or_default(), k, i: None, f: None, b: Some(b) };
+            let script = ScriptOverrideScript { cls: "A".try_into().unwrap_or_default(), state: state.as_str().try_into().unwrap_or_default(), vars: vec![var].try_into().unwrap_or_default() };
+            let m = Message::ScriptStateOverride(ScriptStateOverride { refr_id, scripts: vec![script].try_into().unwrap_or_default(), ..Default::default() });
+            let want = if refr_id == 0 || refr_id >= 0xff00_0000 || k != 5 || state.contains('\0') { Err(Reject::Range) } else { Ok(()) };
             prop_assert_eq!(validate_server(&m), want);
         }
 

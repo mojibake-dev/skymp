@@ -2038,6 +2038,46 @@ mod tests {
     }
 
     #[test]
+    fn a_margin_hold_its_holder_unloads_names_the_cells_host_again_in_a_decision() {
+        // a hold in another host's cell (D22) ends with its holder's unload of the cell: the cell's rule
+        // names its host, and the decision says so, so the core's word reaches the host's game; without
+        // it the host's game keeps a puppet nobody simulates, and a claim on it moves no simulator and
+        // sends no word
+        const EAST: u32 = 0x9733;
+        const SIGRID: u32 = 0x13483;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, EAST, 1_100), vec![]);
+        assert_eq!(c.reach(C2, &[RIVERWOOD, EAST], 1_200), vec![Decision::Grant { player: C2, cell: EAST, epoch: 1 }]);
+        assert_eq!(
+            c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: 100 }, 2_000),
+            MoveVerdict::Follow
+        );
+        assert_eq!(c.simulator_of(SIGRID, EAST), C1);
+        let out = c.unloaded(C1, EAST, 2_500);
+        assert!(out.contains(&Decision::HoldEnded { actor: SIGRID, cell: EAST, player: C1, left: false }), "{out:?}");
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.simulator_of(SIGRID, EAST), C2);
+    }
+
+    #[test]
+    fn a_margin_hold_whose_holder_leaves_the_server_names_the_cells_host_again_in_a_decision() {
+        const EAST: u32 = 0x9733;
+        const SIGRID: u32 = 0x13483;
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, EAST, 1_100);
+        c.reach(C2, &[RIVERWOOD, EAST], 1_200);
+        assert_eq!(
+            c.may_move(&CellMove { sender: C1, actor: SIGRID, origin: RIVERWOOD, dest: EAST, adjacent: true, door: false, edge_units: 100 }, 2_000),
+            MoveVerdict::Follow
+        );
+        let out = c.gone(C1, 3_000);
+        assert!(out.contains(&Decision::HoldEnded { actor: SIGRID, cell: EAST, player: C1, left: true }), "{out:?}");
+        assert_eq!(c.simulator_of(SIGRID, EAST), C2);
+    }
+
+    #[test]
     fn a_talk_gives_one_actor_to_the_claimant_until_its_release_or_its_lease_and_outlives_a_grant() {
         // ADR-052 (thuum docs/verbs/npc-talk.md): a guest in the host's cell
         // asks for Sven for a dialogue

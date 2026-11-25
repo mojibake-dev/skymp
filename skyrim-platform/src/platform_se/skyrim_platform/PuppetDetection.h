@@ -34,10 +34,10 @@ inline std::optional<std::int32_t> Answer(bool targetIsPlayer,
                                           bool detectorIsPuppet,
                                           const Relayed& relayed)
 {
-  (void)targetIsPlayer;
-  (void)detectorIsPuppet;
-  (void)relayed;
-  return std::nullopt;
+  if (!targetIsPlayer || !detectorIsPuppet || !relayed.has) {
+    return std::nullopt;
+  }
+  return relayed.level;
 }
 
 }

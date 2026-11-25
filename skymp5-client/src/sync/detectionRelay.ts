@@ -17,15 +17,26 @@ export interface PlayerDetection {
 // the host's entries for one actor, ascending by player, or undefined when they say nothing new against the last
 // ones sent: a player's entry came or went, a level crossed into or out of sight (above 0), or moved a step
 export function detectsToSend(levels: PlayerDetection[], lastSent: PlayerDetection[] | undefined): PlayerDetection[] | undefined {
-  void levels;
-  void lastSent;
+  const now = [...levels].sort((a, b) => a.player - b.player);
+  if (!lastSent || lastSent.length !== now.length) {
+    return now;
+  }
+  const before = new Map(lastSent.map((d) => [d.player, d.level]));
+  for (const d of now) {
+    const was = before.get(d.player);
+    if (was === undefined || (was > 0) !== (d.level > 0) || Math.abs(d.level - was) >= LEVEL_STEP) {
+      return now;
+    }
+  }
   return undefined;
 }
 
 // the guest's level for its own player from a relayed state's entries: its entry's level, UNDETECTED when the state
 // carries entries and none is this player's, undefined when it carries none (the last relayed level stands)
 export function levelFor(detects: PlayerDetection[] | undefined, player: number): number | undefined {
-  void detects;
-  void player;
-  return undefined;
+  if (!detects) {
+    return undefined;
+  }
+  const mine = detects.find((d) => d.player === player);
+  return mine ? mine.level : UNDETECTED;
 }

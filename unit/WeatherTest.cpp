@@ -124,3 +124,52 @@ TEST_CASE("Bad weather settings stop the server, named", "[Weather]")
     ContainsSubstring("'x'"));
   REQUIRE_NOTHROW(partOne.SetWeatherSettings("{}"));
 }
+
+// The engine holds a weather for its climate's own time before it draws the
+// next: (255 - TNAM's volatility) * 22 / 255 + 1 game hours (TESClimate.h:60
+// timing from TNAM, :43 volatility; the due check of the weather update,
+// id 26231), 18.686 game hours for SkyrimClimate 0x812,
+// whose volatility is 50. Without a slot named in the settings, a
+// worldspace's slot is that time, a game minute inside the engine's own
+// release of a forced weather: 1120 game minutes for Tamriel 0x3c.
+extern espm::Loader& GetEspmLoader();
+
+namespace {
+// the Tamriel weather a fresh server's login word names, its clock started at
+// `gameMinutes` of the game files' clock, under `weatherSettings`
+uint32_t TamrielWeatherAt(double gameMinutes, const char* weatherSettings)
+{
+  static std::vector<std::shared_ptr<PartOne>> keep;
+  auto partOne = std::make_shared<PartOne>();
+  keep.push_back(partOne);
+  partOne->SetGameTimeSettings(
+    nlohmann::json{ { "start", { { "daysPassed", gameMinutes / 1440.0 } } } }
+      .dump());
+  partOne->SetWeatherSettings(weatherSettings);
+  partOne->SetWeatherEnabled(true);
+  partOne->AttachEspm(&GetEspmLoader());
+  partOne->CreateActor(0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+  DoConnect(*partOne, 0);
+  partOne->SetUserActor(0, 0xff000ABC);
+  const auto words = WeatherWords(*partOne, 0);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0]->place == 0x3c);
+  REQUIRE(words[0]->weather != 0);
+  return words[0]->weather;
+}
+}
+
+TEST_CASE("Without a slot in the settings, Tamriel holds one weather for its "
+          "climate's own time, 1120 game minutes, then draws another",
+          "[Weather][espm]")
+{
+  // 33610 and 33730 game minutes: one 1120-minute slot (33600 to 34720), two
+  // of the old default's 120-minute slots in a row, and 34730 the next slot
+  const uint32_t first = TamrielWeatherAt(33610.0, R"({"seed": 1})");
+  REQUIRE(TamrielWeatherAt(33730.0, R"({"seed": 1})") == first);
+  REQUIRE(TamrielWeatherAt(34730.0, R"({"seed": 1})") != first);
+  // a slot the settings name holds every worldspace
+  REQUIRE(
+    TamrielWeatherAt(33610.0, R"({"changeGameMinutes": 120, "seed": 1})") !=
+    TamrielWeatherAt(33730.0, R"({"changeGameMinutes": 120, "seed": 1})"));
+}

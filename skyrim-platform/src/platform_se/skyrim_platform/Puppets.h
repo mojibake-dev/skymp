@@ -24,6 +24,9 @@ size_t Count();
 // setPuppetLocomotion export at every relayed sample (130 ms), read by the
 // Move detour every frame, which writes it where the engine's Speed,
 // Direction and TurnDelta channels read (MiddleHighProcessData).
+// kLocomotionStaleMs is the least time a sample stays fresh, and a sample's
+// own window when its feed names none.
+constexpr uint64_t kLocomotionStaleMs = 400;
 struct Locomotion
 {
   float speed = 0.f;
@@ -33,13 +36,16 @@ struct Locomotion
   // toward at turnRateDeg every frame; a movement step's own sample has none
   float headingDeg = 0.f;
   bool hasHeading = false;
-  // steady-clock milliseconds at the store; a sample older than
-  // kStaleMs feeds speed 0 (the record stood still and the host sent no
-  // newer sample, or the relay paused): playtest 32, a conversation pair
-  // walking in place on the puppet screen (Embry 0x3550c, 2026-10-22)
+  // steady-clock milliseconds at the store; a sample older than staleMs
+  // feeds speed 0 and turns nothing (the record stood still and the host
+  // sent no newer sample, or the relay paused), so a puppet whose feed
+  // stopped does not walk in place
   uint64_t stampMs = 0;
+  // how long the sample stays fresh: the feed's own window, which follows
+  // the copy's sample cadence (a far copy's samples come about 500 ms
+  // apart), never under kLocomotionStaleMs
+  uint64_t staleMs = kLocomotionStaleMs;
 };
-constexpr uint64_t kLocomotionStaleMs = 400;
 uint64_t NowMs();
 void SetLocomotion(uint32_t formId, const Locomotion& sample);
 bool GetLocomotion(uint32_t formId, Locomotion& out);

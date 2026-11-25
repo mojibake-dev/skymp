@@ -320,7 +320,7 @@ declare module "skyrimPlatform" {
     function setPuppet(actorFormId: number, puppet: boolean): boolean;
     function isPuppet(actorFormId: number): boolean;
     function releasePuppet(actorFormId: number): boolean;
-    function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number, headingDeg: number): boolean;
+    function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number, headingDeg?: number, staleMs?: number): boolean;
     // tracker #111: the other end of those fields as the actor's last
     // movement step left them, the engine's own for an actor this game
     // simulates, the relay's feed for a puppet (null: no sample, or a

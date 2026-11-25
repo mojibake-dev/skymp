@@ -9,6 +9,8 @@ import { recordDown } from "./recordDown";
 import { tailProbeLogs } from "./tailProbeRule";
 import { logLab } from "../logging";
 import { puppetTurn } from "./puppetTurn";
+import { puppetStaleMs } from "./puppetFresh";
+import { farMovementMs } from "./movementSettings";
 
 const sqr = (x: number) => x * x;
 
@@ -176,6 +178,9 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
   const prev = puppetTrack.get(id);
   puppetTrack.set(id, { x: m.pos[0], y: m.pos[1], t: now });
   let fed = m.speed;
+  // the sample stays fresh for twice this copy's own gap between samples
+  // (puppetFresh.ts), so a far copy's 500 ms samples keep it fed between them
+  const staleMs = puppetStaleMs(prev ? now - prev.t : undefined, farMovementMs());
   if (prev) {
     const dt = Math.max(0.05, (now - prev.t) / 1000);
     const moved = Math.sqrt(sqr(m.pos[0] - prev.x) + sqr(m.pos[1] - prev.y));
@@ -185,8 +190,23 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
       fed = 0;
     }
   }
+  // A copy its engine holds in a furniture (a draugr lying in its coffin, a
+  // resident on a bench) is its furniture's to place, and leaves it when its
+  // host's actor turns: by the absolute turn, whose body is the engine's
+  // MoveTo (TESObjectREFR::MoveTo_Impl 56626, docs/verbs/push.md in the thuum
+  // repo), which takes it out of the furniture. It is fed no turn of its own:
+  // the movement step's turn and TurnDelta are for a copy no furniture holds.
+  // HYPOTHESIS until a look at a coffin's rise: that MoveTo is what takes the
+  // copy out of the furniture
+  if (ac.getFurnitureReference() !== null) {
+    if (Math.abs(angleDelta(m.rot[2], ac.getAngleZ())) >= 1) {
+      ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+    }
+    setPuppetLocomotion(id, fed, m.direction, 0, undefined, staleMs);
+    return;
+  }
   const turn = puppetTurn(m);
-  setPuppetLocomotion(id, fed, m.direction, turn.turnRateDeg, turn.headingDeg);
+  setPuppetLocomotion(id, fed, m.direction, turn.turnRateDeg, turn.headingDeg, staleMs);
 };
 
 // a puppet's record at the previous sample, for the fed speed's bound

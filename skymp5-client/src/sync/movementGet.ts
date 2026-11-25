@@ -73,8 +73,8 @@ const engineLocomotionOf = (refr: ObjectReference): EngineLocomotion | null => {
   }
   return sample;
 };
-// the platform's own staleness for a puppet's fed sample (Puppets.h
-// kLocomotionStaleMs, 400)
+// the platform's least window for a sample (Puppets.h kLocomotionStaleMs,
+// 400); a step runs every frame for an actor this game simulates
 const ENGINE_SAMPLE_STALE_MS = 400;
 // the Speed channel's own threshold for moveStart and moveStop
 // (docs/research/m3/re-puppet-locomotion.md, the Speed poll's row: 5.0)

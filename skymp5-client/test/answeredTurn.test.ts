@@ -116,14 +116,14 @@ const seat = () => {
   return { raise, update };
 };
 
-// the host's defaultPuzzlePillarScript turning the pillar to its second face, the seam's answer at once (the 3D away)
-const turn = (event: string) => ({
-  calls: [{
-    cls: "ObjectReference", fn: "PlayAnimationAndWait", kind: "action", self: PILLAR,
-    args: [event, event.replace("Trigger", "Turned")], caller: "defaultPuzzlePillarScript", handler: "OnActivate",
-    callerSelf: PILLAR, latent: true, stackId: 1, answered: true,
-  }],
+// the host's defaultPuzzlePillarScript turning the pillar to a face, answered at once by the seam (the 3D away, or
+// another player's press started the script) or taken by the graph
+const turnCall = (event: string, answered: boolean) => ({
+  cls: "ObjectReference", fn: "PlayAnimationAndWait", kind: "action", self: PILLAR,
+  args: [event, event.replace("Trigger", "Turned")], caller: "defaultPuzzlePillarScript", handler: "OnActivate",
+  callerSelf: PILLAR, latent: true, stackId: 1, answered,
 });
+const turn = (event: string) => ({ calls: [turnCall(event, true)] });
 
 test("a turn the host's script made with the pillar's 3D away plays on the host's graph when the host arrives", () => {
   const realNow = Date.now;
@@ -144,4 +144,14 @@ test("a turn the host's script made with the pillar's 3D away plays on the host'
   } finally {
     Date.now = realNow;
   }
+});
+
+test("a turn the guest's press started, answered at once, gives way to the host's own turn the graph took in the same frame", () => {
+  loaded = true;
+  plays.length = 0;
+  const { raise, update } = seat();
+  raise("scriptCalls", { calls: [turnCall("Trigger02", true), turnCall("Trigger03", false)] });
+  update();
+  update();
+  assert.deepEqual(plays, []);
 });

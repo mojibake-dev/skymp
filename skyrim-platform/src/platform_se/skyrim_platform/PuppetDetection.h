@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 // Whose answer the engine's detection reader gives on this game (the hook on
 // Actor::RequestDetectionLevel, CommonLibSSE-NG include/RE/A/Actor.h:619,
@@ -58,6 +59,35 @@ inline std::int32_t HighestWithRelayed(std::int32_t engineHighest,
     }
   }
   return highest;
+}
+
+// one member of a combat group, as the group's stand-in pass reads it
+struct GroupMember
+{
+  std::uint32_t formId = 0;
+  bool isPuppet = false;
+  Relayed relayed;
+};
+
+// a detection level handed to a combat group's detection update for one member
+struct StandIn
+{
+  std::uint32_t member = 0;
+  std::int32_t level = kUndetected;
+};
+
+// the levels this game hands a combat group's detection update for one of its
+// targets after the engine's own stand-in pass (the replacement of the
+// group's stand-in pass, Address Library 44804): a puppet's AI is off, so it
+// never asks for detection and its group's target stays undetected until it
+// is lost; each puppet member's level of this game's player is its host's
+// relayed level (Answer), in the members' order
+inline std::vector<StandIn> StandIns(bool targetIsPlayer,
+                                     const std::vector<GroupMember>& members)
+{
+  (void)targetIsPlayer;
+  (void)members;
+  return {};
 }
 
 }

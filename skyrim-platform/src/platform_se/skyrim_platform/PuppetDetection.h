@@ -85,9 +85,14 @@ struct StandIn
 inline std::vector<StandIn> StandIns(bool targetIsPlayer,
                                      const std::vector<GroupMember>& members)
 {
-  (void)targetIsPlayer;
-  (void)members;
-  return {};
+  std::vector<StandIn> out;
+  for (const auto& member : members) {
+    if (const auto level =
+          Answer(targetIsPlayer, member.isPuppet, member.relayed)) {
+      out.push_back({ member.formId, *level });
+    }
+  }
+  return out;
 }
 
 }

@@ -3988,6 +3988,38 @@ std::int32_t RequestDetectionLevelReplacement(RE::Actor* self,
 }
 }
 
+// the stealth eye's scan,
+// ProcessLists::RequestHighestDetectionLevelAgainstActor (Address Library
+// 41408, CommonLibSSE-NG src/RE/P/ProcessLists.cpp:89-92): it reads each high
+// actor's own detection state of the target, which a puppet never fills here,
+// so for this game's player its level folds in every puppet's relayed level
+// (PuppetDetection::HighestWithRelayed); the line of sight count stays the
+// engine's. The scan passes a fourth argument through to its per-actor read
+// (the decompile on sky-re), forwarded unchanged
+namespace {
+using HighestDetectionFn = std::int32_t (*)(RE::ProcessLists* self,
+                                            RE::Actor* target,
+                                            std::uint32_t* losCount,
+                                            std::uintptr_t passed);
+HighestDetectionFn g_highestDetectionOriginal = nullptr;
+
+std::int32_t HighestDetectionReplacement(RE::ProcessLists* self,
+                                         RE::Actor* target,
+                                         std::uint32_t* losCount,
+                                         std::uintptr_t passed)
+{
+  const std::int32_t engine = g_highestDetectionOriginal
+    ? g_highestDetectionOriginal(self, target, losCount, passed)
+    : PuppetDetection::kUndetected;
+  if (!target || target != RE::PlayerCharacter::GetSingleton()) {
+    return engine;
+  }
+  const auto relayed = Puppets::RelayedLevels();
+  return PuppetDetection::HighestWithRelayed(engine, relayed.data(),
+                                             relayed.size());
+}
+}
+
 void InstallGuestWitnessHook()
 {
   if (!REL::Module::IsAE()) {
@@ -3999,6 +4031,15 @@ void InstallGuestWitnessHook()
     RE::Offset::Actor::RequestDetectionLevel.address(),
     reinterpret_cast<void*>(&RequestDetectionLevelReplacement),
     reinterpret_cast<void**>(&g_requestDetectionLevelOriginal));
+  const bool eye = Frida::HookHandler::GetSingleton()->Replace(
+    REL::RelocationID(40394, 41408).address(),
+    reinterpret_cast<void*>(&HighestDetectionReplacement),
+    reinterpret_cast<void**>(&g_highestDetectionOriginal));
+  logger::info("[verb:guest-witness] stealth eye hook (41408) {}",
+               eye ? "installed: this game's player's highest detection level "
+                     "folds in its puppets' relayed levels"
+                   : "NOT installed: the eye reads this game's own actors "
+                     "alone");
   logger::info("[verb:guest-witness] detection hook (37764) {}",
                replaced ? "installed: a puppet's detection of this game's "
                           "player answers its host's relayed level"

@@ -71,12 +71,11 @@ TEST_CASE("The guest's stealth eye closes as the host's bandit loses it: "
           "[PuppetDetection]")
 {
   const std::vector<std::int32_t> relayed = { PuppetDetection::kUndetected };
-  REQUIRE(PuppetDetection::HighestWithRelayed(PuppetDetection::kUndetected,
-                                              relayed.data(),
-                                              relayed.size()) ==
-          PuppetDetection::kUndetected);
   REQUIRE(PuppetDetection::HighestWithRelayed(
-            PuppetDetection::kUndetected, nullptr, 0) ==
+            PuppetDetection::kUndetected, relayed.data(), relayed.size()) ==
+          PuppetDetection::kUndetected);
+  REQUIRE(PuppetDetection::HighestWithRelayed(PuppetDetection::kUndetected,
+                                              nullptr, 0) ==
           PuppetDetection::kUndetected);
 }
 

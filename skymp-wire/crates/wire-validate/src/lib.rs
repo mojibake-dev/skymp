@@ -2998,6 +2998,30 @@ mod tests {
         assert!(validate(&at(0.5), &mut g, 0).is_ok());
     }
 
+    // a sample's turn rate is the sender's engine's (recorded, not judged):
+    // any finite rate either way is taken, and a non-finite one refuses the
+    // whole sample as any other non-finite field does
+    #[test]
+    fn skymp_movement_turn_rate_is_taken_when_finite() {
+        let mut g = ClientGuard::default();
+        let at = |turn_rate: Option<f32>| {
+            Message::UpdateMovement(skymp::UpdateMovement {
+                t: skymp::MsgT,
+                idx: 1,
+                data: skymp::MovementData {
+                    pos: [0.0, 0.0, 0.0],
+                    turn_rate,
+                    ..Default::default()
+                },
+            })
+        };
+        assert!(validate(&at(None), &mut g, 0).is_ok());
+        assert!(validate(&at(Some(90.5)), &mut g, 0).is_ok());
+        assert!(validate(&at(Some(-412.0)), &mut g, 0).is_ok());
+        assert_eq!(validate(&at(Some(f32::NAN)), &mut g, 0), Err(Reject::NonFinite));
+        assert_eq!(validate(&at(Some(f32::INFINITY)), &mut g, 0), Err(Reject::NonFinite));
+    }
+
     #[test]
     fn skymp_movement_both_ways() {
         let mut g = ClientGuard::default();

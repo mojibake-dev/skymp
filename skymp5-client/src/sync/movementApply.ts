@@ -8,6 +8,7 @@ import { isFollowedDown, isKnockedDown } from "./knockState";
 import { recordDown } from "./recordDown";
 import { tailProbeLogs } from "./tailProbeRule";
 import { logLab } from "../logging";
+import { puppetTurn } from "./puppetTurn";
 
 const sqr = (x: number) => x * x;
 
@@ -140,17 +141,17 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
 // the shortest signed turn from heading b to heading a, in (-180, 180]
 const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 360) % 360) - 180;
 
-// thuum docs/verbs/npc-puppet.md (ADR-045, Rule B; H2, H11): a puppet's
-// heading is written absolutely from the host's sample. A keep-offset on the
-// actor itself with a nonzero angle is a turn that renews itself every frame
-// (the planner agent's goal is the actor's own angle plus the offset, REA
-// 2026-10-21): playtest thirty's spinning wolves. Its graph is fed the host's
-// Speed and Direction so the walk cycle plays on the re-admitted animation
-// job (H2; the AI that wrote them is off on a puppet).
+// A puppet's heading is the host's sample's, and its engine turns it there:
+// the sample's heading and turn rate go to the movement-step detour, which
+// turns the puppet toward the heading at that rate every frame and writes the
+// rate where the graph's TurnDelta reads it (puppetTurn.ts), so it turns as
+// the host's actor did; a heading set once per sample jumped at each one. A
+// keep-offset on the actor itself with a nonzero angle is no way to turn it:
+// the planner's goal is the actor's own angle plus the offset, a turn that
+// renews itself every frame. The graph is fed the host's Speed and Direction
+// too, so the walk cycle plays on the re-admitted animation job (the AI that
+// wrote them is off on a puppet).
 const applyPuppetPose = (ac: Actor, m: Movement) => {
-  if (Math.abs(angleDelta(m.rot[2], ac.getAngleZ())) >= 1) {
-    ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
-  }
   // docs/research/m3/re-puppet-locomotion.md: the graph's Speed and
   // Direction are data channels the engine refreshes every tick from the
   // movement step's fields, so a SetAnimationVariableFloat here lived less
@@ -184,7 +185,8 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
       fed = 0;
     }
   }
-  setPuppetLocomotion(id, fed, m.direction, 0);
+  const turn = puppetTurn(m);
+  setPuppetLocomotion(id, fed, m.direction, turn.turnRateDeg, turn.headingDeg);
 };
 
 // a puppet's record at the previous sample, for the fed speed's bound

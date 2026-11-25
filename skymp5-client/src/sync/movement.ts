@@ -21,6 +21,9 @@ export interface AnimationVariables {
   healthPercentage: number;
   lookAt?: NiPoint3;
   speed: number;
+  // degrees per second as the sender's engine stepped the actor (the
+  // graph's TurnDelta); absent without a movement-step sample (puppetTurn.ts)
+  turnRate?: number;
 }
 
 // `placed`, this game's own mark, never on the wire: the server vouched for

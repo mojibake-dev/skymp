@@ -262,6 +262,58 @@ void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
   }
 }
 
+// A puppet's heading is turned toward its sample's in the Move detour, every
+// frame: at the host's turn rate, so it turns as the host's actor did, and
+// never slower than closing the gap within kHeadingCatchUpS, so the end of a
+// turn (or a sample from a sender with no rate) still arrives before the
+// next sample of an actor sampled at the far rate (skymp5-client
+// movementSettings.ts farMovementMs, 500); never past the heading. Writes
+// through Actor::SetRotationZ (CommonLibSSE-NG src/RE/A/Actor.cpp:1060,
+// 37230), the call the engine's own movement step turns an actor with.
+constexpr float kHeadingCatchUpS = 0.5f;
+// a smaller gap is left alone, so a puppet at its heading is not written
+constexpr float kHeadingMinGapRad = 0.0017453292f;
+
+// this frame's turn toward a gap of gapRad, signed as the gap
+float HeadingStep(float gapRad, float turnRateDeg, float delta)
+{
+  constexpr float kDegToRad = 0.017453292f;
+  const float rate = std::max(std::fabs(turnRateDeg) * kDegToRad,
+                              std::fabs(gapRad) / kHeadingCatchUpS);
+  const float step = std::min(std::fabs(gapRad), rate * delta);
+  return gapRad < 0.f ? -step : step;
+}
+
+// A body is its ragdoll's and the knock's, not the sample's: a dead,
+// ragdolled or knocked puppet is not turned.
+void TurnTowardHeading(RE::Actor& actor, const Puppets::Locomotion& sample,
+                       float delta)
+{
+  if (actor.IsDead() || actor.IsInRagdollState() ||
+      actor.AsActorState()->GetKnockState() != RE::KNOCK_STATE_ENUM::kNormal) {
+    return;
+  }
+  constexpr float kDegToRad = 0.017453292f;
+  constexpr float kPi = 3.14159265f;
+  constexpr float kTwoPi = 6.2831853f;
+  const float current = actor.GetAngleZ();
+  float gap = std::fmod(sample.headingDeg * kDegToRad - current, kTwoPi);
+  if (gap > kPi) {
+    gap -= kTwoPi;
+  } else if (gap < -kPi) {
+    gap += kTwoPi;
+  }
+  if (std::fabs(gap) < kHeadingMinGapRad) {
+    return;
+  }
+  float heading =
+    std::fmod(current + HeadingStep(gap, sample.turnRateDeg, delta), kTwoPi);
+  if (heading < 0.f) {
+    heading += kTwoPi;
+  }
+  actor.SetRotationZ(heading);
+}
+
 // Hook 3. A puppet's movement is the relay's, so the engine's step is not
 // run for it. Skyrim Together's plain early return left the character
 // controller's step time at zero (its #901: the rigid-body controller
@@ -365,6 +417,11 @@ void MovementStepReplacement(RE::Actor* actor, float delta)
       mh->unk2AC = speed;
       mh->rotation.z = direction;
       mh->rotationSpeed.z = -sample.turnRateDeg * kDegToRad;
+      // the heading, from a fresh sample alone: a puppet the relay no
+      // longer feeds keeps the heading it reached
+      if (!stale && sample.hasHeading) {
+        TurnTowardHeading(*actor, sample, delta);
+      }
     }
   }
   // the fields as this frame left them, the relay's feed on a puppet: what

@@ -126,6 +126,9 @@ export class DeathService extends ClientListener {
       // thuum docs/verbs/headshot.md (ADR-038): the server's word confirms
       // a death this game played ahead; the real kill goes over the ragdoll
       this.predicted.delete(actor.getFormID());
+      // the server's word on a death this host reported: the dead check's
+      // hold on a stand-up ends
+      this.ownDeaths.delete(actor.getFormID());
     }
     if (actor.isDead() === isDead && this.isPlayer(actor) === false) {
       // the word and the engine agree: a queued stand-up has landed
@@ -181,6 +184,22 @@ export class DeathService extends ClientListener {
 
   private readonly serverKills = new Map<number, number>();
   private static readonly serverKillMarkMs = 10_000;
+
+  // a death this game's engine dealt to an actor it simulates and reported
+  // (DeathReportService), by the engine's id, from the report until the
+  // server's word on it: until then the actor's model still holds the alive
+  // word from before the death, and the view's dead check must not stand
+  // the body up by it (sync/deadCheck.ts)
+  public markOwnDeath(actorId: number): void {
+    this.ownDeaths.set(actorId, Date.now());
+  }
+
+  public ownDeathMsAgo(actorId: number, now: number): number | undefined {
+    const at = this.ownDeaths.get(actorId);
+    return at === undefined ? undefined : now - at;
+  }
+
+  private readonly ownDeaths = new Map<number, number>();
 
   // the puppet to the host's last sample of its actor (the world model's
   // movement for the form), when it stands more than 64 units from it

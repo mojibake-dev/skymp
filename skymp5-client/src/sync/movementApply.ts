@@ -190,6 +190,21 @@ const applyPuppetPose = (ac: Actor, m: Movement) => {
       fed = 0;
     }
   }
+  // A copy its engine holds in a furniture (a draugr lying in its coffin, a
+  // resident on a bench) is its furniture's to place, and leaves it when its
+  // host's actor turns: by the absolute turn, whose body is the engine's
+  // MoveTo (TESObjectREFR::MoveTo_Impl 56626, docs/verbs/push.md in the thuum
+  // repo), which takes it out of the furniture. It is fed no turn of its own:
+  // the movement step's turn and TurnDelta are for a copy no furniture holds.
+  // HYPOTHESIS until a look at a coffin's rise: that MoveTo is what takes the
+  // copy out of the furniture
+  if (ac.getFurnitureReference() !== null) {
+    if (Math.abs(angleDelta(m.rot[2], ac.getAngleZ())) >= 1) {
+      ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+    }
+    setPuppetLocomotion(id, fed, m.direction, 0, undefined, staleMs);
+    return;
+  }
   const turn = puppetTurn(m);
   setPuppetLocomotion(id, fed, m.direction, turn.turnRateDeg, turn.headingDeg, staleMs);
 };

@@ -329,6 +329,30 @@ TEST_CASE("A guest's hit on a scripted world object reaches the cell's host "
   Leave(p);
 }
 
+// The wire refuses an OnHit event whose projectile is 0 (wire-validate
+// check_relayed_activation): a swing has none, so it is absent.
+TEST_CASE("A guest's melee hit on a scripted world object reaches the cell's "
+          "host as an OnHit script event with no projectile",
+          "[OwnerRelay][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& web = p.worldState.GetFormAt<MpObjectReference>(kWeb);
+  Enter(p, web.GetPos() + NiPoint3{ 50.f, 0.f, 0.f });
+  RawMessageData raw;
+  raw.userId = 1;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = kWeb;
+  hit.data.source = 0x1f4; // bare hands, Skyrim.esm's Unarmed
+  hit.data.projectile = 0; // a swing, as the client reports one
+  p.GetActionListener().OnHit(raw, hit);
+  const auto toHost = EventsTo(p, 0, RelayedActivationMessage::kEventHit);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].source == 0x1f4u);
+  REQUIRE_FALSE(toHost[0].projectile.has_value());
+  Leave(p);
+}
+
 TEST_CASE("A guest's put into a scripted container reaches the cell's host "
           "alone as an OnItemAdded script event, the host's player far off",
           "[OwnerRelay][espm]")

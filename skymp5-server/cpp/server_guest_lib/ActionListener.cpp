@@ -13861,12 +13861,17 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
                                            const HitData& hitData)
 {
   // a hit on a scripted world object: its owner's engine runs the object's
-  // OnHit (a web's, a destructible's) as a script event
+  // OnHit (a web's, a destructible's) as a script event; a form the hit has
+  // none of (a swing's projectile) is absent, as the wire takes it
   if (aggressor && target && !target->AsActor()) {
     RelayedActivationMessage event;
     event.event = RelayedActivationMessage::kEventHit;
-    event.source = hitData.source;
-    event.projectile = hitData.projectile;
+    if (hitData.source != 0) {
+      event.source = hitData.source;
+    }
+    if (hitData.projectile != 0) {
+      event.projectile = hitData.projectile;
+    }
     event.flags = (hitData.isPowerAttack ? 1u : 0u) |
       (hitData.isSneakAttack ? 2u : 0u) | (hitData.isBashAttack ? 4u : 0u) |
       (hitData.isHitBlocked ? 8u : 0u);

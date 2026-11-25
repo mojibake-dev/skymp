@@ -34,6 +34,7 @@ import { withOverlayRace } from '../../sync/raceOverlay';
 import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment, equippedAmmoAmong, handsTouchedBy } from '../../sync/equipment';
 import { Inventory, applyInventory, ApplyInventoryReport, keepSurplus } from '../../sync/inventory';
 import { holdBook, releaseBook, heldBookBases } from '../../sync/bookHold';
+import { LatestPerKey } from '../../sync/latestPerKey';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
 import { resetSpellsAddedSinceLogin, syncSpells } from '../../sync/spell';
@@ -1458,6 +1459,8 @@ export class RemoteServer extends ClientListener {
   // the server's word that the next report of this actor is a jump; kept a
   // second, long past the report that follows it on the same connection
   private readonly placedIdx = new Map<number, number>();
+  // a game-file container's newest record from the server, until its apply
+  private readonly pendingContainerInventory = new LatestPerKey<Inventory>();
   private onActorJumpMessage(event: ConnectionMessage<ActorJumpMessage>): void {
     this.placedIdx.set(event.message.idx, Date.now() + 1000);
   }
@@ -1544,14 +1547,21 @@ export class RemoteServer extends ClientListener {
 
     if (this.skipFormViewCreation(msg)) {
       const refrId = msg.refrId;
+      // a burst of one container's records within a tick lands as its newest,
+      // in one apply (sync/latestPerKey.ts: each apply reads the container
+      // before the one before it has landed)
+      if (msg.propName === 'inventory' && !this.pendingContainerInventory.put(refrId, msgData as Inventory)) {
+        return;
+      }
       once('update', () => {
+        const pendingInventory = msg.propName === 'inventory' ? this.pendingContainerInventory.take(refrId) : undefined;
         const refr = ObjectReference.from(Game.getFormEx(refrId));
         if (!refr) {
           logError(this, 'UpdateProperty: refr not found');
           return;
         }
         if (msg.propName === 'inventory') {
-          ModelApplyUtils.applyModelInventory(refr, msgData as Inventory);
+          ModelApplyUtils.applyModelInventory(refr, pendingInventory ?? (msgData as Inventory));
           // thuum memo D52 B (playtest 37, 2026-10-28): this is the path a shared
           // chest's re-sent inventory takes while this seat's ContainerMenu is
           // open on it (c1's addItemEx on 36c37 within 0.4 s of c2's puts and

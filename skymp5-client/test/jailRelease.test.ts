@@ -32,8 +32,12 @@ const faction = {
   getCrimeGoldNonViolent: () => 0,
 };
 
+// the menus open on this game
+const menus = new Set<string>();
+
 const platform = new Proxy({
   storage: {},
+  Ui: { isMenuOpen: (name: string) => menus.has(name) },
   Faction: { from: (f: unknown) => (f === faction ? faction : null) },
   Game: { getFormEx: (id: number) => (id === WHITERUN ? faction : null) },
 }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
@@ -50,10 +54,12 @@ const { JailService } = require("../src/services/services/jailService") as { Jai
 
 const sp: any = new Proxy({
   Game: platform.Game,
+  Ui: platform.Ui,
 }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
 
 const seat = () => {
   calls.length = 0;
+  menus.clear();
   const handlers: Record<string, Array<(e?: unknown) => void>> = {};
   const messages: Record<string, Array<(e?: unknown) => void>> = {};
   const controller: any = {
@@ -103,4 +109,16 @@ test("a term not yet served releases nothing, its spawn settled or not", () => {
   update();
   assert.deepEqual(calls, []);
   assert.notEqual(jail.term, undefined);
+});
+
+test("a served term waits while a Dialogue Menu is open, so the move out never lands under a dialogue, then releases at its close", () => {
+  const { update, raise, served } = seat();
+  raise("ownSpawnSettled", { how: "moved" });
+  menus.add("Dialogue Menu");
+  served(true);
+  update();
+  assert.deepEqual(calls, []);
+  menus.delete("Dialogue Menu");
+  update();
+  assert.deepEqual(calls, RELEASE);
 });

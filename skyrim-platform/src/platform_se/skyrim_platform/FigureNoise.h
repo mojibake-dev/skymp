@@ -72,6 +72,8 @@ inline constexpr std::array<std::uint8_t, 9> kCombatSightBytes = {
 inline constexpr std::array<std::uint8_t, 4> kCombatSightTail = {
   0x84, 0xc0, 0x75, kCombatSightBytes[8]
 };
+static_assert(5 + kCombatSightTail.size() == kCombatSightBytes.size(),
+              "the call and the tail fill the site exactly");
 //
 // the gate before the target's noise is read, entered only when neither
 // actor has a combat controller (+0x160) and the fight reaction is neither
@@ -128,6 +130,17 @@ inline std::array<std::uint8_t, 17> Stub(std::uint64_t fn)
   return s;
 }
 
+// the in-combat sight test's stub: the target as the first argument and
+// the detector (rsi) as the second, then `jmp [rip]` to `fn`, which returns
+// to the site with its answer in al
+inline std::array<std::uint8_t, 20> SightStub(std::uint64_t fn)
+{
+  std::array<std::uint8_t, 20> s = { 0x49, 0x8b, 0xce, 0x48, 0x8b, 0xd6,
+                                     0xff, 0x25, 0x00, 0x00, 0x00, 0x00 };
+  std::memcpy(s.data() + 12, &fn, sizeof(fn));
+  return s;
+}
+
 struct Found
 {
   // the global the engine reads its player from
@@ -155,7 +168,7 @@ bool Holds(const std::uint8_t* code, std::size_t offset,
 }
 }
 
-// the three sites read from the function's code (kCodeSize bytes from its
+// the four sites read from the function's code (kCodeSize bytes from its
 // entry, the function at `entry`): the player's global and the gate's
 // callee, both RIP-relative, or nothing when a site's bytes differ from the
 // ones above, and then no site is written
@@ -164,7 +177,8 @@ inline std::optional<Found> Find(const std::uint8_t* code,
 {
   if (!Detail::Holds(code, kGate, kGateBytes) ||
       !Detail::Holds(code, kNoiseDistance, kNoiseDistanceBytes) ||
-      !Detail::Holds(code, kProjectileWatch, kProjectileWatchBytes)) {
+      !Detail::Holds(code, kProjectileWatch, kProjectileWatchBytes) ||
+      !Detail::Holds(code, kCombatSight, kCombatSightBytes)) {
     return std::nullopt;
   }
   const auto ripTarget = [&](std::size_t insn, std::size_t dispAt,
@@ -174,6 +188,8 @@ inline std::optional<Found> Find(const std::uint8_t* code,
   Found f;
   f.playerSlot = ripTarget(kGate, 3, 7);
   f.hostileCall = ripTarget(kGateCall, 1, 5);
+  f.combatSightWhole = entry + kCombatSight + kCombatSightBytes.size() +
+    static_cast<std::int8_t>(kCombatSightBytes[8]);
   return f;
 }
 

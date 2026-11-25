@@ -1,5 +1,8 @@
 // Whether a dead body's change of contents on its owner's engine is recorded at once (ChangeFormService's
-// contents-changed record): the record is the body's own save, and every other seat lays its copy by it.
+// contents-changed record): the record is the body's own save, and every other seat lays its copy by it. A body
+// whose fall this seat still runs waits for its rest's record, which carries the contents with the rest: a record
+// taken mid-fall holds the fall's poses and its dying life state, and a seat that lays its copy by it puts the body
+// back where it died, to fall again.
 
 export interface ContentsRecordFacts {
   dead: boolean;     // the body is dead on this engine
@@ -8,5 +11,5 @@ export interface ContentsRecordFacts {
 }
 
 export function recordContentsNow(f: ContentsRecordFacts): boolean {
-  return f.dead && f.loaded3D;
+  return f.dead && f.loaded3D && !f.falling;
 }

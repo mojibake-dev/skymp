@@ -1090,7 +1090,7 @@ export class ScriptStateService extends ClientListener {
         // relay this seat took) leaves the view to play as before
         let graphText = "";
         let graphRestored = false;
-        const restore = h.graph !== "" ? graphRestore({ last, seq: h.m.seq, shownHere: animations.shownHere(refr) }) : undefined;
+        const restore = h.graph !== "" ? graphRestore({ last, seq: h.m.seq, tookHere: animations.tookHere(refr) }) : undefined;
         if (restore?.why === "past") {
             graphText = `; graph state not restored, a relay past its seq ${h.m.seq} came (seq ${last})`;
             h.graph = "";

@@ -237,6 +237,7 @@ type LastAnimation = {
   seq: number;
   cell: number;     // its parent cell at the keep: a release of that cell drops it
   shown: boolean;   // played on the 3D now loaded; false again once that 3D goes
+  taken: boolean;   // and that 3D's graph took it (a refused play is shown, held for its graph, not taken)
   tries: number;    // re-applies on this 3D the graph refused
   lookAt: number;   // the next look, at the earliest (0: every update)
   vars: Map<string, KeptVar>;  // the graph variables by lower-case name, at most GRAPH_VARS_MAX
@@ -700,6 +701,10 @@ export class ObjectAnimationService extends ClientListener {
         continue;
       }
       const taken = this.heldPlays.taken(play.id, now);
+      const kept = this.lastAnimations.get(play.id);
+      if (kept !== undefined && kept.event === play.event && kept.shown) {
+        kept.taken = true;
+      }
       logLab('verb:scripts', `object animation ${play.remote.toString(16)} ${play.event} taken after ${taken ? taken.heldMs : 0} ms held: its copy's graph refused it first (relayed${jump})`);
     }
   }
@@ -832,8 +837,13 @@ export class ObjectAnimationService extends ClientListener {
     logTrace(this, `object animation ${id} ${event} ${jumpFirst ? "played" : "replayed"} (${how}, ${played ? "taken" : "refused"}${jump})`);
     if (seq !== undefined) {
       // a play on a reference with no 3D does nothing (placeOnSide's note):
-      // shown only when its 3D is here, else played at its load
+      // shown only when its 3D is here, else played at its load; taken only
+      // when its graph took it too (a refused one is held for the graph)
       this.keep(refr, localId, event, seq, refr.is3DLoaded());
+      const kept = this.lastAnimations.get(localId);
+      if (kept !== undefined && kept.event === event && kept.seq === seq) {
+        kept.taken = played && kept.shown;
+      }
     }
     return played;
   }
@@ -1145,7 +1155,7 @@ export class ObjectAnimationService extends ClientListener {
     // D-C3 A: the graph variables kept for the object stay with it, and so
     // do its looks
     this.lastAnimations.set(localId, {
-      event, seq, cell: parent ? parent.getFormID() : 0, shown, tries: 0, lookAt: 0,
+      event, seq, cell: parent ? parent.getFormID() : 0, shown, taken: false, tries: 0, lookAt: 0,
       vars: old !== undefined ? old.vars : new Map<string, KeptVar>(), varsShown: old !== undefined ? old.varsShown : true,
       looks: old !== undefined ? old.looks : new Map<string, KeptLook>(), looksShown: old !== undefined ? old.looksShown : true,
       actor: false, flips: old !== undefined ? old.flips : 0,
@@ -1191,7 +1201,7 @@ export class ObjectAnimationService extends ClientListener {
     if (kept === undefined) {
       const parent = refr.getParentCell();
       kept = {
-        event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true,
+        event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, taken: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true,
         looks: new Map<string, KeptLook>(), looksShown: true, actor: false, flips: 0,
       };
     }
@@ -1393,7 +1403,7 @@ export class ObjectAnimationService extends ClientListener {
     if (kept === undefined) {
       const parent = refr.getParentCell();
       kept = {
-        event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true,
+        event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, taken: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true,
         looks: new Map<string, KeptLook>(), looksShown: true, actor, flips: 0,
       };
     }
@@ -1621,6 +1631,20 @@ export class ObjectAnimationService extends ClientListener {
     return this.lastAnimations.get(localId)?.shown === true;
   }
 
+  // graphRestore's fact, in an update's context: the kept last animation was
+  // played on the 3D now loaded and its graph took it (a refused relay is
+  // shown, held for its graph, and not taken, so the owner's graph state of
+  // its seq still brings the copy to the owner's state); a reference this
+  // service never keeps is judged by the seq alone, as shownHere's is
+  tookHere(refr: ObjectReference): boolean {
+    const localId = refr.getFormID();
+    if (!this.keepsFor(refr, localId)) {
+      return true;
+    }
+    const kept = this.lastAnimations.get(localId);
+    return kept?.shown === true && kept.taken === true;
+  }
+
   // the newest seq known here for the object: SpSnippetService's (its last
   // relay's, or a record's raise) or the kept one's
   private newestSeq(localId: number): number {
@@ -1709,6 +1733,7 @@ export class ObjectAnimationService extends ClientListener {
     }
     if (!refr || !refr.is3DLoaded()) {
       kept.shown = false;
+      kept.taken = false;
       kept.varsShown = false;
       kept.looksShown = false;
       kept.tries = 0;
@@ -1762,6 +1787,7 @@ export class ObjectAnimationService extends ClientListener {
       return;
     }
     kept.shown = true;
+    kept.taken = played;
     kept.answered = false;
     if (this.sayReapplied(id, now)) {
       logLab('verb:scripts', `object animation ${id.toString(16)} ${kept.event} re-applied at a 3D load (seq ${kept.seq}); ${played ? 'taken' : 'refused'}${kept.tries > 1 ? ` at try ${kept.tries}` : ''}${jump}`);

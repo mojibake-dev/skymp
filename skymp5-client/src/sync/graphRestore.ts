@@ -2,14 +2,14 @@
 // record; thuum docs/verbs/traps.md "The graph state"): the engine's own 3D-load restore of the owner's graph, or
 // nothing, beside the relays this seat took of the same object (SpSnippetService.takeSeq notes each relay's seq at
 // its arrival). A relay past the state's seq is newer than the state and stands. The relay of the state's own seq
-// is the same act: once it has played on this 3D a restore would start the act again, so it stands too; while it
-// waits for the copy's graph the restore stands for it, and the held play goes, as it does for every relay at or
-// below the state's seq.
+// is the same act: once this 3D's graph has taken it a restore would start the act again, so it stands too; while
+// it waits for the copy's graph (refused, held) the restore stands for it, and the held play goes, as it does for
+// every relay at or below the state's seq.
 
 export interface GraphRestoreFacts {
   last: number | undefined; // the newest relay's seq this seat took for the object
   seq: number;              // the state's own seq
-  shownHere: boolean;       // the kept last animation was played on the 3D now loaded
+  tookHere: boolean;        // the kept last animation was played on the 3D now loaded and its graph took it
 }
 
 export interface GraphRestoreVerdict {
@@ -22,7 +22,7 @@ export function graphRestore(f: GraphRestoreFacts): GraphRestoreVerdict {
   if (f.last !== undefined && f.last > f.seq) {
     return { why: "past", restore: false, dropHeld: false };
   }
-  if (f.last === f.seq && f.shownHere) {
+  if (f.last === f.seq && f.tookHere) {
     return { why: "played", restore: false, dropHeld: false };
   }
   return { why: "restore", restore: true, dropHeld: true };

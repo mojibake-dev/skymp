@@ -119,3 +119,11 @@ test("a relay the word's graph refused leaves the owner's graph state of its seq
   record("Dark1Wild", 1);
   assert.equal(restores, 1);
 });
+
+test("a relay the word's graph took stands for the owner's graph state of its seq: the state is not restored, so the act never starts twice", () => {
+  const { relay, record } = seat();
+  takes = true;
+  relay("Dark2Wild", 7);
+  record("Dark2Wild", 7);
+  assert.equal(restores, 0);
+});

@@ -7,18 +7,18 @@ import * as assert from "node:assert/strict";
 import { graphRestore } from "../src/sync/graphRestore";
 
 test("a relay past the state's seq stands: the state is not restored", () => {
-  assert.deepStrictEqual(graphRestore({ last: 3, seq: 2, shownHere: true }), { why: "past", restore: false, dropHeld: false });
+  assert.deepStrictEqual(graphRestore({ last: 3, seq: 2, tookHere: true }), { why: "past", restore: false, dropHeld: false });
 });
 
 test("the relay of the state's own seq played on this 3D: the state is not restored over it", () => {
-  assert.deepStrictEqual(graphRestore({ last: 1, seq: 1, shownHere: true }), { why: "played", restore: false, dropHeld: false });
+  assert.deepStrictEqual(graphRestore({ last: 1, seq: 1, tookHere: true }), { why: "played", restore: false, dropHeld: false });
 });
 
 test("the relay of the state's own seq still held for the copy's graph: the state is restored and the held play goes", () => {
-  assert.deepStrictEqual(graphRestore({ last: 1, seq: 1, shownHere: false }), { why: "restore", restore: true, dropHeld: true });
+  assert.deepStrictEqual(graphRestore({ last: 1, seq: 1, tookHere: false }), { why: "restore", restore: true, dropHeld: true });
 });
 
 test("no relay here, or an older one: the state is restored, and nothing held outlives it", () => {
-  assert.deepStrictEqual(graphRestore({ last: undefined, seq: 2, shownHere: false }), { why: "restore", restore: true, dropHeld: true });
-  assert.deepStrictEqual(graphRestore({ last: 1, seq: 2, shownHere: true }), { why: "restore", restore: true, dropHeld: true });
+  assert.deepStrictEqual(graphRestore({ last: undefined, seq: 2, tookHere: false }), { why: "restore", restore: true, dropHeld: true });
+  assert.deepStrictEqual(graphRestore({ last: 1, seq: 2, tookHere: true }), { why: "restore", restore: true, dropHeld: true });
 });

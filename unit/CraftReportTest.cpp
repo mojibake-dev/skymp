@@ -754,6 +754,67 @@ TEST_CASE("A drop of extras the record does not hold is refused and changes "
 // owner: a drop or a craft takes the row with the reported stack's owner,
 // the dropped copy keeps that owner for its pickup, and a stack whose owner
 // the record does not hold is still taken from the rows it does
+TEST_CASE("A brewed potion one player drops is the other player's at its "
+          "pickup, by its definition, and the other player's drink runs its "
+          "effects on that player",
+          "[CraftReport][DropItemTest][MagicEffects][espm]")
+{
+  constexpr uint32_t kOther = 0xff000c9b;
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  DoConnect(p, 1);
+  p.CreateActor(kOther, { 0, 200, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kOther);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  other.SetInventory(Inventory());
+  ActorValueRecord record;
+  record.bases = { { 24, 100.f } };
+  REQUIRE(other.SetActorValueRecord(record));
+  ActorValues values = other.GetActorValues();
+  values.healthPercentage = 0.5f;
+  other.SetPercentages(values);
+  ac.AddItems({ Potion(Heal(30.f), 2) });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage drop;
+  drop.baseId = kPotionTemplate;
+  drop.count = 1;
+  drop.createdBase = Heal(30.f);
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, drop);
+  REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 1);
+  const uint32_t copyId = DroppedCopy(p, kPotionTemplate);
+  REQUIRE(copyId != 0);
+  auto& copy = p.worldState.GetFormAt<MpObjectReference>(copyId);
+
+  // the other player's pickup: the same brewed potion, by its definition
+  copy.Activate(other);
+  REQUIRE(Stacks(other, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(other, kPotionTemplate)[0].count == 1);
+  REQUIRE(Stacks(other, kPotionTemplate)[0].createdBase);
+  REQUIRE(Stacks(other, kPotionTemplate)[0].createdBase->SameAs(Heal(30.f)));
+
+  // the other player's drink: its one copy taken, its effects run on it
+  RawMessageData otherRaw;
+  otherRaw.userId = 1;
+  OnEquipMessage drink;
+  drink.baseId = kPotionTemplate;
+  drink.createdBase = Heal(30.f);
+  p.GetActionListener().OnEquip(otherRaw, drink);
+  REQUIRE(Stacks(other, kPotionTemplate).empty());
+  REQUIRE(other.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(0.8f));
+  // the brewer's own stack is untouched
+  REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 1);
+
+  p.DestroyActor(kOther);
+  DoDisconnect(p, 1);
+  Leave(p);
+}
+
 TEST_CASE("A drop or a craft takes the stolen copy or the clean one it "
           "names, and a dropped stolen copy comes back stolen at its pickup",
           "[CraftReport][DropItemTest][espm]")

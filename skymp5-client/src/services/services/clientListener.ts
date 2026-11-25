@@ -328,7 +328,6 @@ declare module "skyrimPlatform" {
     function getActorLocomotion(actorFormId: number): { speed: number; directionDeg: number; turnRateDeg: number; ageMs: number } | null;
     function setPuppetDetection(actorFormId: number, level: number | null): boolean;
     function getDetectionLevels(detectorFormIds: number[], targetFormIds: number[]): number[];
-    function setPuppetHostileToPlayer(actorFormId: number, hostile: boolean): boolean;
     function getHighProcessActors(): number[];
     // thuum tracker #121: the cells the actor's running package names as its
     // location, the game thread's latest snapshot (PuppetService's demote)

@@ -38,9 +38,6 @@ Napi::Value SetPuppetDetection(const Napi::CallbackInfo& info);
 // getDetectionLevels(detectorFormIds, targetFormIds): each detector's level of
 // each target as this game's engine holds it, row by detector
 Napi::Value GetDetectionLevels(const Napi::CallbackInfo& info);
-// setPuppetHostileToPlayer(actorFormId, hostile): whether a puppet's host's
-// combat target is this game's player, for the compass
-Napi::Value SetPuppetHostileToPlayer(const Napi::CallbackInfo& info);
 // getHighProcessActors(): the engine's high-process actors by form id, the
 // game thread's latest snapshot (Puppets.h)
 Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
@@ -407,9 +404,6 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setPuppetDetection",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetPuppetDetection)));
-  exports.Set("setPuppetHostileToPlayer",
-              Napi::Function::New(
-                env, NapiHelper::WrapCppExceptions(SetPuppetHostileToPlayer)));
   exports.Set("getDetectionLevels",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(GetDetectionLevels)));

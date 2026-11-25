@@ -79,23 +79,9 @@ inline std::vector<std::uint32_t> CompassAdds(
   const std::vector<std::uint32_t>& listed,
   const std::vector<HostileCopy>& hostile)
 {
-  std::vector<std::uint32_t> adds;
-  for (const auto& copy : hostile) {
-    if (copy.dead || !copy.loaded) {
-      continue;
-    }
-    bool known = false;
-    for (std::uint32_t id : listed) {
-      known = known || id == copy.formId;
-    }
-    for (std::uint32_t id : adds) {
-      known = known || id == copy.formId;
-    }
-    if (!known) {
-      adds.push_back(copy.formId);
-    }
-  }
-  return adds;
+  (void)listed;
+  (void)hostile;
+  return {};
 }
 
 }

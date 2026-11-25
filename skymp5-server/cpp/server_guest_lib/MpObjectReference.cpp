@@ -1233,6 +1233,12 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
     ResyncAfterRefusedMove(ac);
     throw;
   }
+  // the take that moved, beside the refusal's line, so a container's record
+  // reads whole from the log: what left it, by whom, and what it holds after
+  spdlog::info("[verb:containers] {:x} takes {} of {:x} from {:x}: moved, "
+               "its record holds {}",
+               ac.GetFormId(), e.count, e.baseId, GetFormId(),
+               GetInventory().GetItemCount(e.baseId));
 }
 
 // thuum memo D52 (playtest 37, 23:32Z): two players on one stack, the loser's

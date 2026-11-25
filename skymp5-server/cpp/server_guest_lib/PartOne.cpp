@@ -10567,10 +10567,10 @@ bool PartOne::OnArrestStripPut(MpActor& prisoner,
     return true;
   }
   prisoner.AddJailBelonging(laid);
-  spdlog::debug("[verb:jail] {:x}'s strip: {} of {:x} into its belongings "
-                "{:x}",
-                prisoner.GetFormId(), entry.count, entry.baseId,
-                chest->GetFormId());
+  spdlog::info("[verb:jail] {:x}'s strip: {} of {:x} into its belongings "
+               "{:x}",
+               prisoner.GetFormId(), entry.count, entry.baseId,
+               chest->GetFormId());
   return true;
 }
 

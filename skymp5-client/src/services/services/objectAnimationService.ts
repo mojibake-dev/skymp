@@ -1078,8 +1078,25 @@ export class ObjectAnimationService extends ClientListener {
   // the cell (reapplyGate), the side's jump first, so the graph stands where
   // the script does: at once while the 3D is here (the graph takes it as it
   // advances), else at the next 3D load. Called after noteScriptSide for the
-  // same call. JS state alone: the scriptCalls event's context
+  // same call. JS state alone: safe in the scriptCalls event's context, where
+  // no native runs; the keep reads the reference, so it waits for the next
+  // update, and a newer act of the script's on it before then stands instead
   answeredAtOnce(localId: number, event: string): void {
+    const acts = this.scriptActs.get(localId) ?? 0;
+    this.controller.once('update', () => {
+      if ((this.scriptActs.get(localId) ?? 0) !== acts) {
+        return;
+      }
+      try {
+        this.keepAnswered(localId, event);
+      } catch (e) {
+        logError(this, `object animation ${localId.toString(16)} ${event}: its answered play's keep threw: ${e}`);
+      }
+    });
+  }
+
+  // answeredAtOnce's keep, in an update's context
+  private keepAnswered(localId: number, event: string): void {
     const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
     if (!refr) {
       return;

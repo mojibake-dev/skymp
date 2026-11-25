@@ -1,0 +1,27 @@
+{
+  "data": {
+    "direction": 0.0,
+    "healthPercentage": 1.0,
+    "isBlocking": false,
+    "isDead": false,
+    "isInJumpState": false,
+    "isSneaking": false,
+    "isWeapDrawn": true,
+    "pos": [
+      5481.5,
+      -525.25,
+      -257.5
+    ],
+    "rot": [
+      0.0,
+      0.0,
+      203.25
+    ],
+    "runMode": "Standing",
+    "speed": 0.0,
+    "turnRate": 90.5,
+    "worldOrCell": 225758
+  },
+  "idx": 3,
+  "t": 2
+}

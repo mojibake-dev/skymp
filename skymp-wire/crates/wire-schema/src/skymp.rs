@@ -500,6 +500,11 @@ wire_struct! {
         pub is_dead: bool,
         /// Head look target.
         pub look_at: Option<Vec3>,
+        /// The heading's turn rate, degrees per second, as the sender's
+        /// engine stepped the actor: minus MiddleHighProcessData's
+        /// rotationSpeed.z, the value the actor's graph reads as TurnDelta.
+        /// Absent when the sender has no movement-step sample of the actor.
+        pub turn_rate: Option<f32>,
     }
 }
 

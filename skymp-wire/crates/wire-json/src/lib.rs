@@ -195,6 +195,7 @@ mod tests {
                 is_weap_drawn: false,
                 is_dead: false,
                 look_at: None,
+                turn_rate: None,
             },
         })
     }

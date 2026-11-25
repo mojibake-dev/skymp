@@ -181,6 +181,8 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("DropItem", "ownerId"),
     // a fine's gold (SCHEMA_VERSION 67)
     ("CrimeGold", "paidGold"),
+    // a movement sample's turn rate (SCHEMA_VERSION 70)
+    ("MovementData", "turnRate"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

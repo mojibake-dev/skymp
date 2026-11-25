@@ -33,7 +33,8 @@ struct UpdateMovementMessage : public MessageBase<UpdateMovementMessage>
         .Serialize("isBlocking", isBlocking)
         .Serialize("isWeapDrawn", isWeapDrawn)
         .Serialize("isDead", isDead)
-        .Serialize("lookAt", lookAt);
+        .Serialize("lookAt", lookAt)
+        .Serialize("turnRate", turnRate);
     }
 
     uint32_t worldOrCell = 0;
@@ -51,6 +52,9 @@ struct UpdateMovementMessage : public MessageBase<UpdateMovementMessage>
     bool isWeapDrawn = false;
     bool isDead = false;
     std::optional<std::array<float, 3>> lookAt = std::nullopt;
+    // the turn rate the sender's engine stepped the actor at, degrees per
+    // second (skymp-wire MovementData::turn_rate); absent without a sample
+    std::optional<float> turnRate = std::nullopt;
   };
 
   template <class Archive>

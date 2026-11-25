@@ -332,8 +332,12 @@ use bounded::{String, Vec};
 /// OnItemAdded, OnItemRemoved, OnMagicEffectApply) with its `source`,
 /// `projectile`, `count` and `flags`: an act another seat made on an object
 /// this seat owns. A 68 peer would misread every RelayedActivation.
+/// 70: UpdateMovement's optional `turn_rate`, the turn rate the sender's
+/// engine stepped the actor at, so another seat's copy of it turns at that
+/// rate and its graph plays the turn. A 69 peer would misread every
+/// UpdateMovement.
 /// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 69;
+pub const SCHEMA_VERSION: u16 = 70;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

@@ -406,12 +406,13 @@ void MovementStepReplacement(RE::Actor* actor, float delta)
       if (direction < 0.f) {
         direction += kTwoPi;
       }
-      // a stale sample (no newer one in kLocomotionStaleMs) is a standing
-      // record: the host sends a changed sample every 130 ms while the actor
-      // moves, so a walk never goes stale while it is one (HYPOTHESIS until
-      // x-npc-talk reads a talker's puppet still at Speed 0)
-      const bool stale =
-        Puppets::NowMs() - sample.stampMs > Puppets::kLocomotionStaleMs;
+      // a stale sample (no newer one within its own window, staleMs) is a
+      // standing record: the host sends a changed sample every 130 ms while
+      // the actor moves near another player and every 500 ms far from all of
+      // them, and the window follows that cadence, so a walk never goes stale
+      // while it is one (HYPOTHESIS until x-npc-talk reads a talker's puppet
+      // still at Speed 0)
+      const bool stale = Puppets::NowMs() - sample.stampMs > sample.staleMs;
       const float speed = stale ? 0.f : sample.speed;
       mh->currentMovementSpeed = speed;
       mh->unk2AC = speed;

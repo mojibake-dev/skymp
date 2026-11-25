@@ -423,8 +423,10 @@ Napi::Value PuppetApi::GetPackageDestinationCells(
 }
 
 // setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg,
-// headingDeg): the relayed sample a puppet's graph and heading are fed from
-// (headingDeg optional), stored under the registry's
+// headingDeg, staleMs): the relayed sample a puppet's graph and heading are
+// fed from (headingDeg optional), and how long it stays fresh (staleMs
+// optional; a finite window under kLocomotionStaleMs, or none, keeps that
+// constant), stored under the registry's
 // lock on the JS thread (no game call); false when the actor is not a
 // puppet (the sample is kept anyway for the next demote)
 Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
@@ -438,6 +440,13 @@ Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
     info.Length() > 4 && !info[4].IsUndefined() && !info[4].IsNull();
   if (sample.hasHeading) {
     sample.headingDeg = NapiHelper::ExtractFloat(info[4], "headingDeg");
+  }
+  if (info.Length() > 5 && !info[5].IsUndefined() && !info[5].IsNull()) {
+    const double staleMs = NapiHelper::ExtractDouble(info[5], "staleMs");
+    if (std::isfinite(staleMs) &&
+        staleMs > static_cast<double>(Puppets::kLocomotionStaleMs)) {
+      sample.staleMs = static_cast<uint64_t>(staleMs);
+    }
   }
   Puppets::SetLocomotion(actorFormId, sample);
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));

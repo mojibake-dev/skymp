@@ -1,4 +1,4 @@
-import { Actor, ContainerChangedEvent } from "skyrimPlatform";
+import { Actor, ContainerChangedEvent, DeathEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logLab, logTrace } from "../../logging";
 import { NiPoint3 } from "../../sync/movement";
@@ -240,6 +240,42 @@ export class ChangeFormService extends ClientListener {
         // here and recorded on the next update, sent only when it differs
         // from the acked record and only with an epoch this seat holds
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
+        // the engine's kill starts the body's fall here a send before the
+        // sender's first dead sample, and the kill changes the body's contents
+        // in that gap: the kill's moment is noted so that change waits for the
+        // rest's record too (dyingHere)
+        this.controller.on("deathStart", (e) => this.onDeathStart(e));
+    }
+
+    private onDeathStart(e: DeathEvent): void {
+        const id = e.actorDying ? e.actorDying.getFormID() : 0;
+        if (id === 0 || id >= 0xff000000 || id === 0x14) {
+            return;
+        }
+        const now = Date.now();
+        this.diedHereAt.forEach((at, other) => {
+            if (now - at >= CORPSE_REST_MIN_MS) {
+                this.diedHereAt.delete(other);
+            }
+        });
+        this.diedHereAt.set(id, now);
+    }
+
+    // whether this engine's kill of the body came under CORPSE_REST_MIN_MS
+    // ago: its fall runs here from the kill, before the sender's first dead
+    // sample can say so (PropService.bodyFalling), and the sender's rest, the
+    // record that carries the contents, comes no sooner than that floor after
+    // the kill
+    private dyingHere(id: number, now: number): boolean {
+        const at = this.diedHereAt.get(id);
+        if (at === undefined) {
+            return false;
+        }
+        if (now - at < CORPSE_REST_MIN_MS) {
+            return true;
+        }
+        this.diedHereAt.delete(id);
+        return false;
     }
 
     private onContainerChanged(e: ContainerChangedEvent): void {
@@ -260,13 +296,14 @@ export class ChangeFormService extends ClientListener {
         const ids = Array.from(this.contentsChanged);
         this.contentsChanged.clear();
         const props = this.controller.lookupListener(PropService);
+        const now = Date.now();
         for (const id of ids) {
             const body = Actor.from(this.sp.Game.getFormEx(id));
             if (!body) {
                 continue;
             }
             const dead = body.isDead();
-            const falling = dead && props.bodyFalling(id);
+            const falling = dead && (this.dyingHere(id, now) || props.bodyFalling(id));
             if (!recordContentsNow({ dead, loaded3D: body.is3DLoaded(), falling })) {
                 if (falling) {
                     logTrace(this, `changeform ${id.toString(16)}: its contents changed while its fall runs here; its rest's record carries them`);
@@ -762,6 +799,9 @@ export class ChangeFormService extends ClientListener {
     // thuum #62: the containers whose contents changed on this engine since
     // the last update (onContainerChanged)
     private readonly contentsChanged = new Set<number>();
+    // this engine's kills by form id, the moment of each deathStart, kept for
+    // CORPSE_REST_MIN_MS (dyingHere)
+    private readonly diedHereAt = new Map<number, number>();
     // the owner's messages waiting for an epoch or an ack, by form id
     private readonly pending = new Map<number, PendingSend>();
     // the served records by form id (a game-file actor's id is the same on

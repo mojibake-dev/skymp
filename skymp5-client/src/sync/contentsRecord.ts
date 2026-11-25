@@ -7,7 +7,7 @@
 export interface ContentsRecordFacts {
   dead: boolean;     // the body is dead on this engine
   loaded3D: boolean; // its 3D is loaded here
-  falling: boolean;  // this seat still runs its fall: its stream awake, or its dead samples still settling
+  falling: boolean;  // this seat still runs its fall: its kill here under CORPSE_REST_MIN_MS ago, its stream awake, or its dead samples still settling
 }
 
 export function recordContentsNow(f: ContentsRecordFacts): boolean {

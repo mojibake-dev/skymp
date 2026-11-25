@@ -393,6 +393,20 @@ runs:
         path: ${{ github.workspace }}/build/dist/client/Data/Platform/Plugins/${{ inputs.DESCRIPTION }}_skymp5-client.js
         archive: false
 
+    # The platform's symbols beside the dist, so a CPU profile of the game names Skyrim Platform's own frames: the
+    # Release build already writes them (cmake/apply_default_settings.cmake, /Zi and /DEBUG:FULL; the platform's
+    # PDB_OUTPUT_DIRECTORY), and the dist leaves them out
+    - name: Upload the platform's symbols
+      if: ${{ runner.os == 'Windows' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.DIST_ARTIFACT_NAME }}-symbols
+        path: |
+          ${{ github.workspace }}/build/**/SkyrimPlatformImpl.pdb
+          ${{ github.workspace }}/build/**/SkyrimPlatform.pdb
+        if-no-files-found: warn
+        retention-days: 30
+
     - uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.SERVER_DIST_ARTIFACT_NAME }}

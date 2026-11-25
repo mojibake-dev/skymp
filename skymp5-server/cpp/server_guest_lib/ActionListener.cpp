@@ -657,13 +657,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
         SetPosMode::CalledByUpdateMovement);
     }
-    // at the first movement after a login, a sentence the shared clock ended
-    // while the player was away ends now (its belongings back, the release's
-    // spot), and its bounty per hold goes back to its game. After the
-    // report's own write above: the report comes from the jail's cell, and
-    // its write would otherwise overwrite the release's teleport
+    // at the first movement after a login, the player's jail term goes to
+    // its game (served or not: a served one its own game then releases, the
+    // server moving nothing), and its bounty per hold. After the report's
+    // own write above, so a release this pass records reads where the
+    // player's own game has it
     if (loginPass) {
-      partOne.ReleaseIfServed(*actor);
+      partOne.TellJailTermAtLogin(*actor);
       partOne.TellCrimeRecord(*actor);
     }
 

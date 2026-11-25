@@ -5855,7 +5855,13 @@ void RecordRefState(PartOne& partOne, MpActor& reporter,
   if (rule.code == 2) {
     return; // the table's row names no ref state native
   }
-  if (rule.code == 1) {
+  // a word wall's trigger: its on and off is each player's (DisabledFor), so
+  // each listener hears its own, a repeat too (a player who learned since the
+  // record's Disable holds its copy on until the wall's next one)
+  const auto wordWall = subject->AsActor() || rule.deleted
+    ? std::optional<PartOne::WordWall>()
+    : partOne.WordOfWall(*subject);
+  if (rule.code == 1 && !wordWall) {
     spdlog::debug("[verb:scripts] {:x} sets {:x} {} ({}.{} from {}.{}): here "
                   "already, nothing recorded",
                   reporter.GetFormId(), id, state, msg.cls, msg.fn, msg.caller,
@@ -5882,11 +5888,19 @@ void RecordRefState(PartOne& partOne, MpActor& reporter,
             Networking::InvalidUserId) {
         continue;
       }
-      listener->SendToUser(word, true);
+      if (wordWall) {
+        DestructionStageMessage own = word;
+        own.disabled = partOne.DisabledFor(*subject, *listener);
+        listener->SendToUser(own, true);
+      } else {
+        listener->SendToUser(word, true);
+      }
       ++relayed;
     }
   };
-  if (subject->AsActor() && rule.disabled) {
+  if (rule.code == 1) {
+    relay();
+  } else if (subject->AsActor() && rule.disabled) {
     relay();
     subject->SetRefState(rule.disabled, rule.deleted, verdict.seq);
   } else {
@@ -5894,9 +5908,22 @@ void RecordRefState(PartOne& partOne, MpActor& reporter,
     relay();
   }
   spdlog::info("[verb:scripts] {:x} sets {:x} {} ({}.{} from {}.{}, seq {}): "
-               "recorded, relayed to {} game(s)",
+               "{}, relayed to {} game(s){}",
                reporter.GetFormId(), id, state, msg.cls, msg.fn, msg.caller,
-               msg.handler, verdict.seq, relayed);
+               msg.handler, verdict.seq,
+               rule.code == 1 ? "here already" : "recorded", relayed,
+               wordWall ? ", each by its player's word" : "");
+  // the owner's engine ran the call on its own copy: a word wall's trigger
+  // the owner's own player still needs is turned back on there, so that
+  // player's walk-in raises the wall's entry (a platform call on its game,
+  // which its script channel does not report again)
+  if (wordWall && rule.disabled && !partOne.DisabledFor(*subject, reporter)) {
+    SpSnippet("ObjectReference", "EnableNoWait", { false }, id)
+      .Execute(&reporter, SpSnippetMode::kNoReturnResult);
+    spdlog::info("[verb:word-wall] {:x} lacks wall trigger {:x}'s word: its "
+                 "own copy turned back on after its Disable",
+                 reporter.GetFormId(), id);
+  }
 }
 
 // a call's object argument and number, as the standing's rule reads them (a

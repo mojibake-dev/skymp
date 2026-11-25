@@ -1620,7 +1620,7 @@ void ServeReferenceRecords(PartOne& partOne,
       served.destroyed = destruction->destroyed;
     }
     if (refStateSeq) {
-      served.disabled = emitter.IsDisabled();
+      served.disabled = partOne.DisabledFor(emitter, listener);
       served.deleted = emitter.IsDeleted();
       served.seq = *refStateSeq;
     }
@@ -1635,9 +1635,8 @@ void ServeReferenceRecords(PartOne& partOne,
     if (refStateSeq) {
       spdlog::info("[verb:scripts] ref state {:x} (disabled {}, deleted {}, "
                    "seq {}) served to {:x} {}",
-                   emitter.GetFormId(), emitter.IsDisabled(),
-                   emitter.IsDeleted(), *refStateSeq, listener.GetFormId(),
-                   when);
+                   emitter.GetFormId(), *served.disabled, emitter.IsDeleted(),
+                   *refStateSeq, listener.GetFormId(), when);
     }
   }
   if (!emitterAsActor && emitter.GetScriptState()) {
@@ -10033,6 +10032,18 @@ const std::unordered_map<uint32_t, uint32_t>& ShoutOfWordIndexOf(
   return g_index.emplace(&worldState.GetEspm(), std::move(index))
     .first->second;
 }
+}
+
+bool PartOne::DisabledFor(const MpObjectReference& ref, const MpActor& player)
+{
+  if (!ref.IsDisabled() || ref.IsDeleted() || ref.AsActor()) {
+    return ref.IsDisabled();
+  }
+  const auto wordWall = WordOfWall(ref);
+  if (!wordWall) {
+    return true;
+  }
+  return player.HasShoutEntry(MpActor::ShoutEntry::WordKnown, wordWall->word);
 }
 
 std::optional<uint32_t> PartOne::ShoutOfWord(uint32_t word)

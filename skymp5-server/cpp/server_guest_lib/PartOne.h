@@ -653,6 +653,12 @@ public:
   // none for a reference that is no word wall trigger, or whose word is no
   // WOOP
   std::optional<WordWall> WordOfWall(const MpObjectReference& trigger);
+  // a reference's disabled flag as `player`'s game is to hold it: a word
+  // wall's trigger that the record holds disabled (the wall's own "done"
+  // state disabled it after a learn) is disabled only for a player who knows
+  // the wall's word, since a disabled trigger raises no entry and each
+  // player's walk-up must reach the wall; every other reference, the record's
+  bool DisabledFor(const MpObjectReference& ref, const MpActor& player);
   // thuum tracker #138: the shout a word of power belongs to, the SHOU whose
   // variations (its SNAM, the three words) name the word, from an index over
   // the load order's SHOU records built at the first ask; none for a word no

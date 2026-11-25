@@ -84,6 +84,7 @@ const service = () => {
     getPositionY: () => (id === ARVEL ? -3313 : 5000),
     getPositionZ: () => (id === ARVEL ? arvel.z : 0),
     getSitState: () => (id === ARVEL ? arvel.sit : 0),
+    getSleepState: () => 0,
     getFurnitureReference: () => (id === ARVEL && arvel.furniture === WEB ? web : null),
     getLinkedRef: () => (id === ARVEL ? web : null),
     getCurrentScene: () => null,

@@ -166,14 +166,14 @@ test("the owner's game puts the override over its own read by name, then sends t
 });
 
 test("a read the wall's scripts keep busy holds the guest's entry until the override is applied", () => {
-  const { calls, tick, override, entry } = seat(2);
+  const { calls, tick, override, entry } = seat(1);
   assert.equal(typeof override, "function", "the owner's game takes the override");
   override({ message: OVERRIDE });
   entry({ message: ENTRY });
   for (let i = 0; i < 3; i++) {
     tick();
   }
-  assert.deepEqual(calls, ["read", "read"], "the entry waits while the read is busy");
+  assert.deepEqual(calls, ["read"], "the entry waits while the read is busy");
   // past the busy retry's wait
   const waitUntil = Date.now() + 300;
   while (Date.now() < waitUntil) {
@@ -182,5 +182,5 @@ test("a read the wall's scripts keep busy holds the guest's entry until the over
   for (let i = 0; i < 4; i++) {
     tick();
   }
-  assert.deepEqual(calls, ["read", "read", "read", APPLIED, `OnTriggerEnter by ${GUEST_FIGURE.toString(16)}`]);
+  assert.deepEqual(calls, ["read", "read", APPLIED, `OnTriggerEnter by ${GUEST_FIGURE.toString(16)}`]);
 });

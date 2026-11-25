@@ -3486,6 +3486,28 @@ void ApplyHostDecisions(PartOne& partOne,
         }
         break;
       }
+      case skymp::rules::HostKind::HoldEnded: {
+        // a hold in another host's cell (ADR-047 D22's margin) ended with
+        // its holder's unload of the cell or its departure: the cell's rule
+        // names its host again and the word follows, as a claim's end has
+        // it, so the host's game runs the actor instead of keeping a puppet
+        // nobody simulates (which a dialogue's claim on it could never
+        // reach: the claim moves no simulator, so no word answers it)
+        auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
+        MpActor* actor = form ? form->AsActor() : nullptr;
+        const uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0u;
+        spdlog::info("[verb:npc-handoff] the hold on {:x} in cell {:x} "
+                     "ended with its holder {:x}'s {}; {:x} simulates it",
+                     d.actor, d.cell, d.player,
+                     d.why == 1 ? "departure" : "unload", simulator);
+        if (actor && simulator != 0 && simulator != d.player) {
+          if (MpActor* sim = PlayerActor(partOne, simulator)) {
+            partOne.SendActorKeyframe(*actor, *sim);
+          }
+          actor->UpdateHoster(simulator);
+        }
+        break;
+      }
       case skymp::rules::HostKind::SummonGone: {
         // thuum tracker #84 (docs/verbs/summon.md, ADR-060 as amended
         // 2026-11-15: a departure dispels what its player summoned): the

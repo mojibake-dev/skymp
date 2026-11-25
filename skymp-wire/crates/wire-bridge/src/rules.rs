@@ -1409,6 +1409,11 @@ mod ffi {
         /// gone. It stands alone, no ClaimGone behind it, the dispel
         /// deleting the actor.
         SummonGone,
+        /// A hold on `actor` in `cell` (ADR-047 D22's margin) ended with its
+        /// holder `player`'s unload of the cell (`why` 0) or departure (`why`
+        /// 1) while another player hosts the cell: the cell's rule names that
+        /// host again, the word follows.
+        HoldEnded,
     }
 
     /// One decision of the cell host table, for the core to send to its
@@ -1426,15 +1431,16 @@ mod ffi {
         /// ClaimEnded the actor's owner epoch after the end, ADR-066
         /// decision 1).
         epoch: u32,
-        /// The actor a ClaimEnded, ClaimGone or ThrallExpired concerns (0 for
-        /// the others).
+        /// The actor a ClaimEnded, ClaimGone, ThrallExpired or HoldEnded
+        /// concerns (0 for the others).
         actor: u32,
         /// What ended a ClaimEnded, wire-rules cells::ClaimEnd's code (0 a
         /// lease, 1 a release, 2 its quest's stop, 3 its alias's fill, 4 the
         /// actor's death, 5 its holder's departure, 6 its holder's silence,
         /// 7 its holder's unload, 8 its holder's game leaving the quest's own
         /// packages, 9 its holder's game unloading the actor; `claim_end_name`
-        /// words it); 0 for the others.
+        /// words it); for a HoldEnded 0 its holder's unload, 1 its departure;
+        /// 0 for the others.
         why: u8,
     }
 
@@ -5223,6 +5229,9 @@ fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<
             }
             cells::Decision::SummonGone { actor, cell, player } => {
                 HostDecision { actor, kind: HostKind::SummonGone, player, cell, epoch: table.epoch_of(cell), why: 0 }
+            }
+            cells::Decision::HoldEnded { actor, cell, player, left } => {
+                HostDecision { actor, kind: HostKind::HoldEnded, player, cell, epoch: table.epoch_of(cell), why: u8::from(left) }
             }
         })
         .collect()

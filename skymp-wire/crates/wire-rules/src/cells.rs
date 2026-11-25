@@ -166,6 +166,22 @@ pub enum Decision {
         /// The claimant that left.
         player: u32,
     },
+    /// A hold on `actor` in `cell` (ADR-047 D22's margin, a crossing host's)
+    /// ended with its holder's unload of the cell or its departure, while
+    /// another player hosts the cell: the cell's rule names that host again
+    /// and the word follows, as a claim's end has it, so the actor is never
+    /// left a puppet nobody simulates. A follow into a cell nobody hosts (D6)
+    /// ends with none: the actor freezes at its record.
+    HoldEnded {
+        /// The actor.
+        actor: u32,
+        /// The cell its hold named.
+        cell: u32,
+        /// The holder, its simulator until the end.
+        player: u32,
+        /// Whether the holder left the server (else it unloaded the cell).
+        left: bool,
+    },
     /// A thrall's commander left the server (ADR-060 as amended 2026-11-15,
     /// Eli's executive decision: "thrall dies when player logs out"): every
     /// thrall it commanded, a full one (Dead Thrall's) as a timed one, dies
@@ -620,14 +636,30 @@ impl Cells {
         // last report's and she may have left it beside the holder (an escort
         // through a door), so a lead ends at its holder's own report that its
         // game no longer runs her (D-53-5 B, why 2 at her unload there)
+        let mut out = self.holds_ended(false, |f| f.player == player && f.cell == cell);
         self.follows.retain(|_, f| is_claim(f.kind) || !(f.player == player && f.cell == cell));
-        let mut out = self.end_purposes(ClaimEnd::Unloaded, |_, f| {
+        out.extend(self.end_purposes(ClaimEnd::Unloaded, |_, f| {
             if f.player == player && f.cell == cell {
                 f.lease_until_ms = None;
             }
-        });
+        }));
         out.extend(self.consider(player, cell, now_ms));
         out
+    }
+
+    /// A `HoldEnded` for each hold `ends` picks (a follow or a margin row, no
+    /// claim) whose cell another player hosts, ordered by actor: the rows the
+    /// caller is about to remove, read first.
+    fn holds_ended(&self, left: bool, ends: impl Fn(&Follow) -> bool) -> Vec<Decision> {
+        let mut ended: Vec<(u32, u32, u32)> = self
+            .follows
+            .iter()
+            .filter(|(_, f)| !is_claim(f.kind) && ends(f))
+            .filter(|(_, f)| self.host_of(f.cell).is_some_and(|(host, _)| host != f.player))
+            .map(|(&actor, f)| (actor, f.cell, f.player))
+            .collect();
+        ended.sort_unstable();
+        ended.into_iter().map(|(actor, cell, player)| Decision::HoldEnded { actor, cell, player, left }).collect()
     }
 
     /// `player` left the server at `now_ms`: every cell it hosts starts its
@@ -669,6 +701,7 @@ impl Cells {
             self.follows.remove(&actor);
             out.push(Decision::SummonGone { actor, cell, player });
         }
+        out.extend(self.holds_ended(true, |f| f.player == player));
         self.follows.retain(|_, f| f.kind == FollowKind::Claim || f.player != player);
         out.extend(self.end_purposes(ClaimEnd::Gone, |_, f| {
             if f.player == player {

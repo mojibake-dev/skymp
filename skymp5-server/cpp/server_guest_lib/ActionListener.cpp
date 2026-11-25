@@ -39,6 +39,7 @@
 #include "libespm/ScriptData.h"
 #include "libespm/Utils.h"
 #include "libespm/WEAP.h"
+#include "papyrus-vm/Utils.h"
 #include "script_objects/EspmGameObject.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
@@ -5345,6 +5346,11 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
   // (CheckWordWallArm). One from a player who knows the word goes on to say
   // so. Declared narrowing: the script's line of sight to the mark
   // (isLooking) and its bound of 200 in combat are not read here
+  // thuum ADR-088: a player who lacks the word, inside the wall's reach, at a
+  // wall that has fired for someone, gets the wall played again for itself
+  if (!actor->HasShoutEntry(MpActor::ShoutEntry::WordKnown, word)) {
+    OverrideFiredWall(*actor, *wall);
+  }
   const auto mark = WordMarkOf(partOne.worldState, *wordWall, *near);
   const float markDistance = (actor->GetPos() - mark.pos).Length();
   const auto innerRadius = static_cast<float>(wordWall->innerRadius);
@@ -5437,6 +5443,110 @@ void ActionListener::CheckWordWallArm(const RawMessageData& rawMsgData,
 void ActionListener::ForgetWordWallArm(uint32_t actorId)
 {
   wordWallArms.erase(actorId);
+  for (auto it = wallOverridesSent.begin(); it != wallOverridesSent.end();) {
+    it = it->first == actorId ? wallOverridesSent.erase(it) : std::next(it);
+  }
+}
+
+namespace {
+// thuum docs/verbs/word-wall.md, the rule a script variable the player's own
+// record decides: the word wall's scripts, read from their pex (Skyrim -
+// Misc.bsa, lab/pex.py, 2026-11-25). WordWallTriggerScript's StartFX goes to
+// "done" and sets WordLearned (its auto property's backing variable) in the
+// block that teaches; its default state is the empty one. Its listeners,
+// WordWallTriggerBleakFallsScript and WordWallTrigger02Script, start the
+// wall from their "Listening" state's enter and go to "done" once the word
+// is learned. For a player who lacks the word, those are the wall's
+// player-decided state.
+constexpr const char* kWordWallScript = "WordWallTriggerScript";
+constexpr const char* kWordLearnedVar = "::WordLearned_var";
+constexpr const char* kWordWallListeningState = "Listening";
+constexpr const char* kWordWallDoneState = "done";
+
+bool SameName(const std::string& a, const char* b)
+{
+  return Utils::stricmp(a.data(), b) == 0;
+}
+
+bool IsWordWallListener(const std::string& type)
+{
+  return SameName(type, "WordWallTriggerBleakFallsScript") ||
+    SameName(type, "WordWallTrigger02Script");
+}
+}
+
+void ActionListener::OverrideFiredWall(MpActor& player,
+                                       MpObjectReference& trigger)
+{
+  const auto key = std::make_pair(player.GetFormId(), trigger.GetFormId());
+  if (wallOverridesSent.count(key)) {
+    return;
+  }
+  // the wall has fired for someone: its own script, as the owner's record
+  // holds it, is in "done"; a wall still listening plays itself
+  const auto& record = trigger.GetScriptState();
+  if (!record) {
+    return;
+  }
+  const auto fired = std::find_if(
+    record->scripts.begin(), record->scripts.end(), [](const auto& script) {
+      return SameName(script.type, kWordWallScript) &&
+        SameName(script.state, kWordWallDoneState);
+    });
+  if (fired == record->scripts.end()) {
+    return;
+  }
+  // the owner: the host of the trigger's cell, whose engine runs its scripts
+  const auto cell = partOne.worldState.CellOf(
+    trigger.GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+    trigger.GetPos());
+  if (!cell) {
+    return;
+  }
+  const auto host = partOne.GetCellHost(*cell);
+  const auto& hostForm =
+    host.hosted ? partOne.worldState.LookupFormById(host.player) : nullptr;
+  MpActor* owner = hostForm ? hostForm->AsActor() : nullptr;
+  if (!owner ||
+      partOne.serverState.UserByActor(owner) == Networking::InvalidUserId) {
+    return;
+  }
+  ScriptStateOverrideMessage override;
+  override.refrId = trigger.GetFormId();
+  for (const auto& script : record->scripts) {
+    const bool wallScript = SameName(script.type, kWordWallScript);
+    if (!wallScript && !IsWordWallListener(script.type)) {
+      continue;
+    }
+    if (!SameName(script.state, kWordWallDoneState)) {
+      continue;
+    }
+    ScriptStateOverrideScript put;
+    put.type = script.type;
+    put.state = wallScript ? "" : kWordWallListeningState;
+    if (wallScript) {
+      ScriptStateOverrideVar learned;
+      learned.name = kWordLearnedVar;
+      learned.k = 5;
+      learned.b = false;
+      put.vars.push_back(learned);
+    }
+    override.scripts.push_back(put);
+  }
+  owner->SendToUser(override, true);
+  // the player's walk-up raised on the owner's copy, the relay of a trigger
+  // entry (its own actor to the owner itself, which its client maps to 0x14)
+  RelayedActivationMessage relay;
+  relay.target = trigger.GetFormId();
+  relay.caster = player.GetFormId();
+  relay.entry = 1;
+  owner->SendToUser(relay, true);
+  wallOverridesSent.insert(key);
+  spdlog::info("[verb:word-wall] {:x} lacks wall {:x}'s word, which the wall "
+               "taught already: its {} script(s) put back on its owner {:x}'s "
+               "copy and its walk-up raised there (ADR-088)",
+               player.GetFormId(), trigger.GetFormId(),
+               override.scripts.size(), owner->GetFormId());
 }
 
 void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,

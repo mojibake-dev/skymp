@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -167,6 +168,10 @@ public:
   void CheckWordWallArm(const RawMessageData& rawMsgData, MpActor& actor);
   // the player's disconnect (PartOne): the arm ends with the connection
   void ForgetWordWallArm(uint32_t actorId);
+  // thuum ADR-088 (a word wall teaches each player once): a player who lacks
+  // a wall's word at a wall that has fired gets the wall's player-decided
+  // state put back on the owner's copy, then its walk-up raised there
+  void OverrideFiredWall(MpActor& player, MpObjectReference& trigger);
 
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
   // animation event its owner reports (a game-file reference that is no
@@ -776,6 +781,10 @@ private:
     float innerRadius = 0.f;
   };
   std::unordered_map<uint32_t, WordWallArm> wordWallArms;
+  // thuum ADR-088: the walls whose player-decided state each player has had
+  // put back on the owner's copy (OverrideFiredWall), by actor and trigger
+  // form id, once a player and wall; ended with the arm at the disconnect
+  std::set<std::pair<uint32_t, uint32_t>> wallOverridesSent;
 
   // TODO: inverse dependency
   std::shared_ptr<CraftService> craftService;

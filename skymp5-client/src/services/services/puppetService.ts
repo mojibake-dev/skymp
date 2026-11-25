@@ -789,7 +789,9 @@ export class PuppetService extends ClientListener {
         const isSeated = seated({ sitState, furnitureIsLinked: !!held && held.getFormID() === furniture.getFormID(), unitsFromFurniture: units });
         const since = this.seatWaitSince.get(localId);
         const verdict = seatVerdict({ linkedFurniture: true, seated: isSeated, unitsFromFurniture: units, sinceMs: since === undefined ? 0 : now - since });
-        const at = `${units.toFixed(0)} units from furniture ${furniture.getFormID().toString(16)}, sit state ${sitState}`;
+        // the engine's own furniture and its sleep state beside the sit state: a lying user (a sarcophagus, a bed) reads
+        // sit state 0 while its engine holds the furniture, off its origin by more than SEATED_UNITS
+        const at = `${units.toFixed(0)} units from furniture ${furniture.getFormID().toString(16)}, sit state ${sitState}, sleep state ${ac.getSleepState()}, the engine's furniture ${held ? held.getFormID().toString(16) : "none"}`;
         if (verdict === "wait") {
             if (since === undefined) {
                 this.seatWaitSince.set(localId, now);

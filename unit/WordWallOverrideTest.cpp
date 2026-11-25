@@ -245,9 +245,11 @@ std::vector<bool> TriggerWordsTo(PartOne& p, Networking::UserId user)
   return out;
 }
 
-// the snippets that turn `user`'s copy of the trigger back on
+// the snippets that turn `user`'s copy of the trigger back on (a snippet's
+// send is deferred to the next tick)
 size_t TurnedBackOn(PartOne& p, Networking::UserId user)
 {
+  p.Tick();
   size_t n = 0;
   for (auto& m : p.Messages()) {
     if (m.userId == user && m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&

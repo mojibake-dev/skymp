@@ -2,7 +2,8 @@ import { Actor, ContainerChangedEvent, PickUpObjectEvent, printConsole } from "s
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getPcInventory } from "./remoteServer";
-import { getInventory, getDiff, hasExtras, removeSimpleItemsAsManyAsPossible, sumInventories } from "../../sync/inventory";
+import { getInventory, getDiff, sameStack } from "../../sync/inventory";
+import { advanceBaseline } from "../../sync/baseline";
 import { LastInvService } from "./lastInvService";
 import { toWireInventory } from "../../sync/createdForms";
 
@@ -82,7 +83,7 @@ export class ContainersService extends ClientListener {
         });
         logLab("verb:pickup", `reference ${e.refId.toString(16)} taken by this game's engine: ${take.count} of ${take.baseId.toString(16)}${take.ownerId ? `, owner ${take.ownerId.toString(16)}` : ""}, reported as a take`);
         if (lastInvService.lastInv) {
-            lastInvService.lastInv = sumInventories(lastInvService.lastInv, { entries: [take] });
+            lastInvService.lastInv = { entries: advanceBaseline(lastInvService.lastInv.entries, [{ ...take, count: -take.count }], sameStack) };
         }
     }
 
@@ -145,26 +146,13 @@ export class ContainersService extends ClientListener {
                         reliability: "reliable"
                     }));
 
-                    // Prevent emitting 1,2,3,4,5 changes when taking/putting 5 potions one by one
-                    // This code makes it 1,1,1,1,1 but works only for extra-less items
-                    // At the moment of writing this I think it's not needed for items with extras
-                    diff.entries.forEach((entry) => {
-                        if (lastInvService.lastInv && !hasExtras(entry)) {
-                            const put = entry.count > 0;
-                            const take = entry.count < 0;
-                            if (put) {
-                                lastInvService.lastInv = removeSimpleItemsAsManyAsPossible(
-                                    lastInvService.lastInv,
-                                    entry.baseId,
-                                    entry.count,
-                                );
-                            } else if (take) {
-                                const add = { entries: [entry] };
-                                add.entries[0].count *= -1;
-                                lastInvService.lastInv = sumInventories(lastInvService.lastInv, add);
-                            }
-                        }
-                    });
+                    // every difference this event reported is the baseline's
+                    // now, extras and all (sync/baseline.ts), so a later event
+                    // of the same burst (one per stack the engine moved) does
+                    // not report it again
+                    if (lastInvService.lastInv) {
+                        lastInvService.lastInv = { entries: advanceBaseline(lastInvService.lastInv.entries, diff.entries, sameStack) };
+                    }
                 }
             }
         }

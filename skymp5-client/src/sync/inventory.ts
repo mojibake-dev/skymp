@@ -162,6 +162,10 @@ export const hasExtras = (e: Entry): boolean => {
   return !extrasEqual(e, { baseId: 0, count: 0 });
 };
 
+// two stacks of one base with the same extras, worn flags included: getDiff's
+// match with ignoreWorn false
+export const sameStack = (a: Entry, b: Entry): boolean => a.baseId === b.baseId && extrasEqual(a, b, false);
+
 const extractExtraData = (
   refr: ObjectReference,
   extraList: BaseExtraList | null,
@@ -665,9 +669,11 @@ export const applyInventory = (
       absCount = 1;
       oneStepCount = e.count;
     } else {
+      // a large difference lands whole in one call, its sign kept: one step
+      // of +1 left a surplus of arrows growing by one at every apply
       if (absCount > 1000) {
         absCount = 1;
-        oneStepCount = 1;
+        oneStepCount = e.count;
 
         // Also for arrows with strange count
         if (worn && e.count < 0) {
@@ -675,8 +681,9 @@ export const applyInventory = (
         }
       }
 
-      if (e.count > 1 && Ammo.from(Game.getFormEx(e.baseId))) {
-        absCount = 1;
+      // ammunition lands in one call either way, a removal as an addition
+      if (Math.abs(e.count) > 1 && Ammo.from(Game.getFormEx(e.baseId))) {
+        absCount = worn && e.count < -1000 ? 0 : 1;
         oneStepCount = e.count;
         if (e.count > 60000) {
           // Why would actor have 60k arrows?

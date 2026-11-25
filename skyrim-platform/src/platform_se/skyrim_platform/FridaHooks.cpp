@@ -36,6 +36,7 @@
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
 #include <RE/E/Explosion.h>
+#include <RE/E/ExtraAliasInstanceArray.h>
 #include <RE/H/HighProcessData.h>
 #include <RE/H/hkpEntity.h>
 #include <RE/H/hkpRigidBody.h>
@@ -547,6 +548,42 @@ bool HasAttachedScript(VM* vm, RE::VMHandle handle)
   RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
   const auto it = vm->attachedScripts.find(handle);
   return it != vm->attachedScripts.end() && it->second.size() != 0;
+}
+
+// whether a world trigger has a script its entry reaches: one attached to the
+// reference's own handle, or one on a quest alias that holds the reference
+// (ExtraAliasInstanceArray, include/RE/E/ExtraAliasInstanceArray.h). An
+// alias's scripts are attached to the alias's own handle (BGSRefAlias,
+// VMTYPEID 140, include/RE/B/BGSRefAlias.h:18) and take the reference's
+// trigger events through SkyrimVM's RelayEvent, so a trigger scripted only by
+// its aliases has nothing attached to its own handle until something packs
+// the reference into a Papyrus value
+bool ScriptedTrigger(VM* vm, RE::BSScript::IObjectHandlePolicy* policy,
+                     RE::TESObjectREFR* ref, RE::VMHandle handle)
+{
+  if (HasAttachedScript(vm, handle)) {
+    return true;
+  }
+  if (!vm || !policy || !ref) {
+    return false;
+  }
+  auto* aliases = ref->extraList.GetByType<RE::ExtraAliasInstanceArray>();
+  if (!aliases) {
+    return false;
+  }
+  RE::BSReadLockGuard guard{ aliases->lock };
+  for (const auto* data : aliases->aliases) {
+    if (!data || !data->alias) {
+      continue;
+    }
+    const RE::VMHandle aliasHandle =
+      policy->GetHandleForObject(RE::BGSRefAlias::VMTYPEID, data->alias);
+    if (aliasHandle != policy->EmptyHandle() &&
+        HasAttachedScript(vm, aliasHandle)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // thuum docs/research/rung5-quests-2026-11-09.md 1(c), fix (b): the rule's
@@ -1867,7 +1904,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
                              "(D-W3 B)",
                              eventNameStr, selfId, presser->formID);
               }
-            } else if (HasAttachedScript(vm, handle)) {
+            } else if (ScriptedTrigger(vm, policy, selfRef, handle)) {
               uint32_t count = 0;
               size_t pairs = 0;
               if (HoldEntry(selfId, presser->formID, NowMs(), count, pairs)) {
@@ -1953,7 +1990,8 @@ void OnSendEventEnter(GumInvocationContext* ic)
         // tell fires only for an entry blanked here, never in a hosted cell
         // (hostedWorldScript below); a tell of an entry the engine also ran
         // would play twice on the host (train 53's review, rules-4)
-        if (family || (!inHostedCell && HasAttachedScript(vm, handle))) {
+        if (family ||
+            (!inHostedCell && ScriptedTrigger(vm, policy, selfRef, handle))) {
           const uint32_t refrId = selfId;
           const uint32_t presserId = presser->formID;
           const bool enter = entry == 1;

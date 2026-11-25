@@ -1256,6 +1256,9 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     // rotfern's figure of her. The values stay the player's ChangeValues, so
     // only the set is taken; a report without one stays dropped
     if (msg.effects.has_value()) {
+      // a disease's effect among them took on this player's own engine: the
+      // disease and its day go on the player's record
+      partOne.OnOwnEffects(*myActor, *msg.effects);
       if (myActor->SetHostedEffects(*msg.effects)) {
         std::vector<std::string> ids;
         ids.reserve(msg.effects->size());

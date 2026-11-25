@@ -751,6 +751,16 @@ public:
   // The crime faction whose evidence chest (FACT's STOL) this container is,
   // read from the load order's FACT records; 0 for any other container
   uint32_t CrimeFactionOfEvidenceChest(uint32_t container);
+
+  // The disease spell an effect belongs to, 0 for none: every SPEL of type
+  // Disease in the load order (its winning record) by each of its effects,
+  // read once
+  uint32_t DiseaseOfEffect(uint32_t effect);
+  // The effects a player's own engine runs on its player, as its game named
+  // them: each effect of a disease means the disease took on that engine
+  // (R2), so the disease is recorded on the player with the shared clock's
+  // day, the first time; how many were new
+  size_t OnOwnEffects(MpActor& player, const std::vector<uint32_t>& effects);
   // The engine's confiscation (its walk 16120, at a fine paid with
   // removeStolen as at an arrest's strip): every stack its game marks with
   // an owner moves into the faction's evidence chest, from wherever the

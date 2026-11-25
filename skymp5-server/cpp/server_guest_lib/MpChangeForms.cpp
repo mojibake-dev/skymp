@@ -3,6 +3,7 @@
 #include "archives/JsonOutputArchive.h"
 #include "archives/SimdJsonInputArchive.h"
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <spdlog/spdlog.h>
 
@@ -400,6 +401,38 @@ void DescribeReadBooks(nlohmann::json& res, const MpChangeForm& changeForm,
   res["readBooks"] = std::move(books);
 }
 
+// The caught diseases as the spells are written, each a form of the running
+// order with its day; a spell of a plugin the order lacks stays parked with
+// its day as the entry, and a record with none writes no key
+void DescribeCaughtDiseases(nlohmann::json& res,
+                            const MpChangeForm& changeForm,
+                            const EspmFileList& files,
+                            const std::string& record)
+{
+  auto diseases = nlohmann::json::array();
+  for (const auto& [spellId, day] : changeForm.caughtDiseases.Get()) {
+    if (const auto desc = Describe(spellId, files)) {
+      diseases.push_back({ { "spell", *desc }, { "caughtAt", day } });
+    } else {
+      spdlog::error("MpChangeForm::ToJson {} - caught disease {:#x} belongs "
+                    "to no loaded plugin, dropping it",
+                    record, spellId);
+    }
+  }
+  for (const auto& parked : changeForm.unresolved) {
+    if (parked.field == "caughtDiseases") {
+      diseases.push_back(
+        { { "spell", parked.form.ToString() },
+          { "caughtAt", std::strtod(parked.entry.c_str(), nullptr) } });
+    }
+  }
+  if (diseases.empty()) {
+    res.erase("caughtDiseases");
+  } else {
+    res["caughtDiseases"] = std::move(diseases);
+  }
+}
+
 // Every stored form of the written record as "<hex>:<plugin>" under `files`,
 // and the version mark that says so
 void DescribeForms(nlohmann::json& res, const MpChangeForm& changeForm,
@@ -425,6 +458,7 @@ void DescribeForms(nlohmann::json& res, const MpChangeForm& changeForm,
 
   DescribeLearnedSpells(res, changeForm, files, record);
   DescribeReadBooks(res, changeForm, files, record);
+  DescribeCaughtDiseases(res, changeForm, files, record);
   DescribeAppearance(res, changeForm, files, record);
 }
 
@@ -488,6 +522,13 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
 
   res["learnedSpells"] = changeForm.learnedSpells.GetLearnedSpells();
   res["readBooks"] = changeForm.readBooks.GetReadBooks();
+  if (!changeForm.caughtDiseases.Get().empty()) {
+    auto diseases = nlohmann::json::array();
+    for (const auto& [spellId, day] : changeForm.caughtDiseases.Get()) {
+      diseases.push_back({ { "spell", spellId }, { "caughtAt", day } });
+    }
+    res["caughtDiseases"] = std::move(diseases);
+  }
 
   res["healthPercentage"] = changeForm.actorValues.healthPercentage;
   res["magickaPercentage"] = changeForm.actorValues.magickaPercentage;
@@ -929,6 +970,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer equipmentDump("equipmentDump");
   static const JsonPointer learnedSpells("learnedSpells");
   static const JsonPointer readBooks("readBooks");
+  static const JsonPointer caughtDiseases("caughtDiseases");
   static const JsonPointer dynamicFields("dynamicFields");
   static const JsonPointer healthPercentage("healthPercentage");
   static const JsonPointer magickaPercentage("magickaPercentage");
@@ -1139,6 +1181,34 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       ReadVector(element, readBooks, &readBooksData);
       for (const auto bookId : readBooksData) {
         res.readBooks.MarkRead(bookId);
+      }
+    }
+  }
+
+  // the caught diseases: absent in records written before the field, which
+  // read as none caught
+  if (element.at_pointer(caughtDiseases.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    static const JsonPointer spell("spell"), caughtAt("caughtAt");
+    std::vector<simdjson::dom::element> stored;
+    ReadVector(element, caughtDiseases, &stored);
+    for (const auto& entry : stored) {
+      double day = 0;
+      ReadEx(entry, caughtAt, &day);
+      if (pluginRelative) {
+        const char* text = nullptr;
+        ReadEx(entry, spell, &text);
+        const FormDesc form = FormDesc::FromString(text);
+        if (const auto spellId = Resolve(form, *files)) {
+          res.caughtDiseases.Catch(*spellId, day);
+        } else {
+          res.unresolved.push_back(
+            UnresolvedForm{ "caughtDiseases", form, fmt::format("{}", day) });
+        }
+      } else {
+        uint32_t spellId = 0;
+        ReadEx(entry, spell, &spellId);
+        res.caughtDiseases.Catch(spellId, day);
       }
     }
   }
@@ -1961,4 +2031,23 @@ size_t ReadBooks::Count() const noexcept
 std::vector<ReadBooks::Data::key_type> ReadBooks::GetReadBooks() const
 {
   return std::vector(_bookIds.begin(), _bookIds.end());
+}
+
+bool CaughtDiseases::Catch(const uint32_t spellId, const double day)
+{
+  return _caught.emplace(spellId, day).second;
+}
+
+bool CaughtDiseases::Cure(const uint32_t spellId)
+{
+  return _caught.erase(spellId) != 0;
+}
+
+std::optional<double> CaughtDiseases::CaughtAt(const uint32_t spellId) const
+{
+  const auto it = _caught.find(spellId);
+  if (it == _caught.end()) {
+    return std::nullopt;
+  }
+  return it->second;
 }

@@ -908,7 +908,13 @@ public:
   void EquipBestWeapon();
 
   void AddSpell(uint32_t spellId);
+  // the spell leaves the learned set, and a caught disease of it ends
   void RemoveSpell(uint32_t spellId);
+  // A disease this actor's own engine caught: the spell learned and the
+  // shared clock's day its effect first ran here recorded, once; whether it
+  // was new
+  bool CatchDisease(uint32_t spellId, double day);
+  std::optional<double> DiseaseCaughtAt(uint32_t spellId) const;
 
   // thuum docs/verbs/leveling.md (skill books): the books this actor has
   // read, each raising its skill once (the record's readBooks)

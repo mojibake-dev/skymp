@@ -363,7 +363,25 @@ void MpActor::RemoveSpell(const uint32_t spellId)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.learnedSpells.ForgetSpell(spellId);
+    changeForm.caughtDiseases.Cure(spellId);
   });
+}
+
+bool MpActor::CatchDisease(const uint32_t spellId, const double day)
+{
+  if (ChangeForm().caughtDiseases.CaughtAt(spellId)) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.learnedSpells.LearnSpell(spellId);
+    changeForm.caughtDiseases.Catch(spellId, day);
+  });
+  return true;
+}
+
+std::optional<double> MpActor::DiseaseCaughtAt(const uint32_t spellId) const
+{
+  return ChangeForm().caughtDiseases.CaughtAt(spellId);
 }
 
 bool MpActor::IsBookRead(const uint32_t baseId) const

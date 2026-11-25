@@ -268,6 +268,7 @@ struct PartOne::Impl
   // once from the load order's FACT records at the first ask
   // (CrimeFactionOfEvidenceChest)
   std::optional<std::unordered_map<uint32_t, uint32_t>> evidenceChests;
+  std::optional<std::unordered_map<uint32_t, uint32_t>> diseaseOfEffect;
 
   // every player actor's ground speed budget (thuum
   // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
@@ -10489,6 +10490,62 @@ uint32_t PartOne::CrimeFactionOfEvidenceChest(uint32_t container)
   }
   const auto it = pImpl->evidenceChests->find(container);
   return it == pImpl->evidenceChests->end() ? 0 : it->second;
+}
+
+uint32_t PartOne::DiseaseOfEffect(const uint32_t effect)
+{
+  if (!HasEspm()) {
+    return 0;
+  }
+  if (!pImpl->diseaseOfEffect) {
+    std::unordered_map<uint32_t, uint32_t> index;
+    auto& browser = GetEspm().GetBrowser();
+    auto& cache = worldState.GetEspmCache();
+    for (const auto& lookup :
+         browser.GetDistinctRecordsByType(espm::SPEL::kType)) {
+      const auto* spel = espm::Convert<espm::SPEL>(lookup.rec);
+      if (!spel) {
+        continue;
+      }
+      const auto data = spel->GetData(cache);
+      if (!data.spellItem ||
+          data.spellItem->type != espm::SPEL::SpellType::Disease) {
+        continue;
+      }
+      const uint32_t spell = lookup.ToGlobalId(lookup.rec->GetId());
+      for (const auto& e : data.effects) {
+        if (e.effectFormId) {
+          index.emplace(lookup.ToGlobalId(e.effectFormId), spell);
+        }
+      }
+    }
+    spdlog::info("[verb:disease] {} disease effect(s) read from the load "
+                 "order's SPEL records",
+                 index.size());
+    pImpl->diseaseOfEffect = std::move(index);
+  }
+  const auto it = pImpl->diseaseOfEffect->find(effect);
+  return it == pImpl->diseaseOfEffect->end() ? 0 : it->second;
+}
+
+size_t PartOne::OnOwnEffects(MpActor& player,
+                             const std::vector<uint32_t>& effects)
+{
+  const float now =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  size_t caught = 0;
+  for (const uint32_t effect : effects) {
+    const uint32_t spell = DiseaseOfEffect(effect);
+    if (spell == 0 || !player.CatchDisease(spell, now)) {
+      continue;
+    }
+    ++caught;
+    spdlog::info("[verb:disease] {:x} caught {:x} on its own game (its "
+                 "effect {:x} running) at day {:.3f} of the shared clock: "
+                 "recorded",
+                 player.GetFormId(), spell, effect, now);
+  }
+  return caught;
 }
 
 bool PartOne::OnConfiscation(MpActor& player, MpObjectReference& chest,

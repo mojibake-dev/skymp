@@ -102,6 +102,45 @@ private:
   Data _bookIds{};
 };
 
+// The diseases this actor's own engine caught, each by its spell's id with the
+// shared clock's day its effect first ran there. A disease takes by its magic
+// effect's own condition, which the engine checks once, when the spell is
+// applied, so a login or a restart brings a caught disease back from this
+// record and its course from that day rather than applying it anew. Stored as
+// "caughtDiseases"; a record without it reads empty (rule 6's migration).
+struct CaughtDiseases
+{
+  using Data = std::map<uint32_t, double>;
+
+  // recorded at `day`, the first time; whether it was new
+  bool Catch(uint32_t spellId, double day);
+
+  // whether a caught disease ended
+  bool Cure(uint32_t spellId);
+
+  [[nodiscard]] std::optional<double> CaughtAt(uint32_t spellId) const;
+
+  [[nodiscard]] const Data& Get() const noexcept { return _caught; }
+
+  friend bool operator==(const CaughtDiseases& lhs, const CaughtDiseases& rhs)
+  {
+    return lhs._caught == rhs._caught;
+  }
+
+  friend bool operator!=(const CaughtDiseases& lhs, const CaughtDiseases& rhs)
+  {
+    return !(lhs == rhs);
+  }
+
+  friend bool operator<(const CaughtDiseases& lhs, const CaughtDiseases& rhs)
+  {
+    return lhs._caught < rhs._caught;
+  }
+
+private:
+  Data _caught{};
+};
+
 class MpChangeFormREFR
 {
 public:
@@ -120,6 +159,7 @@ public:
   Inventory inv;
   LearnedSpells learnedSpells;
   ReadBooks readBooks;
+  CaughtDiseases caughtDiseases;
 
   bool isHarvested = false;
   bool isOpen = false;
@@ -534,7 +574,7 @@ public:
       playerGlobals, knownEnchantments, questStages, placedBySpell, lock,
       destruction, changeFormRecord, scriptState, refStateSeq, crimeFaction,
       relationships, placedByScript, aliasFills, worldGlobals, questRuns,
-      scriptVariables, unresolved, crimeRecord);
+      scriptVariables, unresolved, crimeRecord, caughtDiseases);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

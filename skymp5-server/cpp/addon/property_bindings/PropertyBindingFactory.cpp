@@ -7,6 +7,7 @@
 #include "AppearanceBinding.h"
 #include "BaseDescBinding.h"
 #include "BodyRestBinding.h"
+#include "CaughtDiseasesBinding.h"
 #include "CellFollowsBinding.h"
 #include "CellHostsBinding.h"
 #include "ChangeFormRecordBinding.h"
@@ -88,6 +89,7 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["respawnPercentages"] = std::make_shared<RespawnPercentagesBinding>();
   result["runningEffects"] = std::make_shared<RunningEffectsBinding>();
   result["shouts"] = std::make_shared<ShoutsBinding>();
+  result["caughtDiseases"] = std::make_shared<CaughtDiseasesBinding>();
   // thuum ADR-068 rung 4: the journal's world globals and alias fills
   result["worldGlobals"] = std::make_shared<WorldGlobalsBinding>();
   result["aliasFills"] = std::make_shared<AliasFillsBinding>();

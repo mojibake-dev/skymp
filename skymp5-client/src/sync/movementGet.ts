@@ -1,6 +1,7 @@
 import { FormModel } from '../view/model';
 import { ObjectReference, Actor, TESModPlatform, getActorLocomotion } from "skyrimPlatform";
 import { NiPoint3, Movement, RunMode } from "./movement";
+import { sampleTurnRate } from "./puppetTurn";
 import { ObjectReferenceEx } from '../extensions/objectReferenceEx';
 
 class PlayerCharacterSpeedCalculator {
@@ -159,7 +160,8 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
     isDead: (form?.isDead ?? false) || dead,
     healthPercentage: healthPercentage || 0,
     lookAt,
-    speed
+    speed,
+    turnRate: sampleTurnRate(engine)
   };
 }
 

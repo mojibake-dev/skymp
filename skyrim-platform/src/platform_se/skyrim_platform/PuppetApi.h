@@ -20,9 +20,10 @@ Napi::Value IsPuppet(const Napi::CallbackInfo& info);
 // invalid id. The demote poll makes it a puppet again within pollMs when it
 // loads on a seat that does not host it; the host's roster sights it.
 Napi::Value ReleasePuppet(const Napi::CallbackInfo& info);
-// setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg): the
-// host's latest movement sample, which the Move detour writes every frame
-// where the graph's Speed, Direction and TurnDelta channels read
+// setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg,
+// headingDeg): the host's latest movement sample, which the Move detour
+// writes every frame where the graph's Speed, Direction and TurnDelta
+// channels read, turning the puppet toward headingDeg at turnRateDeg
 // (docs/research/m3/re-puppet-locomotion.md)
 Napi::Value SetPuppetLocomotion(const Napi::CallbackInfo& info);
 // getActorLocomotion(actorFormId): tracker #111, the other end of

@@ -29,6 +29,10 @@ struct Locomotion
   float speed = 0.f;
   float directionDeg = 0.f;
   float turnRateDeg = 0.f;
+  // the sample's heading in degrees, which the Move detour turns the puppet
+  // toward at turnRateDeg every frame; a movement step's own sample has none
+  float headingDeg = 0.f;
+  bool hasHeading = false;
   // steady-clock milliseconds at the store; a sample older than
   // kStaleMs feeds speed 0 (the record stood still and the host sent no
   // newer sample, or the relay paused): playtest 32, a conversation pair

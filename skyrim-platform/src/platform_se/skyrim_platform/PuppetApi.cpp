@@ -422,8 +422,9 @@ Napi::Value PuppetApi::GetPackageDestinationCells(
   return res;
 }
 
-// setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg): the
-// relayed sample a puppet's graph is fed from, stored under the registry's
+// setPuppetLocomotion(actorFormId, speed, directionDeg, turnRateDeg,
+// headingDeg): the relayed sample a puppet's graph and heading are fed from
+// (headingDeg optional), stored under the registry's
 // lock on the JS thread (no game call); false when the actor is not a
 // puppet (the sample is kept anyway for the next demote)
 Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
@@ -433,6 +434,11 @@ Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
   sample.speed = NapiHelper::ExtractFloat(info[1], "speed");
   sample.directionDeg = NapiHelper::ExtractFloat(info[2], "directionDeg");
   sample.turnRateDeg = NapiHelper::ExtractFloat(info[3], "turnRateDeg");
+  sample.hasHeading =
+    info.Length() > 4 && !info[4].IsUndefined() && !info[4].IsNull();
+  if (sample.hasHeading) {
+    sample.headingDeg = NapiHelper::ExtractFloat(info[4], "headingDeg");
+  }
   Puppets::SetLocomotion(actorFormId, sample);
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
 }

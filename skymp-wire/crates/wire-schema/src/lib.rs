@@ -336,8 +336,21 @@ use bounded::{String, Vec};
 /// engine stepped the actor at, so another seat's copy of it turns at that
 /// rate and its graph plays the turn. A 69 peer would misread every
 /// UpdateMovement.
-/// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 70;
+/// 71: HostedActorState's optional `detects` (thuum #193, docs/verbs/
+/// guest-witness.md): a hosted actor's detection level of each player's
+/// figure, relayed so a guest's engine answers its puppet's detection of its
+/// own player with the host's level and a theft in that actor's view finds a
+/// witness. A 70 peer would misread every HostedActorState (postcard writes
+/// one presence byte per Option).
+/// 72: JailTerm (MsgType 88, wire id 96): a player's jail term as the
+/// server's record holds it, told to that player's own game, its end a time
+/// on the shared clock. A 71 peer has no wire id 96.
+/// 73: ScriptStateOverride (MsgType 89, wire id 97): the state of a world
+/// object's scripts a player's own record decides, by name, put back on the
+/// copy the object's owner runs (a word wall's second learner, docs/verbs/
+/// word-wall.md). A 72 peer has no wire id 97.
+/// MsgTypes 84 to 89 (wire ids 92 to 97) are all built here; none is held.
+pub const SCHEMA_VERSION: u16 = 73;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -425,6 +438,10 @@ pub mod cap {
     /// Effects running on one actor (thuum docs/verbs/magic-effects.md:
     /// wire-rules magic::MAX_EFFECTS).
     pub const MAGIC_EFFECTS: usize = 32;
+    /// Players one hosted actor's detection is reported for (thuum #193,
+    /// docs/verbs/guest-witness.md): the players whose figure the host's game
+    /// loads, a server's few, with room.
+    pub const PLAYERS_DETECTED: usize = 16;
     /// Globals the server keeps per player (thuum docs/verbs/player-globals.md:
     /// Apocalypse's 55 with room for more mods).
     pub const PLAYER_GLOBALS: usize = 256;
@@ -492,6 +509,10 @@ pub mod cap {
     /// TrapSwingingWall over MovingTrap over TrapBase, has 52 (thuum
     /// docs/research/adr065-papyrus-state-2026-11-03.md Q1).
     pub const SCRIPT_VARS: usize = 512;
+    /// Variables one script override sets in one script
+    /// (ScriptStateOverride): a word wall's learned flag is one. UNMEASURED
+    /// beyond it.
+    pub const SCRIPT_OVERRIDE_VARS: usize = 16;
     /// A string variable's value in a script record. UNMEASURED: a save
     /// read's string histogram (rung 3's script-save-trace.js v2.1) sets it.
     pub const SCRIPT_STRING: usize = 1024;
@@ -934,6 +955,10 @@ pub enum Message {
     Arrest(skymp::Arrest),
     /// 95, MsgType 87. See [`skymp::CrimeGold`].
     CrimeGold(skymp::CrimeGold),
+    /// 96, MsgType 88. See [`skymp::JailTerm`].
+    JailTerm(skymp::JailTerm),
+    /// 97, MsgType 89. See [`skymp::ScriptStateOverride`].
+    ScriptStateOverride(skymp::ScriptStateOverride),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -971,7 +996,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// transport takes from a client. No real inventory nears it (a merchant's
 /// chest holds hundreds of stacks of a few dozen bytes each), and a message
 /// past its cap is refused at its encode, whole, never truncated.
-const TABLE: [Row; 96] = [
+const TABLE: [Row; 98] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1047,7 +1072,7 @@ const TABLE: [Row; 96] = [
     // length and 32 ids of five bytes (198 at the caps, pinned by
     // a_hosted_state_with_its_effects_at_the_cap_fits_its_byte_cap; thuum
     // docs/verbs/npc-puppet.md, Ownership)
-    row("HostedActorState", 53, 256, Both),
+    row("HostedActorState", 53, 512, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
     // an idx, the flag and since SCHEMA_VERSION 47 a purpose, three form ids
@@ -1132,14 +1157,19 @@ const TABLE: [Row; 96] = [
     row("Arrest", 86, 16, C2S),
     // a faction, two sums and the paid gold at five-byte varints
     row("CrimeGold", 87, 32, C2S),
+    // a faction at a five-byte varint, the end's four bytes and the flag
+    row("JailTerm", 88, 16, S2C),
+    // 16 scripts, each with two names and 16 variables at PAPYRUS_NAME and
+    // every payload field carried: 41,047 bytes at the caps
+    row("ScriptStateOverride", 89, 48 * KIB, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 96;
-const _: () = assert!(TABLE.len() == 96, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 98;
+const _: () = assert!(TABLE.len() == 98, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1260,6 +1290,8 @@ impl Message {
             Message::PushActor(_) => 93,
             Message::Arrest(_) => 94,
             Message::CrimeGold(_) => 95,
+            Message::JailTerm(_) => 96,
+            Message::ScriptStateOverride(_) => 97,
         }
     }
 
@@ -1314,6 +1346,8 @@ mod tests {
         assert_eq!(Message::CraftReport(skymp::CraftReport::default()).name(), "CraftReport");
         assert_eq!(Message::Arrest(skymp::Arrest::default()).name(), "Arrest");
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).name(), "CrimeGold");
+        assert_eq!(Message::JailTerm(skymp::JailTerm::default()).name(), "JailTerm");
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).name(), "ScriptStateOverride");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1400,7 +1434,12 @@ mod tests {
         // Arrest and CrimeGold, after 85: wire ids 94 and 95
         assert_eq!(name_of_msg_type(86), Some("Arrest"));
         assert_eq!(name_of_msg_type(87), Some("CrimeGold"));
-        assert_eq!(name_of_msg_type(88), None);
+        // JailTerm, after 87: wire id 96, the server's word to one player
+        assert_eq!(name_of_msg_type(88), Some("JailTerm"));
+        // ScriptStateOverride, after 88: wire id 97, the server's word to an
+        // object's owner
+        assert_eq!(name_of_msg_type(89), Some("ScriptStateOverride"));
+        assert_eq!(name_of_msg_type(90), None);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
@@ -1413,6 +1452,12 @@ mod tests {
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).wire_id(), 95);
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).msg_type(), Some(87));
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::JailTerm(skymp::JailTerm::default()).wire_id(), 96);
+        assert_eq!(Message::JailTerm(skymp::JailTerm::default()).msg_type(), Some(88));
+        assert_eq!(Message::JailTerm(skymp::JailTerm::default()).direction(), Direction::ServerToClient);
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).wire_id(), 97);
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).msg_type(), Some(89));
+        assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).direction(), Direction::ServerToClient);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1573,6 +1618,36 @@ mod tests {
         }
     }
 
+    /// A ScriptStateOverride at its caps: 16 scripts, each
+    /// with both names and 16 variables at PAPYRUS_NAME and every payload
+    /// field carried.
+    fn script_state_override_at_its_caps() -> skymp::ScriptStateOverride {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        let var = || skymp::ScriptOverrideVar { name: name(), k: u8::MAX, i: Some(i32::MIN), f: Some(f32::MAX), b: Some(true) };
+        let script = || skymp::ScriptOverrideScript {
+            cls: name(),
+            state: name(),
+            vars: (0..cap::SCRIPT_OVERRIDE_VARS).map(|_| var()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+        };
+        skymp::ScriptStateOverride {
+            refr_id: u32::MAX,
+            scripts: (0..cap::SCRIPT_OBJECTS).map(|_| script()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_script_state_override_at_its_caps_fits_its_byte_cap() {
+        let full = script_state_override_at_its_caps();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!(full.scripts.len(), cap::SCRIPT_OBJECTS);
+        assert!(full.scripts.iter().all(|s| s.vars.len() == cap::SCRIPT_OVERRIDE_VARS));
+        let m = Message::ScriptStateOverride(full);
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        assert_eq!(bytes.len(), 41_047);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
+    }
+
     #[test]
     fn a_script_variables_message_at_its_caps_fits_its_byte_cap() {
         let full = script_variables_at_their_caps();
@@ -1668,9 +1743,10 @@ mod tests {
         assert!(over.is_err());
     }
 
-    // thuum docs/verbs/npc-puppet.md, Ownership: a host's state with its
-    // running effects at the cap fits the row's 256 bytes; an absent set
-    // costs its presence byte alone
+    // thuum docs/verbs/npc-puppet.md, Ownership, and docs/verbs/
+    // guest-witness.md: a host's state with its running effects and its
+    // detection of each player at their caps fits the row's 512 bytes; an
+    // absent list costs its presence byte alone
     #[test]
     fn a_hosted_state_with_its_effects_at_the_cap_fits_its_byte_cap() {
         let widest = skymp::HostedActorState {
@@ -1685,15 +1761,21 @@ mod tests {
             emotion_type: u8::MAX,
             emotion_value: u8::MAX,
             effects: (0..cap::MAGIC_EFFECTS).map(|_| 0xfeff_ffff).collect::<alloc::vec::Vec<_>>().try_into().ok(),
+            detects: (0..cap::PLAYERS_DETECTED)
+                .map(|_| skymp::PlayerDetection { player: u32::MAX, level: i32::MIN })
+                .collect::<alloc::vec::Vec<_>>()
+                .try_into()
+                .ok(),
             ..Default::default()
         };
         assert_eq!(widest.effects.as_ref().map(|e| e.len()), Some(cap::MAGIC_EFFECTS));
+        assert_eq!(widest.detects.as_ref().map(|d| d.len()), Some(cap::PLAYERS_DETECTED));
         let m = Message::HostedActorState(widest.clone());
         let bytes = postcard::to_allocvec(&m).unwrap_or_default();
-        assert_eq!(bytes.len(), 198);
+        assert_eq!(bytes.len(), 360);
         assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
-        let plain = Message::HostedActorState(skymp::HostedActorState { effects: None, ..widest });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(37));
+        let plain = Message::HostedActorState(skymp::HostedActorState { effects: None, detects: None, ..widest });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(38));
     }
 
     #[test]
@@ -1804,6 +1886,10 @@ mod tests {
             // an arrest and a bounty at their longest
             Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
             Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, paid_gold: Some(u32::MAX), ..Default::default() }),
+            Message::JailTerm(skymp::JailTerm { faction: u32::MAX, release_at: f32::MAX, served: true, ..Default::default() }),
+            // the scripts of a world object a player's record decides, at
+            // their caps
+            Message::ScriptStateOverride(script_state_override_at_its_caps()),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)

@@ -38,6 +38,7 @@ import { LockPromptMessage } from "../messages/lockPromptMessage";
 import { RelayedActivationMessage } from "../messages/relayedActivationMessage";
 import { ObjectAnimationMessage } from "../messages/objectAnimationMessage";
 import { SetWeatherMessage } from "../messages/setWeatherMessage";
+import { JailTermMessage } from "../messages/jailTermMessage";
 import { PerkStateMessage } from "../messages/perkStateMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
@@ -66,6 +67,7 @@ import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { DestructionStageMessage } from "../messages/destructionStageMessage";
 import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
+import { ScriptStateOverrideMessage } from "../messages/scriptStateOverrideMessage";
 import { AliasFillMessage } from "../messages/aliasFillMessage";
 import { WorldGlobalMessage } from "../messages/worldGlobalMessage";
 import { ScriptVariablesMessage } from "../messages/scriptVariablesMessage";
@@ -128,6 +130,7 @@ type EventTypes = {
     'relayedActivationMessage': [ConnectionMessage<RelayedActivationMessage>],
     'objectAnimationMessage': [ConnectionMessage<ObjectAnimationMessage>],
     'setWeatherMessage': [ConnectionMessage<SetWeatherMessage>],
+    'jailTermMessage': [ConnectionMessage<JailTermMessage>],
     'perkStateMessage': [ConnectionMessage<PerkStateMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],
@@ -144,6 +147,7 @@ type EventTypes = {
     'destructionStageMessage': [ConnectionMessage<DestructionStageMessage>],
     // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3): a script record served ahead of a grant or behind a create word (ScriptStateService)
     'scriptStateApplyMessage': [ConnectionMessage<ScriptStateApplyMessage>],
+    'scriptStateOverrideMessage': [ConnectionMessage<ScriptStateOverrideMessage>],
     // thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows): an alias's fill relayed or served (AliasFillService)
     'aliasFillMessage': [ConnectionMessage<AliasFillMessage>],
     // the same rung: the world's globals, a stream word, a relay or a login's serve (WorldGlobalService)

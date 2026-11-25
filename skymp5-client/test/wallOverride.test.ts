@@ -68,6 +68,8 @@ const seat = (busyReads: number) => {
     settings: { "skymp5-client": {} },
     storage: {},
     Actor: { from: () => null },
+    // the services read references through sp as well as through the module
+    ObjectReference,
     Game: { getFormEx: (id: number) => (id === TRIGGER ? trigger : id === GUEST_FIGURE ? figure : null), getPlayer: () => null },
     callNative: (cls: string, fn: string, _self: unknown, ...args: unknown[]) => {
       if (cls !== "TESModPlatform") {

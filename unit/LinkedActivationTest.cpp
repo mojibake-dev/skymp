@@ -4,6 +4,9 @@
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <map>
+#include <memory>
+#include <nlohmann/json.hpp>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
@@ -463,5 +466,93 @@ TEST_CASE("A guest's firing whose first link is an actor the host simulates "
                       "not name it") == 1);
   }
   REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
+// Bleak Falls Temple's puzzle lever 0xaa8c3 (FURN 0xb7db4) carries
+// defaultPillarPuzzleLever, whose doorOrDarts activates refActOnSuccess01,
+// the portcullis 0x3b9f1 (through the marker 0x3e728, its activate parent),
+// on a solved puzzle, or refActOnFailure01..04, the dart ports 0x39fdd,
+// 0x3720f, 0x2ad49 and 0x2ad43, on a failed one. No XAPR names the lever:
+// the engine fires those targets only from the script, on the game that
+// runs it, which reports each activation. The portcullis is parent-only
+// (XAPD 1), its parents the lever 0x6a9e2 and the marker. The scene's
+// bandit 0x39fe1 pulls the lever on the host's game (lab/esm.py on
+// Skyrim.esm).
+namespace {
+constexpr uint32_t kPuzzleLever = 0xaa8c3;
+constexpr uint32_t kPuzzleBandit = 0x39fe1;
+constexpr uint32_t kDartPorts[] = { 0x39fdd, 0x3720f, 0x2ad49, 0x2ad43 };
+
+// the gamemode's onActivate events, by the activated reference
+class ActivationCounter : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (event.GetName() == std::string("onActivate")) {
+      auto args = nlohmann::json::parse(event.GetArgumentsJsonArray());
+      ++activated[args[0].get<uint32_t>()];
+    }
+    return true;
+  }
+
+  std::map<uint32_t, uint32_t> activated;
+};
+}
+
+TEST_CASE("A pull of Bleak Falls Temple's puzzle lever makes the server "
+          "activate none of its script's targets, and the host's report of "
+          "the script's activation of a dart port is a link it knows",
+          "[Traps][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto counter = std::make_shared<ActivationCounter>();
+  p.AddListener(counter);
+  p.worldState.npcSettings["Skyrim.esm"].spawnInInterior = true;
+  p.worldState.npcEnabled = true;
+
+  auto& lever = p.worldState.GetFormAt<MpObjectReference>(kPuzzleLever);
+  for (uint32_t port : kDartPorts) {
+    p.worldState.GetFormAt<MpObjectReference>(port);
+  }
+  auto& bandit = p.worldState.GetFormAt<MpActor>(kPuzzleBandit);
+  bandit.SetPos(lever.GetPos() + NiPoint3{ 0.f, 40.f, 0.f });
+  Place(p, kHostActor, lever.GetPos() + NiPoint3{ 60.f, 0.f, 0.f });
+  Place(p, kGuestActor, lever.GetPos() + NiPoint3{ -60.f, 0.f, 0.f });
+
+  // the host's game reports its bandit's pull: the lever's own XAPR
+  // children are the server's to fire with it, and it has none; the
+  // script's targets wait for the script's own activations
+  constexpr bool kDefaultProcessingOnly = false;
+  constexpr bool kSecondActivation = false;
+  constexpr bool kReportedByHost = true;
+  lever.Activate(bandit, kDefaultProcessingOnly, kSecondActivation,
+                 kReportedByHost);
+  REQUIRE_NOTHROW(p.Tick());
+  REQUIRE(counter->activated[kPuzzleLever] == 1);
+  REQUIRE(counter->activated[kPortcullis] == 0);
+  for (uint32_t port : kDartPorts) {
+    REQUIRE(counter->activated[port] == 0);
+  }
+
+  // the script's activation of a dart port on a failed pull, reported by
+  // the host: a link the server knows, taken and activated once
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Activation(p, 0, kPuzzleLever, kDartPorts[0]));
+    REQUIRE(log.Count("[verb:traps] aa8c3 activates 39fdd in cell 371de (its "
+                      "host ff000ff1 reports)") == 1);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
+  REQUIRE(counter->activated[kDartPorts[0]] == 1);
   Leave(p);
 }

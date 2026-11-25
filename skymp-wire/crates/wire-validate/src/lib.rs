@@ -1705,7 +1705,7 @@ fn check_jail_term(m: &skymp::JailTerm) -> Result<(), Reject> {
     Ok(())
 }
 
-/// A script override (thuum ADR-088, ScriptStateOverride): a reference of the
+/// A script override (ScriptStateOverride): a reference of the
 /// shared load order, at least one script, each type named once and without a
 /// NUL, each state without a NUL, each variable named once in its script and
 /// without a NUL, and each value exactly its kind's (3 an int, 4 a float, 5 a

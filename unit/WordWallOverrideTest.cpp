@@ -10,19 +10,19 @@
 
 PartOne& GetPartOne();
 
-// thuum docs/DECISIONS.md ADR-088 (a word wall teaches each player once; its
-// world effects happen once) and docs/verbs/word-wall.md's rule, a script
-// variable the player's own record decides. WordWallTriggerScript's StartFX
+// A word wall teaches each player once, and its world effects happen once
+// (docs/verbs/word-wall.md's rule, a script variable the player's own record
+// decides). WordWallTriggerScript's StartFX
 // goes to its state "done" and sets WordLearned in the block that teaches,
 // and WordWallTriggerBleakFallsScript's enter goes to "done" when WordLearned
-// is set (the scripts' pex, Skyrim - Misc.bsa, read with lab/pex.py on
-// 2026-11-25), so the trigger's scripts, which its cell's host runs, never
-// play the wall again for a second player. A player who lacks the word and
-// reports a wall whose record shows the wall's script in "done" gets that
-// state put back on the owner's copy, by name (ScriptStateOverride, MsgType
-// 89), then its walk-up raised there as a relayed entry (RelayedActivation's
-// entry 1), once a player and wall. Bleak Falls Sanctum 0x371dd, its trigger
-// 0x709d2 and the word WordFus 0x13e22 (WordWallTest.cpp's reads).
+// is set (the scripts' pex, Skyrim - Misc.bsa, read with lab/pex.py), so the
+// trigger's scripts, which its cell's host runs, never play the wall again for
+// a second player. A player who lacks the word and reports a wall whose record
+// shows the wall's script in "done" gets that state put back on the owner's
+// copy, by name (ScriptStateOverride, MsgType 89), then its walk-up raised
+// there as a relayed entry (RelayedActivation's entry 1), once a player and
+// wall. Bleak Falls Sanctum 0x371dd, its trigger 0x709d2 and the word WordFus
+// 0x13e22 (WordWallTest.cpp's reads).
 namespace {
 constexpr uint32_t kHostActor = 0xff000f7a;
 constexpr uint32_t kGuestActor = 0xff000f7b;

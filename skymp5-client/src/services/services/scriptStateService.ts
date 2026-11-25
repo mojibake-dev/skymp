@@ -225,8 +225,8 @@ type Pass = {
 };
 
 // a script override from the server, held until this game's copy takes it
-// (thuum ADR-088: the state of a world object's scripts a player's own record
-// decides, put back on the owner's copy by name), with the relayed entries
+// (the state of a world object's scripts a player's own record decides, put
+// back on the owner's copy by name), with the relayed entries
 // that wait for it (afterOverride)
 type HeldOverride = {
     m: ScriptStateOverrideMessage;
@@ -671,8 +671,8 @@ export class ScriptStateService extends ClientListener {
     }
 
     // a script override from the server (a message handler: JS state alone,
-    // the read and the apply wait for the update): thuum ADR-088, the state of
-    // a world object's scripts a player's own record decides, put back by name
+    // the read and the apply wait for the update): the state of a world
+    // object's scripts a player's own record decides, put back by name
     // on this game's copy, which this game runs as the object's owner. A newer
     // override replaces a held one; the entries waiting for it wait on
     private onOverride(e: ConnectionMessage<ScriptStateOverrideMessage>): void {

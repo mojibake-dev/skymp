@@ -91,5 +91,5 @@ export enum MsgType {
   Arrest = 86, // the arrest this game's own engine started (GoToPrison), the faction and the sentence, before the strip's moves; the server records the jail term on the shared clock and takes the strip and the outfit as this game's
   CrimeGold = 87, // one hold's bounty as this game holds it, when it changes; the server's record (R0), given back at a login
   JailTerm = 88, // this game's player's jail term as the server's record holds it, its end on the shared clock: at the arrest's record, at each login while it stands, and once when the clock passes the end
-  ScriptStateOverride = 89 // the state of a world object's scripts this game's own copy runs, which a player's record decides, put back by name ahead of the relayed entry that runs them for that player (thuum ADR-088)
+  ScriptStateOverride = 89 // the state of a world object's scripts this game's own copy runs, which a player's record decides, put back by name ahead of the relayed entry that runs them for that player
 }

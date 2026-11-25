@@ -5346,8 +5346,9 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
   // (CheckWordWallArm). One from a player who knows the word goes on to say
   // so. Declared narrowing: the script's line of sight to the mark
   // (isLooking) and its bound of 200 in combat are not read here
-  // thuum ADR-088: a player who lacks the word, inside the wall's reach, at a
-  // wall that has fired for someone, gets the wall played again for itself
+  // a word wall teaches each player once: a player who lacks the word, inside
+  // the wall's reach, at a wall that has fired for someone, gets the wall
+  // played again for itself
   if (!actor->HasShoutEntry(MpActor::ShoutEntry::WordKnown, word)) {
     OverrideFiredWall(*actor, *wall);
   }
@@ -5451,7 +5452,7 @@ void ActionListener::ForgetWordWallArm(uint32_t actorId)
 namespace {
 // thuum docs/verbs/word-wall.md, the rule a script variable the player's own
 // record decides: the word wall's scripts, read from their pex (Skyrim -
-// Misc.bsa, lab/pex.py, 2026-11-25). WordWallTriggerScript's StartFX goes to
+// Misc.bsa, lab/pex.py). WordWallTriggerScript's StartFX goes to
 // "done" and sets WordLearned, the auto property whose backing variable the
 // pex names ::wordLearned_var, in the block that teaches; its default state
 // is the empty one. Its listeners,
@@ -5545,7 +5546,7 @@ void ActionListener::OverrideFiredWall(MpActor& player,
   wallOverridesSent.insert(key);
   spdlog::info("[verb:word-wall] {:x} lacks wall {:x}'s word, which the wall "
                "taught already: its {} script(s) put back on its owner {:x}'s "
-               "copy and its walk-up raised there (ADR-088)",
+               "copy and its walk-up raised there",
                player.GetFormId(), trigger.GetFormId(),
                override.scripts.size(), owner->GetFormId());
 }

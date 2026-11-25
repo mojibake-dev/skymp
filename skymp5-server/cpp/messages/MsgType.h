@@ -161,6 +161,6 @@ enum class MsgType : uint8_t
                         // shared clock
   ScriptStateOverride = 89, // the state of a world object's scripts a
                             // player's own record decides, put back by name
-                            // on its owner's copy (thuum ADR-088)
+                            // on its owner's copy
   Max
 };

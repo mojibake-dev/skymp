@@ -347,8 +347,8 @@ use bounded::{String, Vec};
 /// on the shared clock. A 71 peer has no wire id 96.
 /// 73: ScriptStateOverride (MsgType 89, wire id 97): the state of a world
 /// object's scripts a player's own record decides, by name, put back on the
-/// copy the object's owner runs (thuum ADR-088, the second learner at a word
-/// wall). A 72 peer has no wire id 97.
+/// copy the object's owner runs (a word wall's second learner, docs/verbs/
+/// word-wall.md). A 72 peer has no wire id 97.
 /// MsgTypes 84 to 89 (wire ids 92 to 97) are all built here; none is held.
 pub const SCHEMA_VERSION: u16 = 73;
 
@@ -509,8 +509,8 @@ pub mod cap {
     /// TrapSwingingWall over MovingTrap over TrapBase, has 52 (thuum
     /// docs/research/adr065-papyrus-state-2026-11-03.md Q1).
     pub const SCRIPT_VARS: usize = 512;
-    /// Variables one script override sets in one script (thuum ADR-088,
-    /// ScriptStateOverride): a word wall's learned flag is one. UNMEASURED
+    /// Variables one script override sets in one script
+    /// (ScriptStateOverride): a word wall's learned flag is one. UNMEASURED
     /// beyond it.
     pub const SCRIPT_OVERRIDE_VARS: usize = 16;
     /// A string variable's value in a script record. UNMEASURED: a save
@@ -1618,7 +1618,7 @@ mod tests {
         }
     }
 
-    /// A ScriptStateOverride at its caps (thuum ADR-088): 16 scripts, each
+    /// A ScriptStateOverride at its caps: 16 scripts, each
     /// with both names and 16 variables at PAPYRUS_NAME and every payload
     /// field carried.
     fn script_state_override_at_its_caps() -> skymp::ScriptStateOverride {
@@ -1888,7 +1888,7 @@ mod tests {
             Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, paid_gold: Some(u32::MAX), ..Default::default() }),
             Message::JailTerm(skymp::JailTerm { faction: u32::MAX, release_at: f32::MAX, served: true, ..Default::default() }),
             // the scripts of a world object a player's record decides, at
-            // their caps (thuum ADR-088)
+            // their caps
             Message::ScriptStateOverride(script_state_override_at_its_caps()),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the

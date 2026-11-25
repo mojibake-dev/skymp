@@ -3723,9 +3723,8 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// One variable a script override sets (thuum ADR-088, docs/verbs/
-    /// word-wall.md's rule: a script variable the player's own record
-    /// decides): named as the type's chain declares it (an auto property's
+    /// One variable a script override sets (docs/verbs/word-wall.md's rule:
+    /// a script variable the player's own record decides): named as the type's chain declares it (an auto property's
     /// backing variable, `::wordLearned_var`), matched without case as the VM
     /// finds a variable by name, `k` rung 3's folded kinds an override sets
     /// (3 an int, 4 a float, 5 a bool) and that kind's one field.
@@ -3759,8 +3758,8 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 89: the state of a world object's scripts that a player's own
-    /// record decides, put back on the copy the object's owner runs (thuum
-    /// ADR-088, a word wall teaches each player once). Server to the owner's
+    /// record decides, put back on the copy the object's owner runs (a word
+    /// wall teaches each player once). Server to the owner's
     /// game alone, reliable, R0: the server decides it from the player's
     /// record (a word wall's learned flag and its scripts' states, for a
     /// player who lacks the wall's word at a wall that has fired), and the

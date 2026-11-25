@@ -1,5 +1,6 @@
 #include "ActionListener.h"
 #include "Messages.h"
+#include "SpSnippet.h"
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
@@ -246,7 +247,7 @@ std::vector<bool> TriggerWordsTo(PartOne& p, Networking::UserId user)
 }
 
 // the snippets that turn `user`'s copy of the trigger back on (a snippet's
-// send is deferred to the next tick)
+// send is deferred to the next tick, its self the long form id)
 size_t TurnedBackOn(PartOne& p, Networking::UserId user)
 {
   p.Tick();
@@ -254,7 +255,8 @@ size_t TurnedBackOn(PartOne& p, Networking::UserId user)
   for (auto& m : p.Messages()) {
     if (m.userId == user && m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
         m.j["class"] == "ObjectReference" &&
-        m.j["function"] == "EnableNoWait" && m.j["selfId"] == kTrigger) {
+        m.j["function"] == "EnableNoWait" &&
+        m.j["selfId"] == SpSnippet::MakeLongFormId(&p.worldState, kTrigger)) {
       ++n;
     }
   }

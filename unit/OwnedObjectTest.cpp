@@ -16,9 +16,28 @@ TEST_CASE("The host answers a pillar's turn a guest pressed at once, its 3D "
   REQUIRE(OwnedObject::AnswersAtOnce(true, false, false, true));
 }
 
+TEST_CASE("The host's own turn of a loaded pillar waits on its graph as the "
+          "engine runs it; one with no 3D here is answered at once",
+          "[OwnedObject]")
+{
+  REQUIRE(!OwnedObject::AnswersAtOnce(true, false, true, false));
+  REQUIRE(OwnedObject::AnswersAtOnce(true, false, false, false));
+  // an actor's animation is its stream's, and a non-latent row never waits
+  REQUIRE(!OwnedObject::AnswersAtOnce(true, true, false, true));
+  REQUIRE(!OwnedObject::AnswersAtOnce(false, false, false, true));
+}
+
 TEST_CASE("A cobweb's own tear sound on the host crosses to the games that "
           "render the web",
           "[OwnedObject]")
 {
   REQUIRE(OwnedObject::OwnLookCrosses(true, true));
+}
+
+TEST_CASE("A sound another script plays on the web, or one on an object this "
+          "game does not own, stays local",
+          "[OwnedObject]")
+{
+  REQUIRE(!OwnedObject::OwnLookCrosses(true, false));
+  REQUIRE(!OwnedObject::OwnLookCrosses(false, true));
 }

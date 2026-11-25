@@ -10,6 +10,7 @@
 #include "Hosted.h"
 #include "JsUtils.h"
 #include "MpClientPluginApi.h"
+#include "OwnedObject.h"
 #include "PlatformCall.h"
 #include "Puppets.h"
 #include "PushRoute.h"
@@ -1116,10 +1117,11 @@ struct QueuedCall
     std::uint32_t n = 0;
   };
   std::optional<Cause> cause;
-  // an owned latent action answered at once because its reference's 3D is
-  // not loaded on this seat (its graph never played it here), raised as
-  // `unloaded`
-  bool unloaded = false;
+  // an owned latent action answered at once (OwnedObject::AnswersAtOnce: its
+  // reference's 3D not loaded here, or another player's press started it),
+  // its play shown on this seat's graph by ObjectAnimationService, raised as
+  // `answered`
+  bool answered = false;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1223,8 +1225,8 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   if (call.acting != 0) {
     AddObjProperty(&obj, "acting", call.acting);
   }
-  if (call.unloaded) {
-    AddObjProperty(&obj, "unloaded", true);
+  if (call.answered) {
+    AddObjProperty(&obj, "answered", true);
   }
   if (call.cause) {
     auto cause = Napi::Object::New(env);
@@ -3929,10 +3931,40 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
       return OnFamilyCall(row, info, stack, top, page, ref->formID);
     }
   }
-  // D-W2 A's look-only rows cross as a trap family trigger's look alone
-  // (OnFamilyCall): anywhere else counted local and never queued, so a hosted
-  // world script's sound or noise stays local as before
+  // D-W2 A's look-only rows (a sound, a noise): a trap family trigger's
+  // crosses as its look (OnFamilyCall); one on a world object this seat owns,
+  // made by that object's own script (the calling script's self, CallerRefOf),
+  // crosses as a look too (OwnedObject::OwnLookCrosses): queued as kind
+  // "look", its self the Sound's own form id for an Arg0Method row, counted
+  // " (look)", and still run here, so the games that render the object hear
+  // it as they see its animations. Anything else is counted local and never
+  // queued
   if (info.lookOnly) {
+    if (!isActor && g_triggerLook.load(std::memory_order_relaxed)) {
+      const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
+      const bool callerIsSubject =
+        callerRef && callerRef->formID == ref->formID;
+      if (callerIsSubject &&
+          OwnedObject::OwnLookCrosses(OwnedHere(ref, isActor),
+                                      callerIsSubject)) {
+        const std::uint32_t callSelf =
+          native.subject == NativeSubject::Arg0Method
+          ? EveryoneSelfId(top->self)
+          : ref->formID;
+        if (info.relayable && callSelf != 0 &&
+            QueueFromFrame(row, info, stack, top, page, callSelf, std::nullopt,
+                           true)) {
+          Count(row, kCountLook);
+          if (SelfLineDue(g_skipLines[row], ref->formID)) {
+            logger::info("[verb:scripts] {}.{} on {:x}: its own script's "
+                         "look on a world object this seat owns, queued for "
+                         "the games that render it",
+                         native.cls, native.fn, ref->formID);
+          }
+          return marks;
+        }
+      }
+    }
     Count(row, kCountLocal);
     return marks;
   }
@@ -4186,33 +4218,38 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   if (!call) {
     return marks;
   }
-  // an owned latent action row on a reference whose 3D this seat has not
-  // loaded (TESObjectREFR::Is3DLoaded, CommonLibSSE-NG
-  // include/RE/T/TESObjectREFR.h:435): its body would wait on a graph event
-  // this seat's engine never raises without the 3D (PlayAnimationAndWait's
-  // end event), and the script that called it would stay busy past every
-  // later event on the reference. The call is answered at once (true for a
-  // Bool, as a played animation answers; kCompleted, H-F2's skipped latent),
-  // and its twin goes to the games that render the reference. The call is
-  // marked `unloaded`, so this seat shows the play at the reference's next
-  // 3D load (ObjectAnimationService): its graph never took it here, and the
-  // script stands past it. HYPOTHESIS until a sitting's line: the wait
-  // never returned because the 3D was unloaded here
-  const bool unloaded = info.latent && native.kind == NativeKind::Action &&
-    !isActor && !ref->Is3DLoaded();
-  call->unloaded = unloaded;
+  // an owned latent action row on a world object this seat's engine would
+  // not end soon (OwnedObject::AnswersAtOnce): its 3D not loaded here
+  // (TESObjectREFR::Is3DLoaded, CommonLibSSE-NG
+  // include/RE/T/TESObjectREFR.h:435), or another player's press or entry
+  // started the script, whose game renders the object while this seat's
+  // engine advances the graph only once its own player comes near. Waiting
+  // would hold the script past every later press. The call is answered at
+  // once (true for a Bool, as a played animation answers; kCompleted, H-F2's
+  // skipped latent), its twin goes to the games that render the reference,
+  // and it is marked `answered`, so this seat shows the play on its own graph
+  // (ObjectAnimationService), the side's jump first, where the script stands
+  const bool otherPlayersPress = scope && ActingScope::Swaps(*scope) &&
+    scope->root == ActingScope::RootKind::kTrigger;
+  const bool answered = OwnedObject::AnswersAtOnce(
+    info.latent && native.kind == NativeKind::Action, isActor,
+    ref->Is3DLoaded(), otherPlayersPress);
+  call->answered = answered;
   QueueCall(std::move(*call));
   marks.action = native.kind == NativeKind::Action;
-  if (unloaded) {
+  if (answered) {
     marks.skip = true;
     marks.result = info.result;
     marks.resultTrue = true;
     marks.action = false;
-    logger::info("[verb:scripts] {}.{} on {:x}: an owned latent action on a "
-                 "reference whose 3D this seat has not loaded, answered at "
-                 "once (its wait would never end here); its twin relayed to "
-                 "the games that render it, shown here at its next 3D load",
-                 native.cls, native.fn, ref->formID);
+    logger::info("[verb:scripts] {}.{} on {:x}: an owned latent action {}, "
+                 "answered at once; its twin relayed to the games that "
+                 "render it, shown on this seat's graph",
+                 native.cls, native.fn, ref->formID,
+                 otherPlayersPress
+                   ? "another player's press started (this seat's graph "
+                     "advances only near its own player)"
+                   : "on a reference whose 3D this seat has not loaded");
   }
   return marks;
 }

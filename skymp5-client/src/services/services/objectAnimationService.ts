@@ -245,7 +245,7 @@ type LastAnimation = {
   looksShown: boolean;           // all of them played on the 3D now loaded
   actor: boolean;   // an actor's entry: its looks are its simulator's, not its cell's
   flips: number;    // HostService.ownerFlips at the looks' last owner test (pollOne)
-  answered?: boolean;  // this seat's own script's play the seam answered with no 3D here, shown once at the next 3D load (answeredUnloaded)
+  answered?: boolean;  // this seat's own script's play the seam answered at once, shown once on this seat's graph (answeredAtOnce)
 };
 // the wire's cap on a record's graph variables (cap::GRAPH_VARS, UNMEASURED):
 // past it the longest unset name goes
@@ -1060,15 +1060,18 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
-  // an owned latent action this seat's own script ran while the reference's
-  // 3D was not loaded here: the seam answered it at once (the platform's
-  // `unloaded`), so the script stands past it while the graph never took it,
-  // and the pillar's own OnCellLoad turns the graph only once, from its first
-  // side. The play is kept as a relay's is and shown once at the next 3D
-  // load, though this seat hosts the cell (reapplyGate), which puts the graph
-  // where the script stands. Called after noteScriptSide for the same call.
-  // JS state alone: the scriptCalls event's context
-  answeredUnloaded(localId: number, event: string): void {
+  // an owned latent action this seat's own script ran that the seam answered
+  // at once (the platform's `answered`): the reference's 3D was not loaded
+  // here, or another player's press started the script, and this seat's
+  // engine advances that graph only near its own player. The script stands
+  // past the play while the graph never took it, and the pillar's own
+  // OnCellLoad turns the graph only once, from its first side. The play is
+  // kept as a relay's is and shown once by the 3D poll though this seat hosts
+  // the cell (reapplyGate), the side's jump first, so the graph stands where
+  // the script does: at once while the 3D is here (the graph takes it as it
+  // advances), else at the next 3D load. Called after noteScriptSide for the
+  // same call. JS state alone: the scriptCalls event's context
+  answeredAtOnce(localId: number, event: string): void {
     const refr = ObjectReference.from(this.sp.Game.getFormEx(localId));
     if (!refr) {
       return;
@@ -1079,7 +1082,7 @@ export class ObjectAnimationService extends ClientListener {
       return;
     }
     kept.answered = true;
-    logLab('verb:scripts', `object animation ${localId.toString(16)} ${event}: this seat's script played it with no 3D here, shown at its next 3D load`);
+    logLab('verb:scripts', `object animation ${localId.toString(16)} ${event}: this seat's script played it, answered at once, to be shown on this seat's graph`);
   }
 
   // rung 3: the object's last animation kept, the record's view (keepView, at

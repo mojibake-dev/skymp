@@ -2,7 +2,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <vector>
 
 // Whose answer the engine's detection reader gives on this game (the hook on
 // Actor::RequestDetectionLevel, CommonLibSSE-NG include/RE/A/Actor.h:619,
@@ -59,29 +58,6 @@ inline std::int32_t HighestWithRelayed(std::int32_t engineHighest,
     }
   }
   return highest;
-}
-
-// one puppet whose host's combat target is this game's player, as the compass
-// replacement reads it
-struct HostileCopy
-{
-  std::uint32_t formId = 0;
-  bool dead = false;
-  bool loaded = false;
-};
-
-// the compass's additions after its own fill (the replacement of the player's
-// HUD actor fill, Address Library 41240: every member of every combat group
-// that targets the player, which a puppet's dropped combat never stays in):
-// each puppet its host's combat target names, alive, with its 3D, and not
-// already listed, in the order given
-inline std::vector<std::uint32_t> CompassAdds(
-  const std::vector<std::uint32_t>& listed,
-  const std::vector<HostileCopy>& hostile)
-{
-  (void)listed;
-  (void)hostile;
-  return {};
 }
 
 }

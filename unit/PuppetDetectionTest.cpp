@@ -96,8 +96,8 @@ TEST_CASE("A bandit the host runs that attacks the guest shows on the guest's "
 {
   // the engine listed this game's own bandit 0x1a; the host's bandit 0x2b
   // targets the guest and is loaded
-  const auto adds = PuppetDetection::CompassAdds(
-    { 0x1a }, { { 0x2b, false, true } });
+  const auto adds =
+    PuppetDetection::CompassAdds({ 0x1a }, { { 0x2b, false, true } });
   REQUIRE(adds == std::vector<std::uint32_t>{ 0x2b });
 }
 
@@ -106,7 +106,7 @@ TEST_CASE("The compass shows a bandit once, and never one that is dead or "
           "[PuppetDetection]")
 {
   const auto adds = PuppetDetection::CompassAdds(
-    { 0x2b }, { { 0x2b, false, true }, { 0x3c, true, true },
-                { 0x4d, false, false } });
+    { 0x2b },
+    { { 0x2b, false, true }, { 0x3c, true, true }, { 0x4d, false, false } });
   REQUIRE(adds.empty());
 }

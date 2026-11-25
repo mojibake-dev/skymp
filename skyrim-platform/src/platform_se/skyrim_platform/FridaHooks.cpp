@@ -4020,6 +4020,53 @@ std::int32_t HighestDetectionReplacement(RE::ProcessLists* self,
 }
 }
 
+// the compass's fill, the player's HUD actor array each frame (Address Library
+// 41240, decompiled on sky-re: emptied, then every member of every combat
+// group in CombatManager that targets the player; CommonLibSSE-NG
+// include/RE/P/PlayerCharacter.h INFO_RUNTIME_DATA's
+// actorsToDisplayOnTheHUDArray): a puppet's combat with this game's player
+// does not stay with its AI off, so after the engine's own fill each puppet
+// whose host's combat target is this player is added, alive and with its 3D
+// (PuppetDetection::CompassAdds)
+namespace {
+using CompassFillFn = void (*)(RE::PlayerCharacter* self);
+CompassFillFn g_compassFillOriginal = nullptr;
+
+void CompassFillReplacement(RE::PlayerCharacter* self)
+{
+  if (g_compassFillOriginal) {
+    g_compassFillOriginal(self);
+  }
+  if (!self) {
+    return;
+  }
+  const auto ids = Puppets::HostileToPlayer();
+  if (ids.empty()) {
+    return;
+  }
+  auto& hud = self->GetInfoRuntimeData().actorsToDisplayOnTheHUDArray;
+  std::vector<std::uint32_t> listed;
+  for (const auto& handle : hud) {
+    if (const auto actor = handle.get()) {
+      listed.push_back(actor->formID);
+    }
+  }
+  std::vector<PuppetDetection::HostileCopy> hostile;
+  for (std::uint32_t id : ids) {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+    if (!actor) {
+      continue;
+    }
+    hostile.push_back({ id, actor->IsDead(), actor->Is3DLoaded() });
+  }
+  for (std::uint32_t id : PuppetDetection::CompassAdds(listed, hostile)) {
+    if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(id)) {
+      hud.push_back(actor->GetHandle());
+    }
+  }
+}
+}
+
 void InstallGuestWitnessHook()
 {
   if (!REL::Module::IsAE()) {
@@ -4035,6 +4082,14 @@ void InstallGuestWitnessHook()
     REL::RelocationID(40394, 41408).address(),
     reinterpret_cast<void*>(&HighestDetectionReplacement),
     reinterpret_cast<void**>(&g_highestDetectionOriginal));
+  const bool compass = Frida::HookHandler::GetSingleton()->Replace(
+    REL::ID(41240).address(), reinterpret_cast<void*>(&CompassFillReplacement),
+    reinterpret_cast<void**>(&g_compassFillOriginal));
+  logger::info("[verb:guest-witness] compass hook (41240) {}",
+               compass ? "installed: a puppet whose host fights this game's "
+                         "player shows on its compass"
+                       : "NOT installed: the compass shows this game's own "
+                         "fights alone");
   logger::info("[verb:guest-witness] stealth eye hook (41408) {}",
                eye ? "installed: this game's player's highest detection level "
                      "folds in its puppets' relayed levels"

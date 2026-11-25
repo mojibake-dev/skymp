@@ -72,6 +72,9 @@ struct
   // thuum docs/verbs/guest-witness.md: each puppet's detection of this game's
   // player as its host relayed it (Puppets::SetDetection)
   std::unordered_map<uint32_t, PuppetDetection::Relayed> detection;
+  // the puppets whose host's combat target is this game's player
+  // (Puppets::SetHostileToPlayer)
+  std::unordered_set<uint32_t> hostileToPlayer;
   std::recursive_mutex m;
 } g_puppets;
 
@@ -233,7 +236,30 @@ void Puppets::Set(uint32_t formId, bool puppet)
     g_puppets.ids.erase(formId);
     g_puppets.locomotion.erase(formId);
     g_puppets.detection.erase(formId);
+    g_puppets.hostileToPlayer.erase(formId);
   }
+}
+
+void Puppets::SetHostileToPlayer(uint32_t formId, bool hostile)
+{
+  std::lock_guard l(g_puppets.m);
+  if (hostile) {
+    g_puppets.hostileToPlayer.insert(formId);
+  } else {
+    g_puppets.hostileToPlayer.erase(formId);
+  }
+}
+
+std::vector<uint32_t> Puppets::HostileToPlayer()
+{
+  std::lock_guard l(g_puppets.m);
+  std::vector<uint32_t> out;
+  for (uint32_t formId : g_puppets.hostileToPlayer) {
+    if (g_puppets.ids.count(formId) != 0) {
+      out.push_back(formId);
+    }
+  }
+  return out;
 }
 
 void Puppets::SetDetection(uint32_t formId, std::optional<int32_t> level)
@@ -538,6 +564,19 @@ Napi::Value PuppetApi::SetPuppetDetection(const Napi::CallbackInfo& info)
     }
   }
   Puppets::SetDetection(actorFormId, level);
+  return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
+}
+
+// setPuppetHostileToPlayer(actorFormId, hostile): thuum docs/verbs/
+// guest-witness.md, whether a puppet's host's combat target is this game's
+// player, so the compass shows it while its host fights this player
+// (FridaHooks.cpp); registry only, no game call. true when the actor is a
+// puppet here
+Napi::Value PuppetApi::SetPuppetHostileToPlayer(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const bool hostile = NapiHelper::ExtractBoolean(info[1], "hostile");
+  Puppets::SetHostileToPlayer(actorFormId, hostile);
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
 }
 

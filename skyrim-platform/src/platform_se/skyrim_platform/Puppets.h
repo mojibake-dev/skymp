@@ -117,6 +117,11 @@ DetectionRead ReadDetection(uint32_t formId);
 // every puppet's relayed level of this game's player, read under one lock (the
 // stealth eye's scan, FridaHooks.cpp)
 std::vector<int32_t> RelayedLevels();
+// the puppets whose host's combat target is this game's player (the compass's
+// additions, FridaHooks.cpp), written by setPuppetHostileToPlayer; a puppet's
+// end here forgets it (Set)
+void SetHostileToPlayer(uint32_t formId, bool hostile);
+std::vector<uint32_t> HostileToPlayer();
 
 void InstallHooks();
 }

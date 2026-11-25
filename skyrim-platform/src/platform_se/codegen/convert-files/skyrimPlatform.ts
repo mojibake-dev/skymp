@@ -1963,6 +1963,8 @@ export declare function getActorLocomotion(actorFormId: number): { speed: number
 export declare function setPuppetDetection(actorFormId: number, level: number | null): boolean;
 // thuum docs/verbs/guest-witness.md: each detector's detection level of each target as this game's engine holds it (Actor::RequestDetectionLevel), row by detector (detector i's level of target j at i * targetFormIds.length + j), -1000 where either id is no actor here; one call reads a hosted poll's worth
 export declare function getDetectionLevels(detectorFormIds: number[], targetFormIds: number[]): number[];
+// thuum docs/verbs/guest-witness.md: whether a puppet's host's combat target is this game's player, so this game's compass shows it while its host fights this player (its HUD actor fill, after the engine's own); registry only, no game call. true when the actor is a puppet here
+export declare function setPuppetHostileToPlayer(actorFormId: number, hostile: boolean): boolean;
 // thuum docs/verbs/npc-puppet.md (playtest 33): the form ids of the engine's high-process actors as of the last "Actor animation" stage, read with no game call; the roster's source and the demote poll's, where the cellAttach events name temporary references alone
 export declare function getHighProcessActors(): number[];
 // thuum tracker #121 (ADR-035 point 8 as amended 2026-11-16, Eli's "go with b for 121"): the cells the actor's running package names as its location (near a reference: that reference's cell; in a cell: the cell), as of the last "Actor animation" stage, read with no game call; empty for an actor out of high process or a package that names none. The destination's host keeps the actor live on its way there

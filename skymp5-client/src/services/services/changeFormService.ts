@@ -10,6 +10,7 @@ import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { HostService } from "./hostService";
 import { PropService } from "./propService";
+import { recordContentsNow } from "../../sync/contentsRecord";
 import { RagdollService } from "./ragdollService";
 
 // thuum docs/verbs/change-form.md (ADR-065 for system 1: the save is the
@@ -258,9 +259,18 @@ export class ChangeFormService extends ClientListener {
         }
         const ids = Array.from(this.contentsChanged);
         this.contentsChanged.clear();
+        const props = this.controller.lookupListener(PropService);
         for (const id of ids) {
             const body = Actor.from(this.sp.Game.getFormEx(id));
-            if (!body || !body.isDead() || !body.is3DLoaded()) {
+            if (!body) {
+                continue;
+            }
+            const dead = body.isDead();
+            const falling = dead && props.bodyFalling(id);
+            if (!recordContentsNow({ dead, loaded3D: body.is3DLoaded(), falling })) {
+                if (falling) {
+                    logTrace(this, `changeform ${id.toString(16)}: its contents changed while its fall runs here; its rest's record carries them`);
+                }
                 continue;
             }
             this.onBodyAtRest(id, body, [body.getPositionX(), body.getPositionY(), body.getPositionZ()], "its contents changed");

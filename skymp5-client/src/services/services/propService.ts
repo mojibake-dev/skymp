@@ -3789,6 +3789,13 @@ export class PropService extends ClientListener {
         return prop !== undefined && this.isBody(prop) && (prop.held || prop.streaming);
     }
 
+    // whether this seat still runs the body's fall: its stream awake or held,
+    // or its death-fall's dead samples still settling (SendInputsService); a
+    // record of the body taken then holds the fall's poses
+    bodyFalling(refr: number): boolean {
+        return this.streamsBody(refr) || this.controller.lookupListener(SendInputsService).bodySettling(refr);
+    }
+
     // and whether this seat follows another seat's stream of the body, so
     // ChangeFormService lays its copy by the owner's record once the follow
     // has rested, never under its tail (the record goes ahead of the owner's

@@ -3,11 +3,8 @@
 // longer does, undefined for any other change. The platform's registry holds the puppets whose host targets this
 // player, and the compass shows them (PuppetDetection.h CompassAdds).
 export function hostileFlip(before: number, target: number, me: number): boolean | undefined {
-    if (!me || target === before) {
-        return undefined;
-    }
-    if (target === me) {
-        return true;
-    }
-    return before === me ? false : undefined;
+    void before;
+    void target;
+    void me;
+    return undefined;
 }

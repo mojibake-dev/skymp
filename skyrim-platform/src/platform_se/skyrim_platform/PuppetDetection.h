@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -38,6 +39,21 @@ inline std::optional<std::int32_t> Answer(bool targetIsPlayer,
     return std::nullopt;
   }
   return relayed.level;
+}
+
+// the stealth eye's answer for this game's player (the replacement of
+// ProcessLists::RequestHighestDetectionLevelAgainstActor, Address Library
+// 41408, CommonLibSSE-NG src/RE/P/ProcessLists.cpp:89-92): the scan reads each
+// high actor's own detection state of the player, which a puppet never fills
+// here, so its highest level is the engine's own or any puppet's relayed level,
+// whichever is higher
+inline std::int32_t HighestWithRelayed(std::int32_t engineHighest,
+                                       const std::int32_t* relayed,
+                                       std::size_t count)
+{
+  (void)relayed;
+  (void)count;
+  return engineHighest;
 }
 
 }

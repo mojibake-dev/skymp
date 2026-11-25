@@ -11,6 +11,7 @@ import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { getEquipedSpell, SpellType } from "../../sync/equipment";
 import { Inventory, readWorn } from "../../sync/inventory";
 import { logLab, logTrace } from "../../logging";
+import { detectsToSend, PlayerDetection } from "../../sync/detectionRelay";
 
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): the state of
 // the actors this game simulates, read from its engine twice a second and
@@ -107,6 +108,9 @@ export class HostedStateService extends ClientListener {
         }
         this.lastPoll = now;
         const hosted = host.hostedActorRemoteIds();
+        // thuum docs/verbs/guest-witness.md: each hosted actor's detection of
+        // the other players' figures, in one read for the poll (rule 9)
+        const detection = this.readDetection(hosted);
         const seen = new Set<number>();
         for (const remoteId of hosted) {
             if (remoteId === 0x14) {
@@ -138,7 +142,10 @@ export class HostedStateService extends ClientListener {
             const effects = this.readEffects(localId, remoteId);
             const sentEffects = this.lastEffects.get(localId);
             const effectsChanged = effects !== undefined && !HostedStateService.sameIds(effects, sentEffects);
-            if (last && !stoodUp && !fellDead && !effectsChanged && HostedStateService.same(last, sample)) {
+            const entries = detection.get(localId) ?? [];
+            const sentDetects = this.lastDetects.get(localId);
+            const detects = entries.length || sentDetects !== undefined ? detectsToSend(entries, sentDetects) : undefined;
+            if (last && !stoodUp && !fellDead && !effectsChanged && detects === undefined && HostedStateService.same(last, sample)) {
                 continue;
             }
             const message: MessageWithRefrId<HostedActorStateMessage> = {
@@ -157,10 +164,22 @@ export class HostedStateService extends ClientListener {
             if (effectsChanged && effects !== undefined) {
                 message.effects = effects;
             }
+            if (detects !== undefined) {
+                message.detects = detects;
+            }
             this.controller.emitter.emit("sendMessageWithRefrId", {
                 message,
-                reliability: last && !stoodUp && !fellDead && !effectsChanged ? "unreliable" : "reliable",
+                reliability: last && !stoodUp && !fellDead && !effectsChanged && detects === undefined ? "unreliable" : "reliable",
             });
+            if (detects !== undefined) {
+                this.lastDetects.set(localId, detects);
+                const before = new Map((sentDetects ?? []).map((d) => [d.player, d.level]));
+                for (const d of detects) {
+                    if ((d.level > 0) !== ((before.get(d.player) ?? -1000) > 0)) {
+                        logLab("verb:guest-witness", `${remoteId.toString(16)} ${d.level > 0 ? "sees" : "no longer sees"} player ${d.player.toString(16)}'s figure on this engine: level ${d.level}, sent reliable`);
+                    }
+                }
+            }
             this.lastSent.set(localId, sample);
             if (effectsChanged && effects !== undefined) {
                 this.lastEffects.set(localId, effects);
@@ -231,6 +250,11 @@ export class HostedStateService extends ClientListener {
         for (const id of Array.from(this.lastEffects.keys())) {
             if (!seen.has(id)) {
                 this.lastEffects.delete(id);
+            }
+        }
+        for (const id of Array.from(this.lastDetects.keys())) {
+            if (!seen.has(id)) {
+                this.lastDetects.delete(id);
             }
         }
         for (const id of Array.from(this.dead.keys())) {
@@ -482,6 +506,50 @@ export class HostedStateService extends ClientListener {
     private readonly lastSent = new Map<number, HostedStateSample>();
     // the running effects last sent per hosted actor (Ownership)
     private readonly lastEffects = new Map<number, number[]>();
+    // thuum docs/verbs/guest-witness.md: the detection entries last sent per
+    // hosted actor, by local id
+    private readonly lastDetects = new Map<number, PlayerDetection[]>();
+
+    // thuum docs/verbs/guest-witness.md: the other players' figures this game
+    // loads (a world model form with no base or the player base that is not
+    // this seat's own, SendInputsService.otherPlayers' read), and each hosted
+    // actor's detection level of each, by the actor's local id, from one
+    // getDetectionLevels call; empty with no figure or on a platform without
+    // the export
+    private readDetection(hosted: Iterable<number>): Map<number, PlayerDetection[]> {
+        const out = new Map<number, PlayerDetection[]>();
+        const api = this.sp as unknown as { getDetectionLevels?: (detectorFormIds: number[], targetFormIds: number[]) => number[] };
+        if (typeof api.getDetectionLevels !== "function") {
+            return out;
+        }
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const figures: { player: number; localId: number }[] = [];
+        for (let i = 0; i < world.forms.length; ++i) {
+            const f = world.forms[i];
+            if (!f || i === world.playerCharacterFormIdx || f.isMyClone === true || !f.refrId || (f.baseId && f.baseId !== 0x7)) {
+                continue;
+            }
+            const localId = remoteIdToLocalId(f.refrId);
+            if (localId) {
+                figures.push({ player: f.refrId, localId });
+            }
+        }
+        const detectors: number[] = [];
+        for (const remoteId of Array.from(hosted)) {
+            const localId = remoteId === 0x14 ? 0 : remoteIdToLocalId(remoteId);
+            if (localId) {
+                detectors.push(localId);
+            }
+        }
+        if (!figures.length || !detectors.length) {
+            return out;
+        }
+        const levels = api.getDetectionLevels(detectors, figures.map((f) => f.localId));
+        detectors.forEach((localId, i) => {
+            out.set(localId, figures.map((f, j) => ({ player: f.player, level: levels[i * figures.length + j] ?? -1000 })));
+        });
+        return out;
+    }
     // the player's own running effects with a look, last sent (#119)
     private lastOwnEffects: number[] | undefined = undefined;
     private effectsReaderSaid = false;

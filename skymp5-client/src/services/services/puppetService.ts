@@ -12,6 +12,7 @@ import { PropService } from "./propService";
 import { placesAtPromote, runsActorHere } from "../../sync/hostPuppet";
 import { SEAT_WAIT_MS, seatVerdict, seated } from "../../sync/seatWait";
 import { RemoteServer } from "./remoteServer";
+import { levelFor } from "../../sync/detectionRelay";
 import { SceneClaimService } from "./sceneClaimService";
 
 // thuum docs/verbs/npc-puppet.md (ADR-045): every NPC this game does not host
@@ -1032,6 +1033,7 @@ export class PuppetService extends ClientListener {
         const refrId = form ? form.refrId : undefined;
         if (refrId) {
             this.noteRelayedTarget(refrId, event.message.combatTarget, remote.getMyRemoteRefrId());
+            this.noteRelayedDetection(refrId, event.message.detects, remote.getMyRemoteRefrId());
         }
         const effects = event.message.effects;
         if (!Array.isArray(effects)) {
@@ -1043,6 +1045,34 @@ export class PuppetService extends ClientListener {
         }
         this.recordedEffects.set(refrId, effects.slice());
     }
+
+    // thuum docs/verbs/guest-witness.md: the host's detection of this seat's
+    // player by an actor it simulates, handed to the platform's registry, so
+    // the engine's RequestDetectionLevel answers it for the puppet and a theft
+    // in its view finds a witness in this game's StealAlarm (registry only, so
+    // the message's context serves); said when the actor comes to see this
+    // player or stops
+    private noteRelayedDetection(refrId: number, detects: HostedActorStateMessage["detects"], me: number): void {
+        if (!me || !Array.isArray(detects)) {
+            return;
+        }
+        const level = levelFor(detects, me);
+        const localId = remoteIdToLocalId(refrId);
+        if (level === undefined || !localId) {
+            return;
+        }
+        const api = this.sp as unknown as { setPuppetDetection?: (actorFormId: number, level: number | null) => boolean };
+        if (typeof api.setPuppetDetection !== "function") {
+            return;
+        }
+        api.setPuppetDetection(localId, level);
+        const saw = (this.relayedDetection.get(refrId) ?? -1000) > 0;
+        this.relayedDetection.set(refrId, level);
+        if (saw !== level > 0) {
+            logLab("verb:guest-witness", `${refrId.toString(16)} ${level > 0 ? "sees" : "no longer sees"} this game's player by its host: level ${level}`);
+        }
+    }
+    private readonly relayedDetection = new Map<number, number>();
 
     // tracker #130: the host's combat target per actor, by server id, kept
     // while it names anyone (pure JavaScript: this is the message's

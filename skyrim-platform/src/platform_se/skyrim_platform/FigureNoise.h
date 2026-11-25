@@ -13,8 +13,11 @@
 // fDetectEventDistancePlayer (1536) where another actor's carries
 // fDetectEventDistanceNPC (512); and the player's projectiles in flight are
 // watched out of combat at the player's distance, another actor's only in
-// combat. Another player's figure is that player on this game, so its noise
-// and its arrows reach this game's actors as the player's do.
+// combat. A detector in combat sees a target that is neither the player
+// nor its own combat target at fDetectionCombatNonTargetDistanceMult's
+// share of its sight distance, and the player always at the whole of it.
+// Another player's figure is that player on this game, so its noise, its
+// arrows and its body reach this game's actors as the player's do.
 namespace FigureNoise {
 
 struct Target
@@ -43,9 +46,32 @@ inline std::uintptr_t ComparedWith(const Target& t, std::uintptr_t target,
 }
 
 // CalculateDetection (Address Library 37774, 0x690870 on 1.6.1170), read on
-// sky-re through REA: the three places it tests the target (r14) against
+// sky-re through REA: the four places it tests the target (r14) against
 // the player (the global at RIP + disp, Address Library 401069), with the
-// bytes each site holds
+// bytes each site holds; rsi is the detector
+//
+// the in-combat sight test, after the target's sight distance is in xmm6:
+//   +0x16a  4c 3b 35 d32   cmp  r14, [player]
+//   +0x171  74 3b          jz   +0x1ae (the whole sight distance)
+//   +0x173  ...            the detector's IsInCombat (vtable 0E3), its flag
+//                          +0xe8 bit 14, its combat target (+0x104) against
+//                          the target's handle, each jumping to +0x1ae
+//   +0x1a6                 mulss xmm6, fDetectionCombatNonTargetDistanceMult
+// The site's write keeps the jump's target and turns its test into the
+// answer of a call: `call` the stub (5 bytes, passing the target), then
+// `test al, al` and `jnz` +0x1ae, so a target that counts as the player is
+// seen at the whole distance. Volatile registers are dead there: the call
+// before the site ends them, and both of its paths write them before
+// reading
+inline constexpr std::size_t kCombatSight = 0x16a;
+inline constexpr std::array<std::uint8_t, 9> kCombatSightBytes = {
+  0x4c, 0x3b, 0x35, 0xb7, 0x6c, 0xaa, 0x02, 0x74, 0x3b
+};
+// the bytes after the call: `test al, al`, then `jnz` with the engine's
+// own jump's displacement, which stays at the same place
+inline constexpr std::array<std::uint8_t, 4> kCombatSightTail = {
+  0x84, 0xc0, 0x75, kCombatSightBytes[8]
+};
 //
 // the gate before the target's noise is read, entered only when neither
 // actor has a combat controller (+0x160) and the fight reaction is neither
@@ -108,6 +134,9 @@ struct Found
   std::uintptr_t playerSlot = 0;
   // the function the gate calls (Actor::GetHostileToActor's address)
   std::uintptr_t hostileCall = 0;
+  // where the in-combat sight test's jump lands: past the share, at the
+  // whole sight distance
+  std::uintptr_t combatSightWhole = 0;
 };
 
 namespace Detail {

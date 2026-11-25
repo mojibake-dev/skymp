@@ -94,3 +94,13 @@ test("a served term that comes before this seat's login spawn settles waits for 
   update();
   assert.deepEqual(calls, RELEASE);
 });
+
+test("a term not yet served releases nothing, its spawn settled or not", () => {
+  const { jail, update, raise, served } = seat();
+  served(false);
+  update();
+  raise("ownSpawnSettled", { how: "moved" });
+  update();
+  assert.deepEqual(calls, []);
+  assert.notEqual(jail.term, undefined);
+});

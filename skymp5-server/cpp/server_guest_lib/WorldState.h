@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <unordered_map>
@@ -516,6 +517,12 @@ public:
   std::unordered_set<uint32_t> pendingDeaths;
   std::unordered_map<uint32_t, std::map<uint32_t, float>>
     activationChildsByActivationParent;
+  // the references a world object's script activates through its own object
+  // properties (a pillar puzzle lever's success and failure targets), keyed
+  // by the object: no XAPR names the object, so neither the engine nor the
+  // server fires them with its activation; only the script does, on the game
+  // running it, and that game's report of one is a link the server knows
+  std::unordered_map<uint32_t, std::set<uint32_t>> scriptActivationLinks;
   std::vector<std::optional<std::chrono::system_clock::time_point>>
     lastMovUpdateByIdx;
 

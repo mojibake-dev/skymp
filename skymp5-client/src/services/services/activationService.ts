@@ -224,9 +224,19 @@ export class ActivationService extends ClientListener {
             Closing,
         }
 
+        // a press on a door still swinging would toggle it back, so the
+        // player's own press and a plain door's toggle wait for the swing. A
+        // hosted NPC's load door is its crossing, his host's report (D6),
+        // which the server's door walk answers: the bound door's block keeps
+        // the engine from crossing him itself, so a report dropped for the
+        // swing of the walker ahead of him leaves him at the door
         if (openState === OpenState.Opening || openState === OpenState.Closing) {
-            logTrace(this, "Ignoring activation of door because it's already opening or closing");
-            return;
+            const local = e.target.getFormID();
+            if (e.caster.getFormID() === PLAYER_ID || !this.isLoadDoor(local)) {
+                logTrace(this, `Ignoring activation of door ${target.toString(16)} by ${caster.toString(16)} because it's already opening or closing (state ${openState})`);
+                return;
+            }
+            logLab("verb:npc-handoff", `door ${target.toString(16)}: ${caster.toString(16)}'s crossing reported while the door is ${openState === OpenState.Opening ? "opening" : "closing"} (his host's report, D6)`);
         }
 
         // the player's own activation of a game-file item asks the server for
@@ -299,6 +309,23 @@ export class ActivationService extends ClientListener {
   // (crossUnwatched, crossing (iii)), and goes to those branches as before
   // otherwise. True when this branch took the event; an activate event's
   // context, so the game reads are legal here
+  // whether a door is a load door, by the platform's read of its link: a door
+  // not read yet is asked for (pollLinkedDoors) and answers no this time, and
+  // the walker tries the door again after the engine's blocked package
+  private isLoadDoor(localId: number): boolean {
+    if (typeof this.sp.linkedDoorOf !== "function") {
+      return false;
+    }
+    const pair = this.sp.linkedDoorOf(localId);
+    if (pair === null) {
+      if (typeof this.sp.pollLinkedDoors === "function") {
+        this.sp.pollLinkedDoors([localId]);
+      }
+      return false;
+    }
+    return pair !== 0;
+  }
+
   private reportArrival(e: ActivateEvent, caster: number, target: number): boolean {
     if (caster > LAST_GAME_FILE_ID || target > LAST_GAME_FILE_ID || typeof this.sp.linkedDoorOf !== "function") {
       return false;

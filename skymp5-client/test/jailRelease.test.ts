@@ -1,5 +1,5 @@
 // A served jail term's release, through JailService's own paths (src/services/services/jailService.ts): the server's
-// term kept on the service, this seat's own login spawn settled (RemoteServer's ownSpawnSettled), and the update that
+// JailTerm kept by the service's handler, this seat's own login spawn settled (RemoteServer's ownSpawnSettled), and the update that
 // runs the engine's own release on this game. The platform module is a stand-in loaded under its name; the hold's
 // crime faction, which records the Papyrus calls made on it, is this file's. The release is the engine's fine path with
 // the bounty cleared first: PayFine takes the bounty's gold (none) and, with goToJail, the player's next update runs
@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import type { JailService as JailServiceClass } from "../src/services/services/jailService";
+import { MsgType } from "../src/messages";
 
 // Skyrim.esm's CrimeFactionWhiterun
 const WHITERUN = 0x267ea;
@@ -74,8 +75,10 @@ const seat = () => {
   const jail: any = new JailService(sp, controller);
   const update = () => (handlers.update ?? []).forEach((fn) => fn());
   const raise = (name: string, e?: unknown) => (messages[name] ?? []).forEach((fn) => fn(e));
-  // the server's term as the service keeps it from its JailTerm
-  const served = (isServed: boolean) => { jail.term = { faction: WHITERUN, releaseAt: 2.645, served: isServed }; };
+  // the server's JailTerm for this game's player, through the service's own handler
+  const served = (isServed: boolean) => raise("jailTermMessage", {
+    message: { t: MsgType.JailTerm, faction: WHITERUN, releaseAt: 2.645, served: isServed },
+  });
   return { jail, update, raise, served };
 };
 

@@ -187,7 +187,10 @@ export class RelayedActivationService extends ClientListener {
     this.controller.once('update', () => {
       const trigger = ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(target)));
       const cell = trigger?.getParentCell()?.getFormID() ?? 0;
-      this.controller.lookupListener(ScriptStateService).afterHosting(cell, () => this.playEntry(target, caster, entry));
+      // a script override of the trigger the server sent ahead of this entry
+      // (the state a player's own record decides) is applied first
+      const scripts = this.controller.lookupListener(ScriptStateService);
+      scripts.afterHosting(cell, () => scripts.afterOverride(remoteIdToLocalId(target), () => this.playEntry(target, caster, entry)));
     });
   }
 

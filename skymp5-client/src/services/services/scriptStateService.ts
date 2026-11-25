@@ -6,12 +6,14 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { GraphVar, ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
 import { ScriptStateMessage } from "../messages/scriptStateMessage";
+import { ScriptStateOverrideMessage } from "../messages/scriptStateOverrideMessage";
 import { ScriptHandle, ScriptObjectState, ScriptValue, ScriptVar } from "../messages/scriptStateTypes";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
 import { SpSnippetService } from "./spSnippetService";
 import { graphRestore } from "../../sync/graphRestore";
+import { overrideByName } from "../../sync/scriptOverride";
 
 // thuum docs/DECISIONS.md ADR-068 decision 5 and amendment A (rung 3, the
 // script record; docs/research/rung3-script-record-2026-11-06.md 1(d)): a
@@ -222,8 +224,20 @@ type Pass = {
     failed: string[];           // the records it gave up before the gate (a final refusal, a throw), for the gate's line
 };
 
+// a script override from the server, held until this game's copy takes it
+// (thuum ADR-088: the state of a world object's scripts a player's own record
+// decides, put back on the owner's copy by name), with the relayed entries
+// that wait for it (afterOverride)
+type HeldOverride = {
+    m: ScriptStateOverrideMessage;
+    receivedAt: number;
+    nextTryAt: number;
+    busy: string;       // the last busy read's text, or the last refusal's, for the give-up line
+    waiting: Array<() => void>;
+};
+
 type ReadAnswer =
-    | { kind: "record"; fnv: number; scripts: ScriptObjectState[]; vars: number }
+    | { kind: "record"; fnv: number; scripts: ScriptObjectState[]; vars: number; names: string[][] }
     | { kind: "busy"; busy: string }
     | { kind: "bad"; why: string };
 
@@ -407,7 +421,19 @@ const parseRead = (raw: string): ReadAnswer => {
     for (const s of scripts) {
         vars += s.vars.length;
     }
-    return { kind: "record", fnv: fnv >>> 0, scripts, vars };
+    return { kind: "record", fnv: fnv >>> 0, scripts, vars, names: namesOf(r["scripts"]) };
+};
+
+// the read's lab-only names, each script's declared variable names in its
+// vars' positions ([] for a script whose names are absent or not strings)
+const namesOf = (v: unknown): string[][] => {
+    if (!Array.isArray(v)) {
+        return [];
+    }
+    return v.map((s) => {
+        const names = s && typeof s === "object" ? (s as Record<string, unknown>)["names"] : undefined;
+        return Array.isArray(names) && names.every((n) => typeof n === "string") ? (names as string[]) : [];
+    });
 };
 
 // ApplyScriptState's answer: {applied, scripts[], resolved, none, seatLocal,
@@ -512,6 +538,7 @@ export class ScriptStateService extends ClientListener {
         // "touch" rows where they are made
         this.setTouches(this.enabled);
         this.controller.emitter.on("scriptStateApplyMessage", (e) => this.onRecord(e));
+        this.controller.emitter.on("scriptStateOverrideMessage", (e) => this.onOverride(e));
         this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.controller.emitter.on("createActorMessage", (e) => this.onOwnActor(e));
         this.controller.on("update", () => this.onUpdate());
@@ -629,6 +656,116 @@ export class ScriptStateService extends ClientListener {
             return;
         }
         this.controller.once("update", run);
+    }
+
+    // RelayedActivationService's, for a relayed entry: `run` at once, or, while
+    // a script override of the reference is held here, once it is applied or
+    // given up, so the entry runs the scripts in the state the override sets
+    afterOverride(localId: number, run: () => void): void {
+        const o = this.overrides.get(localId);
+        if (o) {
+            o.waiting.push(run);
+            return;
+        }
+        run();
+    }
+
+    // a script override from the server (a message handler: JS state alone,
+    // the read and the apply wait for the update): thuum ADR-088, the state of
+    // a world object's scripts a player's own record decides, put back by name
+    // on this game's copy, which this game runs as the object's owner. A newer
+    // override replaces a held one; the entries waiting for it wait on
+    private onOverride(e: ConnectionMessage<ScriptStateOverrideMessage>): void {
+        const m = e.message;
+        const hex = m.refrId.toString(16);
+        if (!this.enabled || this.applyMissing || this.serializeMissing) {
+            logTrace(this, `script override ${hex} not applied here (${this.enabled ? "a script-state native is unavailable on this platform" : "scriptRecord is off"})`);
+            return;
+        }
+        if (m.refrId === 0 || m.refrId > LAST_GAME_FILE_ID || !Array.isArray(m.scripts) || m.scripts.length === 0) {
+            logError(this, `script override ${hex}: dropped, not a game-file reference's id or no script`);
+            return;
+        }
+        const old = this.overrides.get(m.refrId);
+        this.overrides.set(m.refrId, { m, receivedAt: Date.now(), nextTryAt: 0, busy: "", waiting: old ? old.waiting : [] });
+    }
+
+    // each held override: this game's own read of the reference, the override
+    // set over it by name, then the result applied as the record's scripts
+    // are (ApplyScriptState, under the VM's locks). A busy read or apply tries
+    // again after BUSY_RETRY_MS, within BUSY_WINDOW_MS of the override; at the
+    // apply, the give-up or a final refusal its waiting entries run
+    private applyOverrides(now: number): void {
+        for (const [id, o] of Array.from(this.overrides)) {
+            if (now < o.nextTryAt) {
+                continue;
+            }
+            const hex = id.toString(16);
+            const done = (line: string, error: boolean) => {
+                this.overrides.delete(id);
+                if (error) {
+                    logError(this, `script override ${hex}: ${line}`);
+                } else {
+                    logLab(TAG, `script override ${hex}: ${line}`);
+                }
+                for (const run of o.waiting) {
+                    run();
+                }
+            };
+            const wait = (why: string) => {
+                if (now - o.receivedAt >= BUSY_WINDOW_MS) {
+                    done(`given up after ${now - o.receivedAt} ms (${why}); its ${o.waiting.length} waiting entry(ies) run on the copy as it stands`, true);
+                    return;
+                }
+                o.busy = why;
+                o.nextTryAt = now + BUSY_RETRY_MS;
+            };
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+            if (!refr) {
+                wait("no reference here");
+                continue;
+            }
+            let raw: unknown;
+            try {
+                raw = this.sp.callNative("TESModPlatform", "SerializeScriptState", undefined, refr);
+            } catch (e) {
+                done(`not applied, SerializeScriptState threw (${String(e).slice(0, 60)})`, true);
+                continue;
+            }
+            const read = typeof raw === "string" && raw !== "" ? parseRead(raw) : ({ kind: "bad", why: "the native refused the read (the platform log has the reason)" } as ReadAnswer);
+            if (read.kind === "busy") {
+                wait(`busy: ${read.busy}`);
+                continue;
+            }
+            if (read.kind === "bad") {
+                done(`not applied, ${read.why}`, true);
+                continue;
+            }
+            const merged = overrideByName(read.scripts, read.names, o.m.scripts);
+            let applied: unknown;
+            try {
+                applied = this.sp.callNative("TESModPlatform", "ApplyScriptState", undefined, refr, JSON.stringify(merged.scripts));
+            } catch (e) {
+                this.applyGone(e);
+                done("not applied, ApplyScriptState is unavailable on this platform", true);
+                continue;
+            }
+            const answer = typeof applied === "string" ? parseApply(applied) : undefined;
+            if (!answer) {
+                done(`not applied, the native answered ${typeof applied === "string" ? `no JSON object (${applied.slice(0, 60)})` : `no string (${typeof applied})`}`, true);
+                continue;
+            }
+            if (!answer.applied) {
+                if (answer.retry) {
+                    wait(answer.reason !== "" ? answer.reason : "refused");
+                } else {
+                    done(`not applied, final: ${answer.reason !== "" ? answer.reason : "refused"}`, true);
+                }
+                continue;
+            }
+            const named = o.m.scripts.map((p) => `${p.type} to "${p.state}"${p.vars.length > 0 ? ` with ${p.vars.map((v) => v.name).join(", ")}` : ""}`).join("; ");
+            done(`put back by name (${named})${merged.left.length > 0 ? `, left: ${merged.left.join(", ")}` : ""}${answer.reason !== "" ? ` (${answer.reason})` : ""}; ${o.waiting.length} waiting entry(ies) run`, false);
+        }
     }
 
     // a record of the reference was applied by the cell's last grant's pass
@@ -771,6 +908,7 @@ export class ScriptStateService extends ClientListener {
             this.queueResend(id, h.marked ? h.carried.concat(this.release(id)) : h.carried);
         });
         this.held.clear();
+        this.overrides.clear();
         this.views.clear();
         this.passes.clear();
         this.grantApplied.clear();
@@ -809,6 +947,9 @@ export class ScriptStateService extends ClientListener {
             return;
         }
         const now = Date.now();
+        if (this.overrides.size > 0) {
+            this.applyOverrides(now);
+        }
         if (this.passes.size > 0) {
             this.runPasses(now);
         }
@@ -1810,6 +1951,7 @@ export class ScriptStateService extends ClientListener {
     private refusals = 0;
     private dueDropped = 0;
     private serializeMissing = false;
+    private overrides = new Map<number, HeldOverride>();
     private applyMissing = false;
     private sendEventMissing = false;
     private pendingMissing = false;

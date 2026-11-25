@@ -1000,8 +1000,12 @@ void InstallHostedResurrectHook()
  * target that is not the player becomes no-ops so the call's thunk decides;
  * and the noise's distance and the projectile watch, whose
  * `mov rcx, [player]` becomes a call to a stub that passes the target (r14)
- * to FigureNoiseCompared, then `xchg rax, rcx`. Volatile registers are dead
- * at all three (each is followed by a call, or by code that writes them
+ * to FigureNoiseCompared, then `xchg rax, rcx`; and the in-combat sight
+ * test, whose `cmp r14, [player]` and `jz` become a call to a stub that
+ * passes the target to FigureSightCounts, then `test al, al` and `jnz` to
+ * the jump's own target, so a detector fighting someone else sees a figure
+ * at its whole sight distance as it sees the player. Volatile registers are
+ * dead at all four (each is followed by a call, or by code that writes them
  * before reading). AE only, 1.6.1170's code: a site whose bytes differ
  * leaves the function unwritten. Written at plugin load, before any
  * detection runs; the thunks run on the detection job's threads, so they
@@ -1012,6 +1016,7 @@ namespace {
 // as the sites' own instructions name it
 std::uintptr_t g_figureNoisePlayer = 0;
 std::atomic<std::uint64_t> g_figureNoiseGateReads{ 0 };
+std::atomic<std::uint64_t> g_figureSightReads{ 0 };
 
 FigureNoise::Target FigureNoiseTarget(RE::Actor* a_target)
 {
@@ -1061,6 +1066,25 @@ RE::Actor* FigureNoiseCompared(RE::Actor* a_target)
     FigureNoiseTarget(a_target), reinterpret_cast<std::uintptr_t>(a_target),
     player));
 }
+
+// the in-combat sight test: whether the target counts as the player, so
+// the detector's sight distance skips the share for a combatant's
+// non-target; a figure's answer logs the detector and whether it is in
+// combat, the first five and every thousandth
+bool FigureSightCounts(RE::Actor* a_target, RE::Actor* a_detector)
+{
+  const FigureNoise::Target t = FigureNoiseTarget(a_target);
+  if (t.isPlayerFigure) {
+    const uint64_t n = ++g_figureSightReads;
+    if (n <= 5 || n % 1000 == 0) {
+      logger::info("[verb:figure-noise] {:x} sees figure {:x} at the "
+                   "player's whole sight distance: in combat {} (read {})",
+                   a_detector ? a_detector->formID : 0, a_target->formID,
+                   a_detector && a_detector->IsInCombat(), n);
+    }
+  }
+  return FigureNoise::CountsAsPlayer(t);
+}
 }
 
 void InstallFigureNoiseHooks()
@@ -1097,11 +1121,23 @@ void InstallFigureNoiseHooks()
     trampoline.write_call<5>(entry + site,
                              reinterpret_cast<std::uintptr_t>(stub));
   }
+
+  const auto sightBytes = FigureNoise::SightStub(
+    reinterpret_cast<std::uint64_t>(&FigureSightCounts));
+  void* sightStub = trampoline.allocate(sightBytes.size());
+  std::memcpy(sightStub, sightBytes.data(), sightBytes.size());
+  REL::safe_write(entry + FigureNoise::kCombatSight + 5,
+                  FigureNoise::kCombatSightTail.data(),
+                  FigureNoise::kCombatSightTail.size());
+  trampoline.write_call<5>(entry + FigureNoise::kCombatSight,
+                           reinterpret_cast<std::uintptr_t>(sightStub));
   logger::info("[verb:figure-noise] hearing hooks installed: a figure counts "
                "as the player at CalculateDetection's gate (+{:x}), noise "
-               "distance (+{:x}) and projectile watch (+{:x})",
+               "distance (+{:x}), projectile watch (+{:x}) and in-combat "
+               "sight test (+{:x}, its whole distance at +{:x})",
                FigureNoise::kGateCall, FigureNoise::kNoiseDistance,
-               FigureNoise::kProjectileWatch);
+               FigureNoise::kProjectileWatch, FigureNoise::kCombatSight,
+               found->combatSightWhole - entry);
 }
 
 /**

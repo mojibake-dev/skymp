@@ -83,6 +83,9 @@ std::vector<std::uint8_t> Code()
   std::copy(FigureNoise::kProjectileWatchBytes.begin(),
             FigureNoise::kProjectileWatchBytes.end(),
             code.begin() + FigureNoise::kProjectileWatch);
+  std::copy(FigureNoise::kCombatSightBytes.begin(),
+            FigureNoise::kCombatSightBytes.end(),
+            code.begin() + FigureNoise::kCombatSight);
   return code;
 }
 }
@@ -113,6 +116,33 @@ TEST_CASE("CalculateDetection is left unwritten when any of its three sites "
        { FigureNoise::kGate + 8, FigureNoise::kGateCall + 2,
          FigureNoise::kNoiseDistance + 4,
          FigureNoise::kProjectileWatch + 11 }) {
+    auto code = Code();
+    code[at] ^= 0xff;
+    REQUIRE_FALSE(FigureNoise::Find(code.data(), 0x140690870).has_value());
+  }
+}
+
+TEST_CASE("An NPC fighting someone else sees a guest at the player's whole "
+          "sight distance: the hooks find CalculateDetection's in-combat "
+          "sight test and where its jump past the share lands",
+          "[FigureNoise]")
+{
+  // 1.6.1170 at its preferred base: the jump at +0x171 lands at +0x1ae
+  const auto found = FigureNoise::Find(Code().data(), 0x140690870);
+  REQUIRE(found.has_value());
+  REQUIRE(found->combatSightWhole == 0x140690a1e);
+  const auto moved = FigureNoise::Find(Code().data(), 0x7ff700690870);
+  REQUIRE(moved.has_value());
+  REQUIRE(moved->combatSightWhole == 0x7ff700690a1e);
+}
+
+TEST_CASE("CalculateDetection is left unwritten when its in-combat sight "
+          "test holds other bytes",
+          "[FigureNoise]")
+{
+  for (const std::size_t at :
+       { FigureNoise::kCombatSight + 1, FigureNoise::kCombatSight + 4,
+         FigureNoise::kCombatSight + 8 }) {
     auto code = Code();
     code[at] ^= 0xff;
     REQUIRE_FALSE(FigureNoise::Find(code.data(), 0x140690870).has_value());

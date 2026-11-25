@@ -1495,9 +1495,13 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
                  ids.empty() ? std::string("none")
                              : fmt::format("{}", fmt::join(ids, ", ")));
   }
+  // thuum docs/verbs/guest-witness.md: the actor's detection of each player is
+  // its host's engine's too (R2, the wire's shape checked, not recorded); a
+  // report carries it only on a change, so its relay goes reliable as well
+  const bool carriesDetects = msg.detects.has_value();
   // the message itself to every listener with a user but the host, whose
   // puppets aim, make the face and play the effects' looks; unreliable but
-  // for a report that carries the effects
+  // for a report that carries the effects or the detection
   const auto relay = [&]() {
     HostedActorStateMessage out = msg;
     out.idx = actor->GetIdx();
@@ -1506,7 +1510,7 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
           listener->GetUserId() == Networking::InvalidUserId) {
         continue;
       }
-      listener->SendToUser(out, carriesEffects);
+      listener->SendToUser(out, carriesEffects || carriesDetects);
     }
   };
 
@@ -1517,10 +1521,10 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   auto& [since, taken, dropped] = lines[actor->GetFormId()];
   if (verdict.dead) {
     ++dropped;
-    // the values are dropped; a change of the effects still reaches the
-    // other games (their gaze and face read a puppet's, and a body here is
-    // released from the puppet state after its ragdoll)
-    if (carriesEffects) {
+    // the values are dropped; a change of the effects or the detection
+    // still reaches the other games (their gaze and face read a puppet's, and
+    // a body here is released from the puppet state after its ragdoll)
+    if (carriesEffects || carriesDetects) {
       relay();
     }
   } else {

@@ -1,0 +1,26 @@
+# difftest script-override (thuum ADR-088, docs/verbs/word-wall.md; docs/
+# WIRE.md's ScriptStateOverride, MsgType 89, wire id 97): ScriptStateOverride
+# is the server's word to a world object's owner alone. At 2 s c1 sends one
+# itself, Bleak Falls Sanctum's word wall trigger 0x709d2 (461266) put back to
+# its empty state with its learned flag false: the wire server's transport
+# refuses it by direction (E_TX_DIRECTION, a server-to-client message from a
+# client) before any validator or rule, relays it to nobody and answers
+# nothing; the legacy server knows no MsgType 89 and drops it. The happy path
+# (a player who lacks the word reporting a fired wall gets the override to the
+# cell's host, then the relayed entry) is T0's (unit/WordWallOverrideTest.cpp):
+# a difftest step is a move or a send, and neither places a client inside the
+# Sanctum's trigger. c2 steps aside at 4 s so it outlives c1, as in every
+# session.
+id: script-override
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 89, refrId: 461266, scripts: [{type: WordWallTriggerScript, state: "", vars: [{name: "::wordLearned_var", k: 5, b: false}]}]}, reliable: true}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

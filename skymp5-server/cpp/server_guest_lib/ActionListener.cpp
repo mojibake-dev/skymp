@@ -8551,12 +8551,15 @@ void ActionListener::OnLinkedActivation(const RawMessageData& rawMsgData,
                  targetId, *cell, std::string(firing.why));
     return;
   }
-  const auto children =
-    partOne.worldState.activationChildsByActivationParent.find(casterId);
-  if (children ==
-        partOne.worldState.activationChildsByActivationParent.end() ||
-      children->second.find(targetPtr->GetFormId()) ==
-        children->second.end()) {
+  // a link is the target's XAPR naming the caster, or the caster's script
+  // naming the target as an object property
+  const auto names = [&](const auto& table) {
+    const auto links = table.find(casterId);
+    return links != table.end() &&
+      links->second.count(targetPtr->GetFormId()) > 0;
+  };
+  if (!names(partOne.worldState.activationChildsByActivationParent) &&
+      !names(partOne.worldState.scriptActivationLinks)) {
     spdlog::info("[verb:traps] E_TRAP_UNLINKED: {:x} reports {:x} activating "
                  "{:x}, whose activation parents do not name it",
                  reporter.GetFormId(), casterId, targetId);

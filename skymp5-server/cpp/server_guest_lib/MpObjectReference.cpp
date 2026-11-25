@@ -2486,15 +2486,15 @@ void MpObjectReference::Init(WorldState* parent, uint32_t formId,
       parent->activationChildsByActivationParent[activationParent].insert(
         { refrId, info.delay });
     }
-    // thuum docs/DECISIONS.md ADR-059 decision 2: a link a script carries as a
-    // property joins the same table, from the parent's side and with no
-    // delay (a script's Activate is immediate). Bleak Falls Temple's puzzle
-    // lever 0xaa8c3 carries defaultPillarPuzzleLever: refActOnSuccess01 and
-    // refActOnFailure01..04 are the portcullis and the dart traps it fires,
-    // puzzleDoorActivator the marker whose activation parents open the gate
-    // (lab/esm.py's VMAD decode, 2026-11-01). So the host's report of that
-    // script's Activate on them is a linked activation the server knows
-    // (ActionListener::OnLinkedActivation), not E_TRAP_UNLINKED.
+    // a link a script carries as an object property goes into its own table
+    // (WorldState::scriptActivationLinks), never the XAPR one: the script
+    // picks which of them to activate and when (defaultPillarPuzzleLever's
+    // doorOrDarts: refActOnSuccess01, the portcullis, through
+    // puzzleDoorActivator on a solved puzzle, or refActOnFailure01..04, the
+    // dart ports, on a failed one), so ActivateChilds must not fire them with
+    // the object's activation. The table lets the host's report of the
+    // script's own Activate on one pass ActionListener::OnLinkedActivation's
+    // link check.
     if (lookupRes.rec) {
       espm::ScriptData scriptData;
       lookupRes.rec->GetScriptData(&scriptData, parent->GetEspmCache());
@@ -2521,9 +2521,8 @@ void MpObjectReference::Init(WorldState* parent, uint32_t formId,
               name != "puzzledooractivator") {
             continue;
           }
-          const auto child = lookupRes.ToGlobalId(property.value.formId);
-          parent->activationChildsByActivationParent[refrId].insert(
-            { child, 0.f });
+          parent->scriptActivationLinks[refrId].insert(
+            lookupRes.ToGlobalId(property.value.formId));
         }
       }
     }
@@ -3491,10 +3490,9 @@ void MpObjectReference::ActivateChilds()
       MpObjectReference* childRefr =
         childForm ? childForm->AsObjectReference() : nullptr;
       if (!childRefr) {
-        // thuum playtest 47: a static marker child (an XMarker, a scene's
-        // spot) is no object the server models and has nothing to activate,
-        // so its absence is told at info; any other missing child stays a
-        // warning (the puzzle lever 0xaa8c3's 0x3e728 logged one per pull)
+        // a static marker child (an XMarker, a scene's spot) is no object
+        // the server models and has nothing to activate, so its absence is
+        // told at info; any other missing child stays a warning
         if (IsStaticMarker(*worldState, childRefrId)) {
           spdlog::info("MpObjectReference::ActivateChilds {:x} - activation "
                        "child {:x} is a static marker, nothing to activate",

@@ -16,6 +16,9 @@ export interface CrosshairHeld {
 // the trace line for an E that found no actor: nothing under the crosshair,
 // or what it held
 export function missLine(held: CrosshairHeld | null): string {
-    void held;
-    return "E: nothing or no actor under the crosshair";
+    if (!held) {
+        return "E: nothing under the crosshair";
+    }
+    return `E: no actor under the crosshair: ${held.formId.toString(16)} (form type ${held.formType}), ` +
+        `base ${held.baseId.toString(16)} (form type ${held.baseType}), ${held.distance.toFixed(0)} units from the player`;
 }

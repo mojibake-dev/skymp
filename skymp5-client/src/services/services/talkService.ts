@@ -8,6 +8,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { VoiceService } from "./voiceService";
 import { PuppetService } from "./puppetService";
+import { missLine } from "../../sync/talkMiss";
 
 // thuum docs/verbs/npc-talk.md (ADR-052): a guest opens dialogue with an NPC
 // another game simulates. The Activate key on a puppet NPC under the
@@ -63,7 +64,17 @@ export class TalkService extends ClientListener {
         const refr = Game.getCurrentCrosshairRef();
         const actor = refr ? Actor.from(refr) : null;
         if (!actor) {
-            logTrace(this, "E: nothing or no actor under the crosshair");
+            // what the crosshair held, so a miss at an actor tells an empty
+            // pick from one that found another reference (a seated actor's
+            // furniture, a door, a static)
+            const base = refr ? refr.getBaseObject() : null;
+            logTrace(this, missLine(refr ? {
+                formId: refr.getFormID(),
+                formType: refr.getType(),
+                baseId: base ? base.getFormID() : 0,
+                baseType: base ? base.getType() : 0,
+                distance: refr.getDistance(Game.getPlayer()),
+            } : null));
             return;
         }
         const localId = actor.getFormID();

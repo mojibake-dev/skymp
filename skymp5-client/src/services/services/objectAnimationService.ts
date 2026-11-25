@@ -503,6 +503,7 @@ export class ObjectAnimationService extends ClientListener {
       if (this.furnitureEnabled && kind === FormType.Furniture) {
         if (this.usedHere(selfId, now)) {
           owner = " (furniture, this seat's use)";
+          this.usesRaised.add(selfId);
         } else if (host.isHostedHere(refr)) {
           owner = " (furniture, cell hosted here)";
         } else {
@@ -582,8 +583,18 @@ export class ObjectAnimationService extends ClientListener {
     }
     if (this.uses.size >= USES_MAX && !this.uses.has(localId)) {
       this.uses.clear();
+      this.usesRaised.clear();
     }
     this.uses.set(localId, Date.now() + USE_MS);
+    this.usesRaised.delete(localId);
+  }
+
+  // whether this seat's open use of the furniture has raised the furniture's
+  // own graph event, reported as this seat's use since the server's
+  // OpenContainer named it here (remoteServer's open: a use that seats
+  // nobody ends there). JS state alone
+  useRaised(localId: number): boolean {
+    return this.usesRaised.has(localId);
   }
 
   // the use ends at this seat's closing activation of it (remoteServer's
@@ -594,7 +605,9 @@ export class ObjectAnimationService extends ClientListener {
     }
     const data = (message as ActivateMessage).data;
     if (data && data.isSecondActivation === true && data.caster === PLAYER_ID) {
-      this.uses.delete(remoteIdToLocalId(data.target));
+      const localId = remoteIdToLocalId(data.target);
+      this.uses.delete(localId);
+      this.usesRaised.delete(localId);
     }
   }
 
@@ -1783,7 +1796,9 @@ export class ObjectAnimationService extends ClientListener {
   private subscribedIdx = new Map<number, number>();
   private keepEnabled: boolean;
   // the furniture path (startFurniture), and this seat's uses by local id,
-  // until when (noteUse, noteClose)
+  // until when (noteUse, noteClose), and those whose use raised its event
+  // (useRaised)
   private furnitureEnabled: boolean;
   private uses = new Map<number, number>();
+  private usesRaised = new Set<number>();
 }

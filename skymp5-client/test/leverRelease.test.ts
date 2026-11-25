@@ -171,3 +171,33 @@ test("a pull of the puzzle lever, which seats nobody, ends its use at the lever'
     Date.now = realNow;
   }
 });
+
+test("a furniture that seats its user, its own event raised while the player waits to sit, ends its use only when the player gets up", async () => {
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const { frame, closing, open } = seat();
+    open();
+    // the engine's sit: the player waits to sit (kWantToSit) through the furniture's own event, sits a second
+    // after the open, and gets up 5 s later
+    sitState = 1;
+    const sitsAt = now + 1000;
+    const standsAt = sitsAt + 5000;
+    for (let t = 0; t < 20_000 && !closing(); t += 100) {
+      if (now >= sitsAt && now < standsAt) {
+        seated = lever;
+        sitState = 3;
+      }
+      if (now >= standsAt) {
+        seated = null;
+        sitState = 0;
+      }
+      await frame(100);
+    }
+    const close = closing();
+    assert.ok(close, "a closing activation is sent");
+    assert.ok(close.at >= standsAt, `the closing activation went ${standsAt - close.at} ms before the player got up`);
+  } finally {
+    Date.now = realNow;
+  }
+});

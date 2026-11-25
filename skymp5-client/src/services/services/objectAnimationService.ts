@@ -651,6 +651,14 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
+  // a graph state restored for the reference stands for every relay at or
+  // below its seq, so a play held for the copy's graph goes; true when one did
+  dropHeldPlay(localId: number): boolean {
+    const had = this.heldPlays.has(localId);
+    this.heldPlays.drop(localId);
+    return had;
+  }
+
   // the held plays, each update: one whose copy's 3D is loaded is played
   // again, and said once when its graph takes it or at the bound. A play
   // taken here is no record of its own: its relay's keep already holds it.

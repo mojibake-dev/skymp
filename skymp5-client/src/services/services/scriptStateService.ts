@@ -11,6 +11,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
 import { SpSnippetService } from "./spSnippetService";
+import { graphRestore } from "../../sync/graphRestore";
 
 // thuum docs/DECISIONS.md ADR-068 decision 5 and amendment A (rung 3, the
 // script record; docs/research/rung3-script-record-2026-11-06.md 1(d)): a
@@ -1089,8 +1090,12 @@ export class ScriptStateService extends ClientListener {
         // relay this seat took) leaves the view to play as before
         let graphText = "";
         let graphRestored = false;
-        if (h.graph !== "" && last !== undefined && last > h.m.seq) {
+        const restore = h.graph !== "" ? graphRestore({ last, seq: h.m.seq, shownHere: animations.shownHere(refr) }) : undefined;
+        if (restore?.why === "past") {
             graphText = `; graph state not restored, a relay past its seq ${h.m.seq} came (seq ${last})`;
+            h.graph = "";
+        } else if (restore?.why === "played") {
+            graphText = `; graph state not restored, the relay of its seq ${h.m.seq} played here`;
             h.graph = "";
         } else if (h.graph !== "") {
             const g = this.applyGraph(refr, h.graph);
@@ -1099,6 +1104,9 @@ export class ScriptStateService extends ClientListener {
                 graphText = `; graph state ${g.how} (${g.bytes} bytes)`;
                 this.setLastGraph(id, fnvOfText(h.graph));
                 h.graph = "";
+                if (restore?.dropHeld && animations.dropHeldPlay(id)) {
+                    graphText += ", its held play dropped";
+                }
             } else if (g.retry) {
                 graphText = `; graph state waits (${g.reason})`;
             } else {

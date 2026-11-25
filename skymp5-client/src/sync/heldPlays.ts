@@ -26,6 +26,10 @@ export class HeldPlays {
     this.held.delete(id);
   }
 
+  has(id: number): boolean {
+    return this.held.has(id);
+  }
+
   // the plays to try now, and the ones past the bound, which go
   due(now: number): { retry: HeldPlay[]; expired: HeldPlay[] } {
     const retry: HeldPlay[] = [];

@@ -40,9 +40,10 @@ const kTimeScaleId = 0x3a;
 //   the newest. The end is the record's, never this game's own clock at the
 //   arrest: a game that did not see the arrest (a relaunch) knows it too.
 //
-// A served term's release is this game's own engine's; the server records the
-// move out and gives the prisoner's belongings back then, so nothing here
-// ends a sentence.
+// - the release: a served term (the server's JailTerm, kept in `term`) is
+//   released by this game's own engine once this connection's login spawn has
+//   settled (releaseIfServed); the server gives the prisoner's own belongings
+//   back when the move out leaves the jail's cell.
 export class JailService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -56,12 +57,49 @@ export class JailService extends ClientListener {
             logTrace(this, `the jail's events are unavailable on this platform (${e}); no arrest or bounty is reported (#97)`);
         }
         this.controller.emitter.on("jailTermMessage", (e) => this.onJailTermMessage(e));
+        this.controller.emitter.on("connectionAccepted", () => { this.spawnSettled = false; });
+        this.controller.emitter.on("ownSpawnSettled", () => { this.spawnSettled = true; });
+        this.controller.on("update", () => this.releaseIfServed());
     }
 
     private onJailTermMessage(e: ConnectionMessage<JailTermMessage>): void {
         const m = e.message;
         this.term = { faction: m.faction, releaseAt: m.releaseAt, served: m.served };
         logLab(TAG, `the server's term by ${m.faction.toString(16)}: ends at day ${m.releaseAt.toFixed(3)} of the shared clock${m.served ? ", served" : ""}`);
+    }
+
+    // A served term is released once this connection's own login spawn has
+    // settled, so the login's re-sent move to the record's spot, inside the
+    // jail, never pulls the released player back. The release is the engine's
+    // own fine path with the hold's bounty cleared first: PayFine then takes
+    // the bounty's gold (none), and its goToJail has the player's next update
+    // run the move out past the jail's door, which clears the sentence and the
+    // prison faction (PayFine 40659 and the move out 40661). Once per term. The
+    // update's context
+    private releaseIfServed(): void {
+        const term = this.term;
+        if (!term || !term.served || !this.spawnSettled) {
+            return;
+        }
+        // the move out is a far move, whose close of an open Dialogue Menu is
+        // a soft hide that can leave the menu on the stack with its input
+        // contexts and the player's controls waiting on its close (40438's
+        // PositionPlayerEvent, MenuTopicManager's sink 35273, DialogueMenu's
+        // ProcessMessage 51506), so it waits for the dialogue to close
+        if (this.sp.Ui.isMenuOpen("Dialogue Menu")) {
+            return;
+        }
+        this.term = undefined;
+        const hex = term.faction.toString(16);
+        const faction = Faction.from(this.sp.Game.getFormEx(term.faction));
+        if (!faction) {
+            logLab(TAG, `the served term by ${hex}: no such faction in this game; not released`);
+            return;
+        }
+        faction.setCrimeGold(0);
+        faction.setCrimeGoldViolent(0);
+        faction.playerPayCrimeGold(false, true);
+        logLab(TAG, `the term by ${hex} served at day ${term.releaseAt.toFixed(3)} of the shared clock: released through the engine's own fine path, its bounty cleared first`);
     }
 
     private onArrest(e: ArrestEvent): void {
@@ -133,4 +171,7 @@ export class JailService extends ClientListener {
     // newest JailTerm), whole; none before the first word or once the term's
     // release has run here
     term: { faction: number; releaseAt: number; served: boolean } | undefined = undefined;
+    // this connection's own login spawn has put the player at the record's
+    // spot (RemoteServer's ownSpawnSettled)
+    private spawnSettled = false;
 }

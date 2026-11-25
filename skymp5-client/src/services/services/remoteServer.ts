@@ -1293,6 +1293,7 @@ export class RemoteServer extends ClientListener {
                 sqr(pos[1] - msg.transform.pos[1]),
               );
               if (distance < 256) {
+                this.controller.emitter.emit("ownSpawnSettled", { how: "moved" });
                 break;
               }
             }
@@ -1379,6 +1380,7 @@ export class RemoteServer extends ClientListener {
               this.controller.lookupListener(TimeService).getLoginTime()
             );
             once('update', () => {
+              this.controller.emitter.emit("ownSpawnSettled", { how: "loaded" });
               applyPcInv();
               Utility.wait(0.3).then(applyPcInv);
               // Note: appearance part was copy-pasted

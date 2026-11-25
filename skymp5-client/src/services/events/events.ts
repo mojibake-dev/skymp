@@ -137,6 +137,9 @@ type EventTypes = {
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],
     // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
     'cellHostChanged': [{ cell: number; hosted: boolean }],
+    // RemoteServer: this connection's own login spawn has put the player at the record's spot (its re-sent move came
+    // within reach, or the save load it ran is in the world), so a move this game's engine makes after it stands
+    'ownSpawnSettled': [{ how: "moved" | "loaded" }],
     // x-quest-runs 20261110-071422's read: PuppetService's stop of a scene the engine played here on a host's puppet, for QuestStageService (the engine's stop of its quest that follows is this seat's own)
     'puppetSceneStopped': [{ quest: number; scene: number }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],

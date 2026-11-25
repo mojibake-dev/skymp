@@ -2164,6 +2164,35 @@ wire_struct! {
         /// subscriber, whose seats play each effect's hit shader and hit
         /// effect art on their puppet of the actor.
         pub effects: Option<Vec<u32, { cap::MAGIC_EFFECTS }>>,
+        /// Since SCHEMA_VERSION 71 (thuum #193, docs/verbs/guest-witness.md).
+        /// The actor's detection of each player whose figure the host's
+        /// engine holds a level of (Actor::RequestDetectionLevel,
+        /// CommonLibSSE-NG include/RE/A/Actor.h:619; another player's figure
+        /// counts as the player in the host's CalculateDetection), ascending
+        /// by player, each once, at most cap::PLAYERS_DETECTED. Present when
+        /// a player's entry came or went, or a level crossed into or out of
+        /// sight (above 0) or moved by ten since the sender's last report,
+        /// absent otherwise (the receiver keeps the last). Absolute, so safe
+        /// to receive twice. The server relays it to the actor's other
+        /// listeners, reliable, and records nothing (R2: the host's engine
+        /// computes it, unvalidated beyond this shape); a guest's engine
+        /// answers its puppet's detection of its own player with its entry,
+        /// so a theft in that actor's view finds a witness in the guest's own
+        /// StealAlarm.
+        pub detects: Option<Vec<PlayerDetection, { cap::PLAYERS_DETECTED }>>,
+    }
+}
+
+wire_struct! {
+    /// One player's detection by a hosted actor, as HostedActorState
+    /// carries it (thuum docs/verbs/guest-witness.md).
+    pub struct PlayerDetection {
+        /// The player's actor as the server knows it, 0xff000000 and up.
+        pub player: u32,
+        /// The level the host's engine holds of that player's figure: -1000
+        /// for none (the engine's level for a detector with no state), seen
+        /// above 0; -1000 to 1000.
+        pub level: i32,
     }
 }
 

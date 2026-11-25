@@ -3,6 +3,8 @@ import { logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ArrestMessage } from "../messages/arrestMessage";
 import { CrimeGoldMessage } from "../messages/crimeGoldMessage";
+import { JailTermMessage } from "../messages/jailTermMessage";
+import { ConnectionMessage } from "../events/connectionMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
 const TAG = "verb:jail";
@@ -30,8 +32,13 @@ const kTimeScaleId = 0x3a;
 //   second corrects to the values the server holds.
 // - servePrisonTime (the platform's, the jail bed's serve, which never runs:
 //   its time skip would be this game's alone): the sentence is waited out on
-//   the shared clock, and the player is told how much of it is left as this
-//   game knows it.
+//   the shared clock, and the player is told how much of it is left from the
+//   term the server holds.
+// - jailTermMessage (the server's JailTerm): the term as the server's record
+//   holds it, its end on the shared clock, at the arrest's record, at every
+//   login while it stands and once when the clock passes the end; kept whole,
+//   the newest. The end is the record's, never this game's own clock at the
+//   arrest: a game that did not see the arrest (a relaunch) knows it too.
 //
 // - the release: a served term (the server's JailTerm, kept in `term`) is
 //   released by this game's own engine once this connection's login spawn has
@@ -49,9 +56,16 @@ export class JailService extends ClientListener {
         } catch (e) {
             logTrace(this, `the jail's events are unavailable on this platform (${e}); no arrest or bounty is reported (#97)`);
         }
+        this.controller.emitter.on("jailTermMessage", (e) => this.onJailTermMessage(e));
         this.controller.emitter.on("connectionAccepted", () => { this.spawnSettled = false; });
         this.controller.emitter.on("ownSpawnSettled", () => { this.spawnSettled = true; });
         this.controller.on("update", () => this.releaseIfServed());
+    }
+
+    private onJailTermMessage(e: ConnectionMessage<JailTermMessage>): void {
+        const m = e.message;
+        this.term = { faction: m.faction, releaseAt: m.releaseAt, served: m.served };
+        logLab(TAG, `the server's term by ${m.faction.toString(16)}: ends at day ${m.releaseAt.toFixed(3)} of the shared clock${m.served ? ", served" : ""}`);
     }
 
     // A served term is released once this connection's own login spawn has
@@ -95,9 +109,6 @@ export class JailService extends ClientListener {
             days: e.days,
         };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
-        // the sentence's end as this game's clock reads it, for the bed's
-        // answer (the server's own end is the record's)
-        this.releaseAt = this.sp.Utility.getCurrentGameTime() + e.days;
         logLab(TAG, `arrested by ${e.factionId.toString(16)} for ${e.days} day(s): Arrest sent (tracker #97)`);
     }
 
@@ -129,7 +140,9 @@ export class JailService extends ClientListener {
     }
 
     private onServePrisonTime(e: ServePrisonTimeEvent): void {
-        const left = this.releaseAt === undefined ? undefined : this.releaseAt - this.sp.Utility.getCurrentGameTime();
+        // the record's end on the shared clock, which sets this game's clock
+        const term = this.term;
+        const left = term === undefined || term.served ? undefined : term.releaseAt - this.sp.Utility.getCurrentGameTime();
         if (left !== undefined && left > 0) {
             const hours = Math.ceil(left * 24);
             this.sp.Debug.notification(`Your sentence is served in time, not in sleep: about ${hours} hour(s)${this.realTimeOf(left)} left`);
@@ -154,10 +167,9 @@ export class JailService extends ClientListener {
 
     // the bounty per faction last sent, so each change goes once
     private sent = new Map<number, { violent: number; nonViolent: number }>();
-    // the sentence's end on this game's clock (game days), from its arrest
-    private releaseAt: number | undefined = undefined;
-    // the server's term for this game's player (its JailTerm), overwritten
-    // whole by each; undefined once released or with none
+    // this game's player's jail term as the server's record holds it (the
+    // newest JailTerm), whole; none before the first word or once the term's
+    // release has run here
     term: { faction: number; releaseAt: number; served: boolean } | undefined = undefined;
     // this connection's own login spawn has put the player at the record's
     // spot (RemoteServer's ownSpawnSettled)

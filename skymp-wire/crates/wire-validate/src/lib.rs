@@ -1692,6 +1692,19 @@ fn check_script_variables(m: &skymp::ScriptVariables) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's jail term as the server's record holds it: a crime faction,
+/// never 0, and its end on the shared clock, finite and at least 0; the
+/// transport refuses it from a client by direction.
+fn check_jail_term(m: &skymp::JailTerm) -> Result<(), Reject> {
+    if !m.release_at.is_finite() {
+        return Err(Reject::NonFinite);
+    }
+    if m.faction == 0 || m.release_at < 0.0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -2691,6 +2704,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::LockReport(m) => check_lock_report(m),
         Message::LockPrompt(m) => check_lock_prompt(m),
         Message::SetWeather(m) => check_set_weather(m),
+        Message::JailTerm(m) => check_jail_term(m),
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
@@ -4940,6 +4954,19 @@ mod tests {
     }
 
     #[test]
+    fn jail_terms_name_a_faction_and_a_finite_end() {
+        use wire_schema::skymp::JailTerm;
+        let term = |faction, release_at, served| Message::JailTerm(JailTerm { faction, release_at, served, ..Default::default() });
+        assert_eq!(validate_server(&term(0x267ea, 2.615, false)), Ok(()));
+        assert_eq!(validate_server(&term(0x267ea, 2.615, true)), Ok(()));
+        assert_eq!(validate_server(&term(0x267ea, 0.0, true)), Ok(()), "a term ending at the clock's start");
+        assert_eq!(validate_server(&term(0, 2.615, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&term(0x267ea, -1.0, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&term(0x267ea, f32::NAN, false)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&term(0x267ea, f32::INFINITY, true)), Err(Reject::NonFinite));
+    }
+
+    #[test]
     fn weather_words_name_a_place_and_may_release() {
         use wire_schema::skymp::SetWeather;
         let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
@@ -5204,6 +5231,20 @@ mod tests {
             prop_assert_eq!(validate_server(&m), want);
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
+        }
+
+        #[test]
+        fn jail_terms_never_panic(faction in any::<u32>(), release_at in any::<f32>(), served in any::<bool>()) {
+            use wire_schema::skymp::JailTerm;
+            let m = Message::JailTerm(JailTerm { faction, release_at, served, ..Default::default() });
+            let want = if !release_at.is_finite() {
+                Err(Reject::NonFinite)
+            } else if faction == 0 || release_at < 0.0 {
+                Err(Reject::Range)
+            } else {
+                Ok(())
+            };
+            prop_assert_eq!(validate_server(&m), want);
         }
 
         #[test]

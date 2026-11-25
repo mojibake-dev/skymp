@@ -286,6 +286,10 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("setWeatherMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.JailTerm) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("jailTermMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.PerkState) {
             const event = { message: msgAny };
             this.controller.emitter.emit("perkStateMessage", event);

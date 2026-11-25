@@ -27,6 +27,7 @@
 #include "DestructionStageMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
+#include "JailTermMessage.h"
 #include "PerkStateMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
@@ -506,6 +507,9 @@ struct PartOne::Impl
   std::map<std::pair<uint32_t, uint32_t>, std::vector<uint64_t>> friendHits;
   std::chrono::steady_clock::time_point lastFateRespawnsTick;
   std::chrono::steady_clock::time_point lastJailsTick;
+  // the prisoners whose game has been told its term is served since its
+  // login, by form id: told once, then its own game's release
+  std::unordered_set<uint32_t> jailServedTold;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
@@ -10399,6 +10403,7 @@ PartOne::ArrestCheck PartOne::OnArrest(MpActor& prisoner, uint32_t faction,
                jail->landingWorldOrCell, jail->evidenceChest,
                jail->belongingsChest, jail->outfit.size(),
                kArrestWindow.count());
+  TellJailTerm(prisoner);
   return ArrestCheck::Recorded;
 }
 
@@ -10689,9 +10694,15 @@ bool PartOne::EndTermIfEscaped(MpActor& prisoner)
     return false;
   }
   // a prisoner never seen in its jail did not escape it (a slow load, a
-  // jump the engine never made): its term runs to its end, which places it
-  // at the release's spot
+  // jump the engine never made): its term runs to its end
   if (!record.jail->arrived) {
+    return false;
+  }
+  // out after the end is its own game's release, which ReleaseIfServed
+  // records
+  const float now =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  if (static_cast<double>(now) >= record.jail->releaseAt) {
     return false;
   }
   // out of the jail before its end, by its own hand or a friend's: an
@@ -10705,6 +10716,73 @@ bool PartOne::EndTermIfEscaped(MpActor& prisoner)
                prisoner.GetFormId(), faction, here, record.jail->releaseAt,
                jail->belongingsChest);
   return true;
+}
+
+bool PartOne::TellJailTerm(MpActor& prisoner)
+{
+  const auto record = prisoner.GetCrimeRecord();
+  if (!record.jail) {
+    return false;
+  }
+  const float now =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  JailTermMessage word;
+  word.faction = record.jail->faction.ToFormId(worldState.espmFiles);
+  word.releaseAt = static_cast<float>(record.jail->releaseAt);
+  word.served = static_cast<double>(now) >= record.jail->releaseAt;
+  prisoner.SendToUser(word, true);
+  if (word.served) {
+    pImpl->jailServedTold.insert(prisoner.GetFormId());
+  }
+  spdlog::info("[verb:jail] {:x} told its term by {:x}: ends at day {:.3f} "
+               "of the shared clock (now {:.3f}){}",
+               prisoner.GetFormId(), word.faction, record.jail->releaseAt, now,
+               word.served ? ", served: its game releases it" : "");
+  return true;
+}
+
+void PartOne::TellJailTermAtLogin(MpActor& prisoner)
+{
+  pImpl->jailServedTold.erase(prisoner.GetFormId());
+  if (!ReleaseIfServed(prisoner)) {
+    TellJailTerm(prisoner);
+  }
+}
+
+size_t PartOne::GiveBackBelongings(MpActor& prisoner, const JailTerm& term,
+                                   const std::optional<JailOfFaction>& jail)
+{
+  // the prisoner's own belongings, each the exact stack its strip put (its
+  // extras included), from the chest's record as far as it still holds it
+  // (another's take leaves less; another prisoner's things of the same base
+  // and extras are indistinguishable from its own, the chest being one)
+  size_t returned = 0;
+  if (!jail || jail->belongingsChest == 0) {
+    return returned;
+  }
+  auto& form = worldState.LookupFormById(jail->belongingsChest);
+  MpObjectReference* chest = form ? form->AsObjectReference() : nullptr;
+  if (!chest) {
+    return returned;
+  }
+  for (const auto& entry : term.belongings.entries) {
+    const uint32_t count =
+      std::min(CountExact(chest->GetInventory(), entry), entry.count);
+    if (count == 0) {
+      continue;
+    }
+    Inventory::Entry back = entry;
+    back.count = count;
+    try {
+      chest->RemoveItems({ back }, &prisoner);
+      returned += count;
+    } catch (std::exception& e) {
+      spdlog::warn("[verb:jail] {:x}'s release: {} of {:x} not given "
+                   "back ({})",
+                   prisoner.GetFormId(), count, entry.baseId, e.what());
+    }
+  }
+  return returned;
 }
 
 bool PartOne::ReleaseIfServed(MpActor& prisoner)
@@ -10722,68 +10800,34 @@ bool PartOne::ReleaseIfServed(MpActor& prisoner)
   const JailTerm term = *record.jail;
   const uint32_t faction = term.faction.ToFormId(files);
   const auto jail = JailOf(faction);
+  const uint32_t here = prisoner.GetCellOrWorld().ToFormId(files);
 
-  // the term ends first, so nothing below can leave it running
-  prisoner.SetJailTerm(std::nullopt);
-
-  // the prisoner's own belongings, each the exact stack its strip put (its
-  // extras included), from the chest's record as far as it still holds it
-  // (another's take leaves less; another prisoner's things of the same base
-  // and extras are indistinguishable from its own, the chest being one)
-  size_t returned = 0;
-  if (jail && jail->belongingsChest != 0) {
-    auto& form = worldState.LookupFormById(jail->belongingsChest);
-    if (MpObjectReference* chest =
-          form ? form->AsObjectReference() : nullptr) {
-      for (const auto& entry : term.belongings.entries) {
-        const uint32_t count =
-          std::min(CountExact(chest->GetInventory(), entry), entry.count);
-        if (count == 0) {
-          continue;
-        }
-        Inventory::Entry back = entry;
-        back.count = count;
-        try {
-          chest->RemoveItems({ back }, &prisoner);
-          returned += count;
-        } catch (std::exception& e) {
-          spdlog::warn("[verb:jail] {:x}'s release: {} of {:x} not given "
-                       "back ({})",
-                       prisoner.GetFormId(), count, entry.baseId, e.what());
-        }
-      }
+  // still in the jail's cell: the release is the prisoner's own game's (the
+  // engine's, out to the far side of the jail's door), started by telling
+  // it the term is served, once; the server moves nothing, so no placement
+  // of its own races the game's
+  if (jail && here == jail->landingWorldOrCell) {
+    if (pImpl->jailServedTold.count(prisoner.GetFormId())) {
+      return false;
     }
+    return TellJailTerm(prisoner);
   }
 
+  // out of the cell after the end, its own game's release made: the term
+  // ends on the record, its own belongings back from the chest, the hold's
+  // bounty cleared (its engine's release cleared its own), the prisoner
+  // where its game put it
+  prisoner.SetJailTerm(std::nullopt);
+  pImpl->jailServedTold.erase(prisoner.GetFormId());
+  const size_t returned = GiveBackBelongings(prisoner, term, jail);
   prisoner.SetCrimeGold(term.faction, 0, 0);
-  TellCrimeGold(prisoner, faction, 0, 0);
-  // the engine's own prison state on the prisoner's game (its prison faction
-  // and sentence, CommonLibSSE-NG PlayerCharacter.h:685-686) cleared by the
-  // engine's own Papyrus global, Game.ClearPrison (Game.psc; the server's VM
-  // has no implementation of it, so it runs in the game here), so its jail
-  // bed and its guards hold it a prisoner no longer
-  const std::vector<std::optional<
-    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-    noArgs;
-  SpSnippet("Game", "ClearPrison", noArgs)
-    .Execute(&prisoner, SpSnippetMode::kNoReturnResult);
-  if (jail) {
-    LocationalData out;
-    out.pos = jail->releasePos;
-    out.rot = jail->releaseRot;
-    out.cellOrWorldDesc =
-      FormDesc::FromFormId(jail->releaseWorldOrCell, files);
-    prisoner.Teleport(out);
-  }
-  spdlog::info(
-    "[verb:jail] {:x} released by {:x} at day {:.3f} (its "
-    "sentence of {} days ended at {:.3f}): {} of its item(s) "
-    "given back, the hold's bounty cleared, placed outside the "
-    "jail's door by marker {:x}: {:x} at ({:.0f}, {:.0f}, {:.0f})",
-    prisoner.GetFormId(), faction, now, term.days, term.releaseAt, returned,
-    jail ? jail->marker : 0, jail ? jail->releaseWorldOrCell : 0,
-    jail ? jail->releasePos.x : 0.f, jail ? jail->releasePos.y : 0.f,
-    jail ? jail->releasePos.z : 0.f);
+  spdlog::info("[verb:jail] {:x} released by {:x} at day {:.3f} (its "
+               "sentence of {} days ended at {:.3f}), its own game's move "
+               "out to {:x} at ({:.0f}, {:.0f}, {:.0f}): {} of its item(s) "
+               "given back, the hold's bounty cleared",
+               prisoner.GetFormId(), faction, now, term.days, term.releaseAt,
+               here, prisoner.GetPos().x, prisoner.GetPos().y,
+               prisoner.GetPos().z, returned);
   return true;
 }
 
@@ -10810,9 +10854,9 @@ void PartOne::TickJailsEverySecond()
       continue;
     }
     MpActor* actor = serverState.ActorByUser(user);
-    // a player still loading is released at its first movement instead
-    // (ActionListener::OnUpdateMovement's login pass), never before its game
-    // is in the world
+    // a player still loading is told its term at its first movement
+    // instead (ActionListener::OnUpdateMovement's login pass), never before
+    // its game is in the world
     if (!actor || actor->IsMapMarkersPending() ||
         !actor->GetCrimeRecord().jail) {
       continue;

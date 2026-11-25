@@ -31,6 +31,13 @@ Napi::Value SetPuppetLocomotion(const Napi::CallbackInfo& info);
 // own speed, move direction and turn rate as the movement step left them
 // (Puppets.h), {speed, directionDeg, turnRateDeg, ageMs} or null
 Napi::Value GetActorLocomotion(const Napi::CallbackInfo& info);
+// setPuppetDetection(actorFormId, level): thuum docs/verbs/guest-witness.md,
+// a puppet's detection of this game's player as its host relayed it, which
+// RequestDetectionLevel answers from then on; null forgets it
+Napi::Value SetPuppetDetection(const Napi::CallbackInfo& info);
+// getDetectionLevels(detectorFormIds, targetFormIds): each detector's level of
+// each target as this game's engine holds it, row by detector
+Napi::Value GetDetectionLevels(const Napi::CallbackInfo& info);
 // getHighProcessActors(): the engine's high-process actors by form id, the
 // game thread's latest snapshot (Puppets.h)
 Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
@@ -394,6 +401,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setPuppetLocomotion",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetPuppetLocomotion)));
+  exports.Set("setPuppetDetection",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetPuppetDetection)));
+  exports.Set("getDetectionLevels",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(GetDetectionLevels)));
   exports.Set("getActorLocomotion",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(GetActorLocomotion)));

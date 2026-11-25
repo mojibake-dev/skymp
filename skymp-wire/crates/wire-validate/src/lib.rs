@@ -1773,6 +1773,16 @@ fn check_hosted_state(m: &skymp::HostedActorState) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
     }
+    // the actor's detection of each player (docs/verbs/guest-witness.md):
+    // each entry a player's actor (0xff000000 and up), strictly ascending by
+    // player (each once), its level within the engine's -1000 to 1000
+    if let Some(detects) = &m.detects {
+        if detects.iter().any(|d| d.player < 0xff00_0000 || !(-1000..=1000).contains(&d.level))
+            || detects.windows(2).any(|w| matches!(w, [a, b] if a.player >= b.player))
+        {
+            return Err(Reject::Range);
+        }
+    }
     Ok(())
 }
 
@@ -3909,6 +3919,34 @@ mod tests {
     // thuum docs/verbs/npc-puppet.md, Ownership: the host's running effects
     // are a set of load-order forms, ascending and each once; absent is the
     // record's last set, empty is none running
+    // thuum docs/verbs/guest-witness.md: a hosted actor's detection of each
+    // player is a player's actor (0xff000000 and up), ascending and each
+    // once, with a level within -1000 to 1000; absent keeps the last
+    #[test]
+    fn a_hosted_states_detects_are_players_ascending_once_within_range() {
+        use wire_schema::skymp::{HostedActorState, PlayerDetection};
+        let with = |entries: &[(u32, i32)]| {
+            let detects: Vec<PlayerDetection> = entries.iter().map(|&(player, level)| PlayerDetection { player, level }).collect();
+            Message::HostedActorState(HostedActorState {
+                idx: 7,
+                health: 1.0,
+                magicka: 1.0,
+                stamina: 1.0,
+                detects: detects.try_into().ok(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&with(&[])), Ok(()));
+        assert_eq!(validate_server(&with(&[(0xff00_0000, -1000), (0xff00_0001, 57)])), Ok(()));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 1000)])), Ok(()));
+        // a game-file actor, a level past either end, out of order, twice
+        assert_eq!(validate_server(&with(&[(0x0001_3487, 57)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 1001)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, -1001)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 3), (0xff00_0000, 3)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 3), (0xff00_0001, 4)])), Err(Reject::Range));
+    }
+
     #[test]
     fn a_hosted_states_effects_are_load_order_forms_ascending_once() {
         use wire_schema::skymp::HostedActorState;

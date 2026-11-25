@@ -326,6 +326,8 @@ declare module "skyrimPlatform" {
     // simulates, the relay's feed for a puppet (null: no sample, or a
     // platform without the step's detour)
     function getActorLocomotion(actorFormId: number): { speed: number; directionDeg: number; turnRateDeg: number; ageMs: number } | null;
+    function setPuppetDetection(actorFormId: number, level: number | null): boolean;
+    function getDetectionLevels(detectorFormIds: number[], targetFormIds: number[]): number[];
     function getHighProcessActors(): number[];
     // thuum tracker #121: the cells the actor's running package names as its
     // location, the game thread's latest snapshot (PuppetService's demote)

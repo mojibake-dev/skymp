@@ -336,6 +336,12 @@ use bounded::{String, Vec};
 /// engine stepped the actor at, so another seat's copy of it turns at that
 /// rate and its graph plays the turn. A 69 peer would misread every
 /// UpdateMovement.
+/// 71: HostedActorState's optional `detects` (thuum #193, docs/verbs/
+/// guest-witness.md): a hosted actor's detection level of each player's
+/// figure, relayed so a guest's engine answers its puppet's detection of its
+/// own player with the host's level and a theft in that actor's view finds a
+/// witness. A 70 peer would misread every HostedActorState (postcard writes
+/// one presence byte per Option).
 /// 72: JailTerm (MsgType 88, wire id 96): a player's jail term as the
 /// server's record holds it, told to that player's own game, its end a time
 /// on the shared clock. A 71 peer has no wire id 96.
@@ -428,6 +434,10 @@ pub mod cap {
     /// Effects running on one actor (thuum docs/verbs/magic-effects.md:
     /// wire-rules magic::MAX_EFFECTS).
     pub const MAGIC_EFFECTS: usize = 32;
+    /// Players one hosted actor's detection is reported for (thuum #193,
+    /// docs/verbs/guest-witness.md): the players whose figure the host's game
+    /// loads, a server's few, with room.
+    pub const PLAYERS_DETECTED: usize = 16;
     /// Globals the server keeps per player (thuum docs/verbs/player-globals.md:
     /// Apocalypse's 55 with room for more mods).
     pub const PLAYER_GLOBALS: usize = 256;
@@ -1052,7 +1062,7 @@ const TABLE: [Row; 97] = [
     // length and 32 ids of five bytes (198 at the caps, pinned by
     // a_hosted_state_with_its_effects_at_the_cap_fits_its_byte_cap; thuum
     // docs/verbs/npc-puppet.md, Ownership)
-    row("HostedActorState", 53, 256, Both),
+    row("HostedActorState", 53, 512, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
     // an idx, the flag and since SCHEMA_VERSION 47 a purpose, three form ids
@@ -1682,9 +1692,10 @@ mod tests {
         assert!(over.is_err());
     }
 
-    // thuum docs/verbs/npc-puppet.md, Ownership: a host's state with its
-    // running effects at the cap fits the row's 256 bytes; an absent set
-    // costs its presence byte alone
+    // thuum docs/verbs/npc-puppet.md, Ownership, and docs/verbs/
+    // guest-witness.md: a host's state with its running effects and its
+    // detection of each player at their caps fits the row's 512 bytes; an
+    // absent list costs its presence byte alone
     #[test]
     fn a_hosted_state_with_its_effects_at_the_cap_fits_its_byte_cap() {
         let widest = skymp::HostedActorState {
@@ -1699,15 +1710,21 @@ mod tests {
             emotion_type: u8::MAX,
             emotion_value: u8::MAX,
             effects: (0..cap::MAGIC_EFFECTS).map(|_| 0xfeff_ffff).collect::<alloc::vec::Vec<_>>().try_into().ok(),
+            detects: (0..cap::PLAYERS_DETECTED)
+                .map(|_| skymp::PlayerDetection { player: u32::MAX, level: i32::MIN })
+                .collect::<alloc::vec::Vec<_>>()
+                .try_into()
+                .ok(),
             ..Default::default()
         };
         assert_eq!(widest.effects.as_ref().map(|e| e.len()), Some(cap::MAGIC_EFFECTS));
+        assert_eq!(widest.detects.as_ref().map(|d| d.len()), Some(cap::PLAYERS_DETECTED));
         let m = Message::HostedActorState(widest.clone());
         let bytes = postcard::to_allocvec(&m).unwrap_or_default();
-        assert_eq!(bytes.len(), 198);
+        assert_eq!(bytes.len(), 360);
         assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
-        let plain = Message::HostedActorState(skymp::HostedActorState { effects: None, ..widest });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(37));
+        let plain = Message::HostedActorState(skymp::HostedActorState { effects: None, detects: None, ..widest });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(38));
     }
 
     #[test]

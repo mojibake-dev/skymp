@@ -69,6 +69,9 @@ struct
   std::vector<uint32_t> highActors;
   // tracker #121: the package destination cells by actor (Puppets.h)
   std::unordered_map<uint32_t, std::vector<uint32_t>> packageCells;
+  // thuum docs/verbs/guest-witness.md: each puppet's detection of this game's
+  // player as its host relayed it (Puppets::SetDetection)
+  std::unordered_map<uint32_t, PuppetDetection::Relayed> detection;
   std::recursive_mutex m;
 } g_puppets;
 
@@ -229,7 +232,35 @@ void Puppets::Set(uint32_t formId, bool puppet)
   } else {
     g_puppets.ids.erase(formId);
     g_puppets.locomotion.erase(formId);
+    g_puppets.detection.erase(formId);
   }
+}
+
+void Puppets::SetDetection(uint32_t formId, std::optional<int32_t> level)
+{
+  std::lock_guard l(g_puppets.m);
+  if (!level) {
+    g_puppets.detection.erase(formId);
+    return;
+  }
+  PuppetDetection::Relayed relayed;
+  relayed.has = true;
+  relayed.level = *level;
+  g_puppets.detection[formId] = relayed;
+}
+
+Puppets::DetectionRead Puppets::ReadDetection(uint32_t formId)
+{
+  std::lock_guard l(g_puppets.m);
+  DetectionRead out;
+  out.isPuppet = g_puppets.ids.count(formId) != 0;
+  if (out.isPuppet) {
+    const auto it = g_puppets.detection.find(formId);
+    if (it != g_puppets.detection.end()) {
+      out.relayed = it->second;
+    }
+  }
+  return out;
 }
 
 size_t Puppets::Count()
@@ -475,6 +506,62 @@ Napi::Value PuppetApi::GetActorLocomotion(const Napi::CallbackInfo& info)
   res.Set("turnRateDeg", Napi::Number::New(info.Env(), sample.turnRateDeg));
   res.Set("ageMs", Napi::Number::New(info.Env(), static_cast<double>(age)));
   return res;
+}
+
+// setPuppetDetection(actorFormId, level): thuum docs/verbs/guest-witness.md, a
+// puppet's detection of this game's player as its host relayed it, which the
+// engine's RequestDetectionLevel answers for that puppet and this game's
+// player from then on (FridaHooks.cpp); null forgets it (the engine's own
+// answer again). Registry only, no game call. true when the actor is a puppet
+// here
+Napi::Value PuppetApi::SetPuppetDetection(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  std::optional<int32_t> level;
+  if (info.Length() > 1 && !info[1].IsUndefined() && !info[1].IsNull()) {
+    const double v = NapiHelper::ExtractDouble(info[1], "level");
+    if (std::isfinite(v)) {
+      level = static_cast<int32_t>(std::clamp(v, -1000.0, 1000.0));
+    }
+  }
+  Puppets::SetDetection(actorFormId, level);
+  return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
+}
+
+// getDetectionLevels(detectorFormIds, targetFormIds): thuum docs/verbs/
+// guest-witness.md, each detector's detection level of each target as this
+// game's engine holds it (Actor::RequestDetectionLevel, CommonLibSSE-NG
+// include/RE/A/Actor.h:619), row by detector, so one call reads a poll's
+// worth; -1000 where either id is no actor here. Called in the update, as the
+// engine's own readers outside its detection job are. HYPOTHESIS: that read
+// beside the job is as safe as Papyrus's IsDetectedBy's
+Napi::Value PuppetApi::GetDetectionLevels(const Napi::CallbackInfo& info)
+{
+  const auto readIds = [&](size_t at, const char* name) {
+    std::vector<uint32_t> ids;
+    if (info.Length() > at && info[at].IsArray()) {
+      auto arr = info[at].As<Napi::Array>();
+      for (uint32_t i = 0; i < arr.Length(); ++i) {
+        ids.push_back(NapiHelper::ExtractUInt32(arr.Get(i), name));
+      }
+    }
+    return ids;
+  };
+  const auto detectors = readIds(0, "detectorFormIds");
+  const auto targets = readIds(1, "targetFormIds");
+  auto out = Napi::Array::New(info.Env(), detectors.size() * targets.size());
+  uint32_t k = 0;
+  for (uint32_t d : detectors) {
+    auto* detector = RE::TESForm::LookupByID<RE::Actor>(d);
+    for (uint32_t t : targets) {
+      auto* target = RE::TESForm::LookupByID<RE::Actor>(t);
+      const int32_t level = detector && target && detector != target
+        ? detector->RequestDetectionLevel(target)
+        : PuppetDetection::kUndetected;
+      out.Set(k++, Napi::Number::New(info.Env(), level));
+    }
+  }
+  return out;
 }
 
 // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set the action hook

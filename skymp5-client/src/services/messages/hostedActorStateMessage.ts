@@ -37,4 +37,10 @@ export interface HostedActorStateMessage {
     // unchanged; the server records it (R2) and relays it, and serves the
     // record to a game that subscribes later (PuppetService plays the looks)
     effects?: number[];
+    // thuum docs/verbs/guest-witness.md: the actor's detection of each player whose figure the host's engine holds a
+    // level of (the player's actor as the server knows it; -1000 for none, seen above 0, at most 1000), ascending by
+    // player, at most 16; present when an entry came or went or a level crossed into or out of sight or moved by ten
+    // (detectionRelay.ts), absent otherwise (a receiver keeps the last); the server relays it reliable, a guest takes
+    // its own player's entry for its puppet's detection (PuppetDetection.h)
+    detects?: { player: number; level: number }[];
 }

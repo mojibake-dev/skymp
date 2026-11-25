@@ -451,6 +451,9 @@ export class RemoteServer extends ClientListener {
       let functionChecker: (() => boolean) | null = null;
       // a bed's own open fact, set on the furniture path alone (F2 below)
       let openedAsBed: (() => boolean) | null = null;
+      // a use that seats nobody, its end, set on the furniture path alone
+      // (below)
+      let usedSeatless: (() => boolean) | null = null;
       let factName = "";
       let delaySeconds = -1.0;
       if (baseType === FormType.Container) {
@@ -474,6 +477,17 @@ export class RemoteServer extends ClientListener {
         // A chair's path is unchanged: its menu never opens.
         // RE::SleepWaitMenu::MENU_NAME (CommonLibSSE-NG include/RE/S/SleepWaitMenu.h:16).
         openedAsBed = () => Ui.isMenuOpen("Sleep/Wait Menu");
+        // a furniture that seats nobody (the puzzle lever 0xaa8c3, FURN
+        // LeverPushAnimatingNoPlayer): the engine's use is the one graph
+        // event it sends the furniture, and its user neither sits nor waits
+        // to sit (SIT_SLEEP_STATE kNormal, CommonLibSSE-NG
+        // include/RE/A/ActorState.h:67), so the use ends at that event.
+        // Waiting for a seat would run the deadline out while the server
+        // holds the occupant and refuses every other pull, which then plays
+        // on no screen. A seated furniture's own events come with its user
+        // sitting or waiting to sit, so its path is unchanged
+        const objectAnimation = this.controller.lookupListener(ObjectAnimationService);
+        usedSeatless = () => objectAnimation.useRaised(localId) && Game.getPlayer()?.getSitState() === 0;
       } else if (baseType === FormType.NPC && Actor.from(refr)?.isDead()) {
         // thuum docs/verbs/npc-fate.md (the deaths): a corpse is a container
         functionChecker = () => Ui.isMenuOpen("ContainerMenu");
@@ -501,11 +515,16 @@ export class RemoteServer extends ClientListener {
         const kOpenDeadlineMs = 15000;
         const openDeadline = Date.now() + kOpenDeadlineMs;
         let opened = true;
+        let seatless = false;
         logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be true");
         while (!functionChecker()) {
           if (openedAsBed !== null && openedAsBed()) {
             logTrace(this, "onOpenContainerMesage - the Sleep/Wait Menu opened: a bed, which seats nobody; no second activation (finding 31, F2)");
             return;
+          }
+          if (usedSeatless !== null && usedSeatless()) {
+            seatless = true;
+            break;
           }
           if (Date.now() > openDeadline) {
             opened = false;
@@ -522,7 +541,9 @@ export class RemoteServer extends ClientListener {
           await Utility.waitMenuMode(0.1);
         }
 
-        if (opened) {
+        if (seatless) {
+          logTrace(this, "onOpenContainerMesage - the use raised its event and seats nobody: it ends there");
+        } else if (opened) {
           logTrace(this, "onOpenContainerMesage - waiting for", factName, "to be false");
           while (functionChecker()) await Utility.waitMenuMode(0.1);
           logTrace(this, "onOpenContainerMesage - menu closed", factName);

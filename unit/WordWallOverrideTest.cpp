@@ -198,3 +198,152 @@ TEST_CASE("At a fired word wall a guest who knows the word gets nothing, and "
           std::vector<std::string>{ "override", "enter ff000f7a" });
   Leave(p);
 }
+
+// A fired wall's trigger on and off is each player's: the wall's own Disable
+// of its trigger (WordWallTriggerBleakFallsScript's "done" state, from its
+// onBeginState) reaches as disabled only the games whose players know the
+// wall's word, the owner's copy is turned back on while its own player lacks
+// it, a later player is served the trigger by its own record, and a repeat
+// of the Disable still turns off the copy of a player who has learned since.
+// A disabled trigger raises no entry for anyone (the engine's trigger pass
+// skips a form with its disabled flag set), so one value for the world would
+// leave every later learner without its walk-up.
+namespace {
+using Arg = std::optional<
+  std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+constexpr uint32_t kLateActor = 0xff000f7c;
+
+// the owner's Disable of the trigger, as its game's script channel reports
+// the wall's own call
+void WallDisables(PartOne& p, Networking::UserId user)
+{
+  ScriptCallMessage msg;
+  msg.epoch = p.GetCellHost(kSanctum).epoch;
+  msg.selfId = kTrigger;
+  msg.cls = "ObjectReference";
+  msg.fn = "Disable";
+  msg.args = { Arg(false) };
+  msg.caller = "WordWallTriggerBleakFallsScript";
+  msg.handler = "onBeginState";
+  msg.latent = true;
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+// the trigger's ref state words sent to `user`, its disabled flags in order
+std::vector<bool> TriggerWordsTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<bool> out;
+  for (auto& m : p.Messages()) {
+    auto typed = dynamic_cast<DestructionStageMessage*>(m.message.get());
+    if (m.userId == user && typed && typed->refr == kTrigger &&
+        typed->disabled) {
+      out.push_back(*typed->disabled);
+    }
+  }
+  return out;
+}
+
+// the snippets that turn `user`'s copy of the trigger back on
+size_t TurnedBackOn(PartOne& p, Networking::UserId user)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+        m.j["class"] == "ObjectReference" &&
+        m.j["function"] == "EnableNoWait" && m.j["selfId"] == kTrigger) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+void Knows(PartOne& p, uint32_t actor)
+{
+  p.worldState.GetFormAt<MpActor>(actor).RecordShoutEntry(
+    MpActor::ShoutEntry::WordKnown,
+    FormDesc::FromFormId(kWord, p.worldState.espmFiles));
+}
+
+void Subscribed(PartOne& p)
+{
+  for (uint32_t id : { kHostActor, kGuestActor }) {
+    p.worldState.GetFormAt<MpActor>(id).ForceSubscriptionsUpdate();
+  }
+  p.Messages().clear();
+}
+
+void EnableTrigger(PartOne& p)
+{
+  auto& trigger = p.worldState.GetFormAt<MpObjectReference>(kTrigger);
+  trigger.SetRefState(false, false, trigger.GetRefStateSeq().value_or(0));
+}
+}
+
+TEST_CASE("The wall's own Disable of its fired trigger reaches as disabled "
+          "only the games whose players know the word, and the owner's copy "
+          "is turned back on while its own player lacks it",
+          "[WordWallOverride][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Subscribed(p);
+  // the guest learned first and walked out: its leave ends the wall's play on
+  // the host's copy, whose "done" state disables the trigger
+  Knows(p, kGuestActor);
+  WallDisables(p, 0);
+  REQUIRE(p.worldState.GetFormAt<MpObjectReference>(kTrigger).IsDisabled());
+  REQUIRE(TriggerWordsTo(p, 1) == std::vector<bool>{ true });
+  // the host lacks the word: its own engine's copy is turned back on, so its
+  // walk-in reaches the wall
+  REQUIRE(TurnedBackOn(p, 0) == 1);
+  EnableTrigger(p);
+  Leave(p);
+}
+
+TEST_CASE("A later player who lacks a fired wall's word is served its "
+          "trigger on, though the record holds it disabled",
+          "[WordWallOverride][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Subscribed(p);
+  Knows(p, kHostActor);
+  WallDisables(p, 0);
+  REQUIRE(TurnedBackOn(p, 0) == 0);
+  // the guest lacks it too: its copy stays on
+  REQUIRE(TriggerWordsTo(p, 1) == std::vector<bool>{ false });
+  // a late player beside the wall, its subscribe served the trigger's state
+  p.Messages().clear();
+  DoConnect(p, 2);
+  p.CreateActor(kLateActor, kFarInTheSphere, 0, kSanctum);
+  p.SetUserActor(2, kLateActor);
+  REQUIRE(TriggerWordsTo(p, 2) == std::vector<bool>{ false });
+  DoDisconnect(p, 2);
+  p.DestroyActor(kLateActor);
+  EnableTrigger(p);
+  Leave(p);
+}
+
+TEST_CASE("The wall's Disable again after a second learner's walk-out turns "
+          "off that learner's copy, though the record holds it disabled "
+          "already, and leaves the owner who knows the word alone",
+          "[WordWallOverride][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Subscribed(p);
+  Knows(p, kHostActor);
+  WallDisables(p, 0);
+  REQUIRE(TriggerWordsTo(p, 1) == std::vector<bool>{ false });
+  // the guest learns at its own walk-up, then walks out: the wall's "done"
+  // state disables the trigger again on the host's copy
+  p.Messages().clear();
+  Knows(p, kGuestActor);
+  WallDisables(p, 0);
+  REQUIRE(TriggerWordsTo(p, 1) == std::vector<bool>{ true });
+  REQUIRE(TurnedBackOn(p, 0) == 0);
+  EnableTrigger(p);
+  Leave(p);
+}

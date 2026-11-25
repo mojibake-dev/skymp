@@ -162,7 +162,7 @@ TEST_CASE("A guest who lacks a word wall's word gets nothing while the wall "
   REQUIRE(override["scripts"][0]["type"] == "WordWallTriggerScript");
   REQUIRE(override["scripts"][0]["state"] == "");
   REQUIRE(override["scripts"][0]["vars"].size() == 1);
-  REQUIRE(override["scripts"][0]["vars"][0]["name"] == "::WordLearned_var");
+  REQUIRE(override["scripts"][0]["vars"][0]["name"] == "::wordLearned_var");
   REQUIRE(override["scripts"][0]["vars"][0]["k"] == 5);
   REQUIRE(override["scripts"][0]["vars"][0]["b"] == false);
   REQUIRE(override["scripts"][1]["type"] == "WordWallTriggerBleakFallsScript");

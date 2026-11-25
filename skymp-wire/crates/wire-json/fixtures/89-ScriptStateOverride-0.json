@@ -7,7 +7,7 @@
       "state": "",
       "vars": [
         {
-          "name": "::WordLearned_var",
+          "name": "::wordLearned_var",
           "k": 5,
           "b": false
         }

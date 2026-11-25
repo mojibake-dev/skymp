@@ -5452,14 +5452,15 @@ namespace {
 // thuum docs/verbs/word-wall.md, the rule a script variable the player's own
 // record decides: the word wall's scripts, read from their pex (Skyrim -
 // Misc.bsa, lab/pex.py, 2026-11-25). WordWallTriggerScript's StartFX goes to
-// "done" and sets WordLearned (its auto property's backing variable) in the
-// block that teaches; its default state is the empty one. Its listeners,
+// "done" and sets WordLearned, the auto property whose backing variable the
+// pex names ::wordLearned_var, in the block that teaches; its default state
+// is the empty one. Its listeners,
 // WordWallTriggerBleakFallsScript and WordWallTrigger02Script, start the
 // wall from their "Listening" state's enter and go to "done" once the word
 // is learned. For a player who lacks the word, those are the wall's
 // player-decided state.
 constexpr const char* kWordWallScript = "WordWallTriggerScript";
-constexpr const char* kWordLearnedVar = "::WordLearned_var";
+constexpr const char* kWordLearnedVar = "::wordLearned_var";
 constexpr const char* kWordWallListeningState = "Listening";
 constexpr const char* kWordWallDoneState = "done";
 

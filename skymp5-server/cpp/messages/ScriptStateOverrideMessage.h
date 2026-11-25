@@ -9,7 +9,7 @@
 #include <vector>
 
 // One variable a script override sets: named as the type's chain declares it
-// (an auto property's backing variable, "::WordLearned_var"), matched without
+// (an auto property's backing variable, "::wordLearned_var"), matched without
 // case, `k` rung 3's folded kinds an override sets (3 int, 4 float, 5 bool)
 // and that kind's one field.
 struct ScriptStateOverrideVar

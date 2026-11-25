@@ -1,7 +1,7 @@
 import { MsgType } from "../../messages";
 
 // One variable a script override sets, named as the type's chain declares it
-// (an auto property's backing variable, "::WordLearned_var"), matched without
+// (an auto property's backing variable, "::wordLearned_var"), matched without
 // case; `k` 3 an int, 4 a float, 5 a bool, with that kind's one field.
 export interface ScriptStateOverrideVar {
     name: string;

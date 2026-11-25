@@ -3726,7 +3726,7 @@ wire_struct! {
     /// One variable a script override sets (thuum ADR-088, docs/verbs/
     /// word-wall.md's rule: a script variable the player's own record
     /// decides): named as the type's chain declares it (an auto property's
-    /// backing variable, `::WordLearned_var`), matched without case as the VM
+    /// backing variable, `::wordLearned_var`), matched without case as the VM
     /// finds a variable by name, `k` rung 3's folded kinds an override sets
     /// (3 an int, 4 a float, 5 a bool) and that kind's one field.
     pub struct ScriptOverrideVar {

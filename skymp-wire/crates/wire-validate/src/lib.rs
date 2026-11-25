@@ -5048,7 +5048,7 @@ mod tests {
         let script = |cls: &str, state: &str, vars: std::vec::Vec<ScriptOverrideVar>| ScriptOverrideScript { cls: name(cls), state: name(state), vars: vars.try_into().unwrap_or_default() };
         let word = |refr_id: u32, scripts: std::vec::Vec<ScriptOverrideScript>| Message::ScriptStateOverride(ScriptStateOverride { refr_id, scripts: scripts.try_into().unwrap_or_default(), ..Default::default() });
         let wall = || vec![
-            script("WordWallTriggerScript", "", vec![flag("::WordLearned_var", 5, Some(false))]),
+            script("WordWallTriggerScript", "", vec![flag("::wordLearned_var", 5, Some(false))]),
             script("WordWallTriggerBleakFallsScript", "Listening", vec![]),
         ];
         // Bleak Falls Sanctum's word wall trigger, put back for a second learner

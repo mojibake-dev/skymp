@@ -1089,6 +1089,64 @@ TEST_CASE("A hosted actor crossing into another live host's cell passes to "
   p.DestroyActor(kC2);
 }
 
+// A hold in another host's cell (D22's margin) that ends with its holder's
+// unload of the cell, or its departure, names the cell's host again, and the
+// word reaches it: the host's game runs the actor instead of keeping a puppet
+// nobody simulates, which a dialogue's claim could never reach (the claim
+// moves no simulator, so no word answers it)
+TEST_CASE("A hold in another host's cell ended by its holder's unload or "
+          "departure hands the actor to that host, whose game is told",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  Player(p, 1, kC2, kEast);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  const auto east = p.worldState.CellOf(kTamriel, kEast);
+  REQUIRE(here.has_value());
+  REQUIRE(east.has_value());
+  CellLoaded(p, 0, *here);
+  CellLoaded(p, 1, *east);
+  REQUIRE(p.GetCellHost(*east).player == kC2);
+  p.CreateActor(kWolf, kHere, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+
+  // c1 walks it over the border within the pass margin: c1 holds it in c2's
+  // cell
+  const NiPoint3 kAcross{ 12400.f, 500.f, 0.f };
+  Move(p, 0, kWolf, kAcross);
+  REQUIRE(p.worldState.CellOf(wolf) == east);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  REQUIRE_FALSE(p.GetFollows().empty());
+
+  bool c1Left = false;
+  SECTION("its holder unloads the cell")
+  {
+    p.Messages().clear();
+    CellLoaded(p, 0, *east, false);
+  }
+  SECTION("its holder leaves the server")
+  {
+    p.Messages().clear();
+    DoDisconnect(p, 0);
+    c1Left = true;
+  }
+  REQUIRE(p.GetFollows().empty());
+  REQUIRE(p.SimulatorOf(wolf) == kC2);
+  INFO(MessagesSentTo(p, 1));
+  REQUIRE(LastHostedWord(p, 1, wolf) == "false");
+
+  if (!c1Left) {
+    DoDisconnect(p, 0);
+  }
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
 // thuum docs/verbs/npc-handoff.md (d) through a door, ADR-047's note of
 // 2026-10-28 (playtest 37: Embry followed his package to the Sleeping
 // Giant's door while Prisoner hosted the inn from inside; the server refused

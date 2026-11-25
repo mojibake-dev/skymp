@@ -1692,6 +1692,19 @@ fn check_script_variables(m: &skymp::ScriptVariables) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's jail term as the server's record holds it: a crime faction,
+/// never 0, and its end on the shared clock, finite and at least 0; the
+/// transport refuses it from a client by direction.
+fn check_jail_term(m: &skymp::JailTerm) -> Result<(), Reject> {
+    if !m.release_at.is_finite() {
+        return Err(Reject::NonFinite);
+    }
+    if m.faction == 0 || m.release_at < 0.0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's weather word (docs/verbs/weather.md): a place, never 0; the
 /// weather may be 0 (a release); the transport refuses it from a client by
 /// direction.
@@ -1757,6 +1770,16 @@ fn check_hosted_state(m: &skymp::HostedActorState) -> Result<(), Reject> {
     // strictly ascending (each once); the count is the bound's
     if let Some(effects) = &m.effects {
         if effects.iter().any(|&id| id == 0 || id >= 0xff00_0000) || effects.windows(2).any(|w| matches!(w, [a, b] if a >= b)) {
+            return Err(Reject::Range);
+        }
+    }
+    // the actor's detection of each player (docs/verbs/guest-witness.md):
+    // each entry a player's actor (0xff000000 and up), strictly ascending by
+    // player (each once), its level within the engine's -1000 to 1000
+    if let Some(detects) = &m.detects {
+        if detects.iter().any(|d| d.player < 0xff00_0000 || !(-1000..=1000).contains(&d.level))
+            || detects.windows(2).any(|w| matches!(w, [a, b] if a.player >= b.player))
+        {
             return Err(Reject::Range);
         }
     }
@@ -2691,6 +2714,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::LockReport(m) => check_lock_report(m),
         Message::LockPrompt(m) => check_lock_prompt(m),
         Message::SetWeather(m) => check_set_weather(m),
+        Message::JailTerm(m) => check_jail_term(m),
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
@@ -3895,6 +3919,34 @@ mod tests {
     // thuum docs/verbs/npc-puppet.md, Ownership: the host's running effects
     // are a set of load-order forms, ascending and each once; absent is the
     // record's last set, empty is none running
+    // thuum docs/verbs/guest-witness.md: a hosted actor's detection of each
+    // player is a player's actor (0xff000000 and up), ascending and each
+    // once, with a level within -1000 to 1000; absent keeps the last
+    #[test]
+    fn a_hosted_states_detects_are_players_ascending_once_within_range() {
+        use wire_schema::skymp::{HostedActorState, PlayerDetection};
+        let with = |entries: &[(u32, i32)]| {
+            let detects: Vec<PlayerDetection> = entries.iter().map(|&(player, level)| PlayerDetection { player, level }).collect();
+            Message::HostedActorState(HostedActorState {
+                idx: 7,
+                health: 1.0,
+                magicka: 1.0,
+                stamina: 1.0,
+                detects: detects.try_into().ok(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&with(&[])), Ok(()));
+        assert_eq!(validate_server(&with(&[(0xff00_0000, -1000), (0xff00_0001, 57)])), Ok(()));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 1000)])), Ok(()));
+        // a game-file actor, a level past either end, out of order, twice
+        assert_eq!(validate_server(&with(&[(0x0001_3487, 57)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 1001)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, -1001)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 3), (0xff00_0000, 3)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[(0xff00_0001, 3), (0xff00_0001, 4)])), Err(Reject::Range));
+    }
+
     #[test]
     fn a_hosted_states_effects_are_load_order_forms_ascending_once() {
         use wire_schema::skymp::HostedActorState;
@@ -4940,6 +4992,19 @@ mod tests {
     }
 
     #[test]
+    fn jail_terms_name_a_faction_and_a_finite_end() {
+        use wire_schema::skymp::JailTerm;
+        let term = |faction, release_at, served| Message::JailTerm(JailTerm { faction, release_at, served, ..Default::default() });
+        assert_eq!(validate_server(&term(0x267ea, 2.615, false)), Ok(()));
+        assert_eq!(validate_server(&term(0x267ea, 2.615, true)), Ok(()));
+        assert_eq!(validate_server(&term(0x267ea, 0.0, true)), Ok(()), "a term ending at the clock's start");
+        assert_eq!(validate_server(&term(0, 2.615, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&term(0x267ea, -1.0, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&term(0x267ea, f32::NAN, false)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&term(0x267ea, f32::INFINITY, true)), Err(Reject::NonFinite));
+    }
+
+    #[test]
     fn weather_words_name_a_place_and_may_release() {
         use wire_schema::skymp::SetWeather;
         let word = |place, weather, transition| Message::SetWeather(SetWeather { place, weather, transition, ..Default::default() });
@@ -5204,6 +5269,20 @@ mod tests {
             prop_assert_eq!(validate_server(&m), want);
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
+        }
+
+        #[test]
+        fn jail_terms_never_panic(faction in any::<u32>(), release_at in any::<f32>(), served in any::<bool>()) {
+            use wire_schema::skymp::JailTerm;
+            let m = Message::JailTerm(JailTerm { faction, release_at, served, ..Default::default() });
+            let want = if !release_at.is_finite() {
+                Err(Reject::NonFinite)
+            } else if faction == 0 || release_at < 0.0 {
+                Err(Reject::Range)
+            } else {
+                Ok(())
+            };
+            prop_assert_eq!(validate_server(&m), want);
         }
 
         #[test]

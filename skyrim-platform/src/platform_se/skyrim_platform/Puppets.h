@@ -1,7 +1,9 @@
 #pragma once
 
+#include "PuppetDetection.h"
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -98,5 +100,20 @@ std::vector<uint32_t> GetPackageCells(uint32_t formId);
 
 // the two detours (Frida Gum replacements through FridaHookHandler::Replace,
 // the DamageActor hook's shape), AE only (ADR-025's 1.6.1170)
+// thuum docs/verbs/guest-witness.md: a puppet's detection of this game's
+// player as its host relayed it, written by the setPuppetDetection export on
+// the JS thread and read by the RequestDetectionLevel replacement on the
+// engine's job threads (FridaHooks.cpp), under the registry's lock; a level
+// of nothing forgets it, and a puppet's end here forgets it too (Set)
+void SetDetection(uint32_t formId, std::optional<int32_t> level);
+// whether the actor is a puppet here, and its relayed level if any, read
+// together under one lock
+struct DetectionRead
+{
+  bool isPuppet = false;
+  PuppetDetection::Relayed relayed;
+};
+DetectionRead ReadDetection(uint32_t formId);
+
 void InstallHooks();
 }

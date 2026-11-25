@@ -229,6 +229,7 @@ server-build:
           - skyrim-platform/src/platform_se/skyrim_platform/ActRoute.h
           - skyrim-platform/src/platform_se/skyrim_platform/OwnedObject.h
           - skyrim-platform/src/platform_se/skyrim_platform/FigureNoise.h
+          - skyrim-platform/src/platform_se/skyrim_platform/PuppetDetection.h
         compare_to: refs/heads/canon
   script:
     - |

@@ -3946,6 +3946,67 @@ void InstallActorGetUpHook()
 }
 
 /**
+ * thuum docs/verbs/guest-witness.md (tracker #193): a puppet's detection of
+ * this game's player is its host's. The engine's detection reader,
+ * Actor::RequestDetectionLevel (CommonLibSSE-NG include/RE/A/Actor.h:619,
+ * Offset::Actor::RequestDetectionLevel), answers from the detector's own
+ * knowledge of the target, which the detector's AI fills; a puppet's AI is
+ * off here, so a theft in a puppet's full view finds no witness in the
+ * thief's StealAlarm (37422), whose owner and witness tests are this reader.
+ * Replaced through Gum: for this game's player as the target and a puppet as
+ * the detector, the level its host relayed (setPuppetDetection,
+ * PuppetDetection.h); the original for every other call. Runs on the
+ * engine's job threads: the player compare first, then one registry read
+ * under its lock. HYPOTHESIS until a look reads a guest's theft charged
+ */
+namespace {
+using RequestDetectionLevelFn = std::int32_t (*)(
+  RE::Actor* self, RE::Actor* target, RE::DETECTION_PRIORITY priority);
+RequestDetectionLevelFn g_requestDetectionLevelOriginal = nullptr;
+std::atomic<uint64_t> g_guestWitnessAnswers{ 0 };
+
+std::int32_t RequestDetectionLevelReplacement(RE::Actor* self,
+                                              RE::Actor* target,
+                                              RE::DETECTION_PRIORITY priority)
+{
+  if (self && target && target == RE::PlayerCharacter::GetSingleton()) {
+    const auto read = Puppets::ReadDetection(self->formID);
+    if (const auto answer =
+          PuppetDetection::Answer(true, read.isPuppet, read.relayed)) {
+      const uint64_t n = ++g_guestWitnessAnswers;
+      if (n <= 5 || n % 1000 == 0) {
+        logger::info("[verb:guest-witness] puppet {:x}'s detection of this "
+                     "game's player answered by its host: level {} (read {})",
+                     self->formID, *answer, n);
+      }
+      return *answer;
+    }
+  }
+  return g_requestDetectionLevelOriginal
+    ? g_requestDetectionLevelOriginal(self, target, priority)
+    : PuppetDetection::kUndetected;
+}
+}
+
+void InstallGuestWitnessHook()
+{
+  if (!REL::Module::IsAE()) {
+    logger::info(
+      "[verb:guest-witness] the detection hook installs on AE only");
+    return;
+  }
+  const bool replaced = Frida::HookHandler::GetSingleton()->Replace(
+    RE::Offset::Actor::RequestDetectionLevel.address(),
+    reinterpret_cast<void*>(&RequestDetectionLevelReplacement),
+    reinterpret_cast<void**>(&g_requestDetectionLevelOriginal));
+  logger::info("[verb:guest-witness] detection hook (37764) {}",
+               replaced ? "installed: a puppet's detection of this game's "
+                          "player answers its host's relayed level"
+                        : "NOT installed: a theft in a puppet's view finds "
+                          "no witness here");
+}
+
+/**
  * thuum docs/verbs/leveling.md (M5): the player's skill experience is the
  * server's. The engine's one funnel for it is PlayerCharacter::UseSkill
  * (game/Offsets.h UseSkill, 40488), called once per landed hit, cast or
@@ -5594,6 +5655,7 @@ void Frida::InstallHooks()
   InstallActorGetUpHook();
   // thuum docs/verbs/leveling.md: the player's skill uses to JS
   InstallUseSkillHook();
+  InstallGuestWitnessHook();
   InstallSendTopicInfoEventHook();
   // thuum docs/verbs/quest-stage.md, slice two: a relayed stage's fragment
   InstallQuestStageSinkHook();

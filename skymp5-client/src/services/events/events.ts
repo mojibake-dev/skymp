@@ -38,6 +38,7 @@ import { LockPromptMessage } from "../messages/lockPromptMessage";
 import { RelayedActivationMessage } from "../messages/relayedActivationMessage";
 import { ObjectAnimationMessage } from "../messages/objectAnimationMessage";
 import { SetWeatherMessage } from "../messages/setWeatherMessage";
+import { JailTermMessage } from "../messages/jailTermMessage";
 import { PerkStateMessage } from "../messages/perkStateMessage";
 import { ActorJumpMessage } from "../messages/actorJumpMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
@@ -128,6 +129,7 @@ type EventTypes = {
     'relayedActivationMessage': [ConnectionMessage<RelayedActivationMessage>],
     'objectAnimationMessage': [ConnectionMessage<ObjectAnimationMessage>],
     'setWeatherMessage': [ConnectionMessage<SetWeatherMessage>],
+    'jailTermMessage': [ConnectionMessage<JailTermMessage>],
     'perkStateMessage': [ConnectionMessage<PerkStateMessage>],
     'actorJumpMessage': [ConnectionMessage<ActorJumpMessage>],
     'hostGrantMessage': [ConnectionMessage<HostGrantMessage>],

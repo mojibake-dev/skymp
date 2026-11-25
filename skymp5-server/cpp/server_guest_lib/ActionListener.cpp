@@ -657,13 +657,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
         SetPosMode::CalledByUpdateMovement);
     }
-    // at the first movement after a login, a sentence the shared clock ended
-    // while the player was away ends now (its belongings back, the release's
-    // spot), and its bounty per hold goes back to its game. After the
-    // report's own write above: the report comes from the jail's cell, and
-    // its write would otherwise overwrite the release's teleport
+    // at the first movement after a login, the player's jail term goes to
+    // its game (served or not: a served one its own game then releases, the
+    // server moving nothing), and its bounty per hold. After the report's
+    // own write above, so a release this pass records reads where the
+    // player's own game has it
     if (loginPass) {
-      partOne.ReleaseIfServed(*actor);
+      partOne.TellJailTermAtLogin(*actor);
       partOne.TellCrimeRecord(*actor);
     }
 
@@ -1495,9 +1495,13 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
                  ids.empty() ? std::string("none")
                              : fmt::format("{}", fmt::join(ids, ", ")));
   }
+  // thuum docs/verbs/guest-witness.md: the actor's detection of each player is
+  // its host's engine's too (R2, the wire's shape checked, not recorded); a
+  // report carries it only on a change, so its relay goes reliable as well
+  const bool carriesDetects = msg.detects.has_value();
   // the message itself to every listener with a user but the host, whose
   // puppets aim, make the face and play the effects' looks; unreliable but
-  // for a report that carries the effects
+  // for a report that carries the effects or the detection
   const auto relay = [&]() {
     HostedActorStateMessage out = msg;
     out.idx = actor->GetIdx();
@@ -1506,7 +1510,7 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
           listener->GetUserId() == Networking::InvalidUserId) {
         continue;
       }
-      listener->SendToUser(out, carriesEffects);
+      listener->SendToUser(out, carriesEffects || carriesDetects);
     }
   };
 
@@ -1517,10 +1521,10 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   auto& [since, taken, dropped] = lines[actor->GetFormId()];
   if (verdict.dead) {
     ++dropped;
-    // the values are dropped; a change of the effects still reaches the
-    // other games (their gaze and face read a puppet's, and a body here is
-    // released from the puppet state after its ragdoll)
-    if (carriesEffects) {
+    // the values are dropped; a change of the effects or the detection
+    // still reaches the other games (their gaze and face read a puppet's, and
+    // a body here is released from the puppet state after its ragdoll)
+    if (carriesEffects || carriesDetects) {
       relay();
     }
   } else {

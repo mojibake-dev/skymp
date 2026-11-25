@@ -177,7 +177,9 @@ void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
            float magicka, float stamina, uint32_t target, uint32_t package,
            uint32_t gazeTarget = 0, uint32_t gazeSlot = 0,
            uint32_t emotionType = 0, uint32_t emotionValue = 0,
-           std::optional<std::vector<uint32_t>> effects = std::nullopt)
+           std::optional<std::vector<uint32_t>> effects = std::nullopt,
+           std::optional<std::vector<HostedActorStateMessage::PlayerDetection>>
+             detects = std::nullopt)
 {
   static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
@@ -196,6 +198,7 @@ void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
   msg.emotionType = emotionType;
   msg.emotionValue = emotionValue;
   msg.effects = std::move(effects);
+  msg.detects = std::move(detects);
   p.GetActionListener().OnHostedActorState(raw, msg);
 }
 
@@ -4384,4 +4387,67 @@ TEST_CASE("A thrall fights the other player while its commander's fight "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.worldState.npcEnabled = npcWas;
+}
+
+// thuum docs/verbs/guest-witness.md: a hosted actor's detection of each player
+// is its host's engine's; the server relays a report that carries it reliable
+// to the actor's other games, its entries whole, and a report without it
+// unreliable and without; it records nothing
+TEST_CASE("A guest's theft in full view of an NPC the host's game runs "
+          "reaches the guest's game: the host's detection of each player is "
+          "relayed reliable to the actor's other games, its entries whole",
+          "[CellHost][HostedState][HostedDetects]")
+{
+  auto& p = GetPartOne();
+  constexpr uint32_t kActor = 0xff000c1d;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  p.CreateActor(kActor, kAt + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.SetPos(actor.GetPos());
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  REQUIRE(p.worldState.HostOf(actor) == &c1);
+
+  const auto statesTo = [&](Networking::UserId user) {
+    std::vector<std::pair<HostedActorStateMessage, bool>> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId != user) {
+        continue;
+      }
+      if (auto typed = dynamic_cast<HostedActorStateMessage*>(m.message.get());
+          typed && typed->idx == actor.GetIdx()) {
+        out.emplace_back(*typed, m.reliable);
+      }
+    }
+    return out;
+  };
+
+  // the host's NPC sees the guest (c2's actor) and not the host's own player
+  const std::vector<HostedActorStateMessage::PlayerDetection> seen = {
+    { kC1, -1000 }, { kC2, 57 }
+  };
+  p.Messages().clear();
+  State(p, 0, kActor, 1.f, 1.f, 1.f, 0, 0, 0, 0, 0, 0, std::nullopt, seen);
+  {
+    const auto toC2 = statesTo(1);
+    REQUIRE(toC2.size() == 1);
+    REQUIRE(toC2.front().second);
+    REQUIRE(toC2.front().first.detects.has_value());
+    REQUIRE(*toC2.front().first.detects == seen);
+    REQUIRE(statesTo(0).empty());
+  }
+
+  // a report without them: unreliable and without; the guest keeps the last
+  p.Messages().clear();
+  State(p, 0, kActor, 0.9f, 1.f, 1.f, 0, 0);
+  {
+    const auto toC2 = statesTo(1);
+    REQUIRE(toC2.size() == 1);
+    REQUIRE_FALSE(toC2.front().second);
+    REQUIRE_FALSE(toC2.front().first.detects.has_value());
+  }
 }

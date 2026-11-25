@@ -38,6 +38,7 @@
 #include "HostStopMessage.h"
 #include "HostedActorStateMessage.h"
 #include "IngredientEffectsKnownMessage.h"
+#include "JailTermMessage.h"
 #include "LockPromptMessage.h"
 #include "LockReportMessage.h"
 #include "MagicEffectsMessage.h"
@@ -174,4 +175,5 @@
   REGISTER_MESSAGE(CraftReportMessage)                                        \
   REGISTER_MESSAGE(PushActorMessage)                                          \
   REGISTER_MESSAGE(ArrestMessage)                                             \
-  REGISTER_MESSAGE(CrimeGoldMessage)
+  REGISTER_MESSAGE(CrimeGoldMessage)                                          \
+  REGISTER_MESSAGE(JailTermMessage)

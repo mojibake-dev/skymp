@@ -2164,6 +2164,35 @@ wire_struct! {
         /// subscriber, whose seats play each effect's hit shader and hit
         /// effect art on their puppet of the actor.
         pub effects: Option<Vec<u32, { cap::MAGIC_EFFECTS }>>,
+        /// Since SCHEMA_VERSION 71 (thuum #193, docs/verbs/guest-witness.md).
+        /// The actor's detection of each player whose figure the host's
+        /// engine holds a level of (Actor::RequestDetectionLevel,
+        /// CommonLibSSE-NG include/RE/A/Actor.h:619; another player's figure
+        /// counts as the player in the host's CalculateDetection), ascending
+        /// by player, each once, at most cap::PLAYERS_DETECTED. Present when
+        /// a player's entry came or went, or a level crossed into or out of
+        /// sight (above 0) or moved by ten since the sender's last report,
+        /// absent otherwise (the receiver keeps the last). Absolute, so safe
+        /// to receive twice. The server relays it to the actor's other
+        /// listeners, reliable, and records nothing (R2: the host's engine
+        /// computes it, unvalidated beyond this shape); a guest's engine
+        /// answers its puppet's detection of its own player with its entry,
+        /// so a theft in that actor's view finds a witness in the guest's own
+        /// StealAlarm.
+        pub detects: Option<Vec<PlayerDetection, { cap::PLAYERS_DETECTED }>>,
+    }
+}
+
+wire_struct! {
+    /// One player's detection by a hosted actor, as HostedActorState
+    /// carries it (thuum docs/verbs/guest-witness.md).
+    pub struct PlayerDetection {
+        /// The player's actor as the server knows it, 0xff000000 and up.
+        pub player: u32,
+        /// The level the host's engine holds of that player's figure: -1000
+        /// for none (the engine's level for a detector with no state), seen
+        /// above 0; -1000 to 1000.
+        pub level: i32,
     }
 }
 
@@ -3663,6 +3692,33 @@ wire_struct! {
         /// (SCHEMA_VERSION 67): R1, at most the faction's recorded bounty
         /// and the gold the record holds; never 0.
         pub paid_gold: Option<u32>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 88: a player's jail term as the server's record holds it,
+    /// told to that player's own game alone. Server to client, reliable. The
+    /// term's end is a time on the shared clock (R0), which runs while the
+    /// player is away, so the game learns it from the record rather than
+    /// from its own clock: at the arrest's record, at every login while the
+    /// term stands, and once when the shared clock passes the end. The game
+    /// keeps the newest; its jail bed's answer reads the time left from it,
+    /// and a served term starts the release on that game once it is in the
+    /// world. No message ends a term: the game's own release or escape does,
+    /// and the server records the move out. Safe to receive twice: the game
+    /// keeps the newest, and a served term releases once. Reason codes: `E_VAL_RANGE` (a
+    /// faction of 0, an end below 0), `E_VAL_NONFINITE`.
+    pub struct JailTerm {
+        /// `"t": 88`.
+        #[serde(default)]
+        pub t: MsgT<88>,
+        /// The crime faction that jailed the player; never 0.
+        pub faction: u32,
+        /// The shared clock's days passed (GameDaysPassed) at which the
+        /// sentence ends; finite, at least 0.
+        pub release_at: f32,
+        /// Whether the shared clock has passed the end.
+        pub served: bool,
     }
 }
 

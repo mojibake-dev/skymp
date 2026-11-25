@@ -39,8 +39,30 @@ struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
       .Serialize("gazeSlot", gazeSlot)
       .Serialize("emotionType", emotionType)
       .Serialize("emotionValue", emotionValue)
-      .Serialize("effects", effects);
+      .Serialize("effects", effects)
+      .Serialize("detects", detects);
   }
+
+  // one player's detection by the actor: the player's actor as the server
+  // knows it and the level the host's engine holds of its figure (-1000 for
+  // none, seen above 0)
+  struct PlayerDetection
+  {
+    template <class Archive>
+    void Serialize(Archive& archive)
+    {
+      archive.Serialize("player", player).Serialize("level", level);
+    }
+
+    friend bool operator==(const PlayerDetection& lhs,
+                           const PlayerDetection& rhs)
+    {
+      return lhs.player == rhs.player && lhs.level == rhs.level;
+    }
+
+    uint32_t player = 0;
+    int32_t level = -1000;
+  };
 
   uint32_t idx = 0;
   float health = 1.f;
@@ -64,4 +86,10 @@ struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
   // the first report with the engine's read and on a change, absent when
   // unchanged (the record keeps the last set)
   std::optional<std::vector<uint32_t>> effects;
+  // the actor's detection of each player whose figure the host's engine holds
+  // a level of, ascending by player, at most 16 (the wire's check); present
+  // when an entry came or went or a level crossed into or out of sight or
+  // moved by ten, absent otherwise (a receiver keeps the last); relayed
+  // reliable to the actor's other listeners, not recorded
+  std::optional<std::vector<PlayerDetection>> detects;
 };

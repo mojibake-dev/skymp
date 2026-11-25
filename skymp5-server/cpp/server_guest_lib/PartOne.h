@@ -725,13 +725,29 @@ public:
                    uint32_t nonViolent,
                    std::optional<uint32_t> paidGold = std::nullopt);
 
-  // The release of a prisoner whose sentence's end the shared clock passed:
-  // its own belongings back from the faction's chest (the rows its strip
-  // put there, never the chest's whole contents, which hold every prisoner
-  // of the hold's), the term and the hold's bounty cleared, the player
-  // placed at the release's spot by the server, its game told its bounty. The
-  // check runs every second for the players in the world and at a login
+  // The release of a prisoner whose sentence's end the shared clock passed.
+  // The release is the prisoner's own game's (the engine's move out to the
+  // far side of the jail's door): while the prisoner is in the jail's cell
+  // its game is told the term is served, once since its login; once its own
+  // game has moved it out, the term ends on the record, its own belongings
+  // back from the faction's chest (GiveBackBelongings) and the hold's bounty
+  // cleared, the prisoner where its game put it. Whether it told or released.
+  // The check runs every second for the players in the world and at a login
   bool ReleaseIfServed(MpActor& prisoner);
+  // The prisoner's jail term as the record holds it, told to its own game
+  // (JailTerm): the faction, its end on the shared clock and whether the
+  // clock has passed it; whether it had a term to tell
+  bool TellJailTerm(MpActor& prisoner);
+  // A login's first movement: a served term released on the record when the
+  // prisoner's game already has it out of the cell, told served otherwise,
+  // and a running term told as it stands
+  void TellJailTermAtLogin(MpActor& prisoner);
+  // The prisoner's own belongings back from the faction's prisoner-
+  // belongings chest: the rows its strip put there (term.belongings), never
+  // the chest's whole contents, which hold every prisoner of the hold's; how
+  // many items came back
+  size_t GiveBackBelongings(MpActor& prisoner, const JailTerm& term,
+                            const std::optional<JailOfFaction>& jail);
   // A prisoner out of its jail's cell before its end, once it has stood in
   // it (the term's arrived, noted here) and the arrest's window closed,
   // escaped: the term ends with its belongings left in the chest and its

@@ -336,11 +336,11 @@ use bounded::{String, Vec};
 /// engine stepped the actor at, so another seat's copy of it turns at that
 /// rate and its graph plays the turn. A 69 peer would misread every
 /// UpdateMovement.
-/// 71: JailTerm (MsgType 88, wire id 96): a player's jail term as the
+/// 72: JailTerm (MsgType 88, wire id 96): a player's jail term as the
 /// server's record holds it, told to that player's own game, its end a time
-/// on the shared clock. A 70 peer has no wire id 96.
+/// on the shared clock. A 71 peer has no wire id 96.
 /// MsgTypes 84 to 88 (wire ids 92 to 96) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 71;
+pub const SCHEMA_VERSION: u16 = 72;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

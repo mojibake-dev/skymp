@@ -768,3 +768,125 @@ TEST_CASE("A fine's gold leaves the record: the gold the player's engine "
 
   Leave(p);
 }
+
+namespace {
+// a second prisoner of the same hold, on its own game (user 1)
+constexpr uint32_t kSecondPrisoner = 0xff000f98;
+
+void ReportAs(PartOne& p, Networking::UserId user, MpActor& me,
+              uint32_t worldOrCell, const NiPoint3& pos)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = me.GetIdx();
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { 0, 0, 0 };
+  msg.data.isInJumpState = false;
+  msg.data.isWeapDrawn = false;
+  msg.data.isBlocking = false;
+  msg.data.worldOrCell = worldOrCell;
+  msg.data.runMode = "Standing";
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+void PutAs(PartOne& p, Networking::UserId user, uint32_t baseId,
+           uint32_t count, uint32_t target,
+           std::optional<float> health = std::nullopt)
+{
+  nlohmann::json j{ { "t", MsgType::PutItem },
+                    { "baseId", baseId },
+                    { "count", count },
+                    { "target", target } };
+  if (health) {
+    j["health"] = *health;
+  }
+  DoMessage(p, user, j);
+}
+}
+
+// ADR-079 decision 8: each player's confiscated items go back to that player
+// alone. Two prisoners of one hold strip into its one belongings chest; each
+// one's release gives back the stacks its own strip put, and the other's stay
+// in the chest for that one's own release.
+TEST_CASE("Two prisoners of one hold share its belongings chest, and each "
+          "one's release gives back its own stacks alone, nothing of the "
+          "other's",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 20.f);
+  auto& first = Arrive(p);
+  DoConnect(p, 1);
+  p.CreateActor(kSecondPrisoner, kInFalkreath, 0, kTamriel);
+  p.SetUserActor(1, kSecondPrisoner);
+  auto& second = p.worldState.GetFormAt<MpActor>(kSecondPrisoner);
+  p.Messages().clear();
+
+  // the first holds two plain daggers; the second three plain and one
+  // tempered
+  first.AddItem(kDagger, 2);
+  second.AddItem(kDagger, 3);
+  Inventory::Entry tempered(kDagger, 1);
+  tempered.health = 1.1f;
+  second.AddItems({ tempered });
+  const uint32_t firstHeld = first.GetInventory().GetItemCount(kDagger);
+  const uint32_t secondHeld = second.GetInventory().GetItemCount(kDagger);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
+  const uint32_t inChestBefore = chest.GetInventory().GetItemCount(kDagger);
+
+  // both arrested by Falkreath, both stripped into its belongings chest
+  REQUIRE(p.OnCrimeGold(first, kFalkreath, 100, 0));
+  REQUIRE(p.OnCrimeGold(second, kFalkreath, 100, 0));
+  Arrest(p, kFalkreath, 1);
+  DoMessage(p, 1,
+            nlohmann::json{ { "t", MsgType::Arrest },
+                            { "faction", kFalkreath },
+                            { "days", 1 } });
+  Put(p, kDagger, 2, kBelongings);
+  PutAs(p, 1, kDagger, 3, kBelongings);
+  PutAs(p, 1, kDagger, 1, kBelongings, 1.1f);
+  REQUIRE(first.GetInventory().GetItemCount(kDagger) == firstHeld - 2);
+  REQUIRE(second.GetInventory().GetItemCount(kDagger) == secondHeld - 4);
+  REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChestBefore + 6);
+
+  // both in the jail's cell, served at the end of the day
+  ServeInCell(p, first, *jail);
+  ReportAs(p, 1, second, jail->landingWorldOrCell, jail->landingPos);
+  CloseWindow(second);
+  REQUIRE(!p.EndTermIfEscaped(second));
+  clock.Set(21.01f);
+  REQUIRE(p.ReleaseIfServed(first));
+  REQUIRE(p.ReleaseIfServed(second));
+  const NiPoint3 outside = jail->releasePos + NiPoint3{ 40.f, 0.f, 0.f };
+
+  // the first's own game moves it out: its two plain daggers back, not the
+  // other's tempered one, and the other's four stay in the chest
+  Report(p, first, jail->releaseWorldOrCell, outside);
+  REQUIRE(p.ReleaseIfServed(first));
+  REQUIRE(first.GetInventory().GetItemCount(kDagger) == firstHeld);
+  for (const auto& e : first.GetInventory().entries) {
+    REQUIRE(!e.EqualExceptCount(tempered));
+  }
+  REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChestBefore + 4);
+
+  // then the second's: its own four, the tempered one as it was
+  ReportAs(p, 1, second, jail->releaseWorldOrCell, outside);
+  REQUIRE(p.ReleaseIfServed(second));
+  REQUIRE(second.GetInventory().GetItemCount(kDagger) == secondHeld);
+  bool temperedBack = false;
+  for (const auto& e : second.GetInventory().entries) {
+    temperedBack |= e.EqualExceptCount(tempered);
+  }
+  REQUIRE(temperedBack);
+  REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChestBefore);
+
+  DoDisconnect(p, 1);
+  p.DestroyActor(kSecondPrisoner);
+  Leave(p);
+}

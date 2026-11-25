@@ -306,8 +306,120 @@ TEST_CASE("An arrest records the term on the shared clock and takes its "
   Leave(p);
 }
 
-TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
-          "gives back the prisoner's own belongings, extras and all",
+namespace {
+// MsgType::JailTerm: a player's jail term as the server's record holds it,
+// told to that player's own game
+constexpr int kJailTermType = 88;
+
+// the jail terms the server told the prisoner's game (user 0) since the
+// messages were last cleared
+std::vector<nlohmann::json> JailTermsTold(PartOne& p)
+{
+  std::vector<nlohmann::json> told;
+  for (const auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == kJailTermType) {
+      told.push_back(m.j);
+    }
+  }
+  return told;
+}
+
+// the prisoner's game's report from its jail's cell, the arrest's jump, then
+// the arrest's window closed and its arrival noted, as the jail's tick does
+void ServeInCell(PartOne& p, MpActor& prisoner,
+                 const PartOne::JailOfFaction& jail)
+{
+  Report(p, prisoner, jail.landingWorldOrCell, jail.landingPos);
+  CloseWindow(prisoner);
+  REQUIRE(!p.EndTermIfEscaped(prisoner));
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  REQUIRE(prisoner.GetCrimeRecord().jail->arrived);
+}
+}
+
+TEST_CASE("An arrest's record tells the prisoner's own game its term, its "
+          "end on the shared clock, and a login while it stands tells it "
+          "again",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 20.f);
+  auto& prisoner = Arrive(p);
+  Arrest(p, kFalkreath, 3);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  auto told = JailTermsTold(p);
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0]["faction"] == kFalkreath);
+  REQUIRE(told[0]["releaseAt"].get<double>() == Catch::Approx(23.0));
+  REQUIRE(told[0]["served"] == false);
+
+  // a login a day in, its first report from the cell: told again, still
+  // serving
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  clock.Set(21.f);
+  prisoner.SetMapMarkersPending(true);
+  p.Messages().clear();
+  Report(p, prisoner, jail->landingWorldOrCell, jail->landingPos);
+  told = JailTermsTold(p);
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0]["releaseAt"].get<double>() == Catch::Approx(23.0));
+  REQUIRE(told[0]["served"] == false);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  Leave(p);
+}
+
+TEST_CASE("A served term is its prisoner's own game's to release: told "
+          "served once while the prisoner stays in its cell, the server "
+          "moving nothing and giving nothing back",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 20.f);
+  auto& prisoner = Arrive(p);
+  prisoner.AddItem(kDagger, 1);
+  Arrest(p, kFalkreath, 1);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
+  Put(p, kDagger, 1, kBelongings);
+  const uint32_t inChest = chest.GetInventory().GetItemCount(kDagger);
+  ServeInCell(p, prisoner, *jail);
+
+  // half a day in: still serving, nothing told
+  clock.Set(20.5f);
+  p.Messages().clear();
+  REQUIRE(!p.ReleaseIfServed(prisoner));
+  REQUIRE(JailTermsTold(p).empty());
+
+  // the day passed on the shared clock: its game is told the term is
+  // served, and the record keeps it where its game has it, the term
+  // standing and its belongings in the chest
+  clock.Set(21.01f);
+  REQUIRE(p.ReleaseIfServed(prisoner));
+  const auto told = JailTermsTold(p);
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0]["faction"] == kFalkreath);
+  REQUIRE(told[0]["releaseAt"].get<double>() == Catch::Approx(21.0));
+  REQUIRE(told[0]["served"] == true);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
+          jail->landingWorldOrCell);
+  REQUIRE((prisoner.GetPos() - jail->landingPos).Length() < 1.f);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == 0);
+  REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChest);
+
+  // told once: the tick's next pass tells nothing more
+  p.Messages().clear();
+  REQUIRE(!p.ReleaseIfServed(prisoner));
+  REQUIRE(JailTermsTold(p).empty());
+  Leave(p);
+}
+
+TEST_CASE("A served prisoner its own game moved out of the jail's cell is "
+          "released on the record: its own belongings back, extras and all, "
+          "the hold's bounty cleared, and it stays where its game put it",
           "[Jail][espm]")
 {
   PartOne& p = GetPartOne();
@@ -319,29 +431,29 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   prisoner.AddItems({ tempered });
   const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
   REQUIRE(p.OnCrimeGold(prisoner, kFalkreath, 100, 0));
-  // the same bounty again changes nothing
-  REQUIRE(!p.OnCrimeGold(prisoner, kFalkreath, 100, 0));
-  // a form that is no faction holds no bounty
-  REQUIRE(!p.OnCrimeGold(prisoner, kDagger, 100, 0));
   Arrest(p, kFalkreath, 1);
-  REQUIRE(prisoner.GetCrimeRecord().jail);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
   auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
   const uint32_t inChestBefore = chest.GetInventory().GetItemCount(kDagger);
   Put(p, kDagger, 2, kBelongings);
   Put(p, kDagger, 1, kBelongings, 1.1f);
   REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 3);
+  ServeInCell(p, prisoner, *jail);
+  clock.Set(21.01f);
+  REQUIRE(p.ReleaseIfServed(prisoner));
 
-  // half a day in: still serving, and the tick's escape check leaves a
-  // prisoner its window still holds
-  clock.Set(20.5f);
-  REQUIRE(!p.ReleaseIfServed(prisoner));
+  // its game's release: the engine's move to the far side of the jail's
+  // door, its own move, a little off the door's own point as the engine's
+  // settle leaves it. Out after the end is no escape
+  const NiPoint3 outside = jail->releasePos + NiPoint3{ 40.f, 0.f, 0.f };
+  Report(p, prisoner, jail->releaseWorldOrCell, outside);
   REQUIRE(!p.EndTermIfEscaped(prisoner));
   REQUIRE(prisoner.GetCrimeRecord().jail);
 
-  // the day passed on the shared clock: released, its three daggers back,
-  // the tempered one as it was, the hold's bounty cleared, placed outside
-  // the jail's door (the release's spot)
-  clock.Set(21.01f);
+  // the release on the record: the term ends, its three daggers back, the
+  // tempered one as it was, the hold's bounty cleared, the prisoner where
+  // its own game moved it
   REQUIRE(p.ReleaseIfServed(prisoner));
   REQUIRE(!prisoner.GetCrimeRecord().jail);
   REQUIRE(!prisoner.GetCrimeRecord().Find(
@@ -353,50 +465,52 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   }
   REQUIRE(temperedBack);
   REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChestBefore);
-  const auto jail = p.JailOf(kFalkreath);
-  REQUIRE(jail.has_value());
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
           jail->releaseWorldOrCell);
-  REQUIRE((prisoner.GetPos() - jail->releasePos).Length() < 1.f);
+  REQUIRE((prisoner.GetPos() - outside).Length() < 1.f);
 
   // nothing left to release
   REQUIRE(!p.ReleaseIfServed(prisoner));
   Leave(p);
 }
 
-// A prisoner whose sentence ended while it was away is released at its first
-// movement report after the login. That report comes from the jail's cell, so
-// the release runs after the report's own position write, which would
-// otherwise put the record back in the cell.
-TEST_CASE("A sentence that ended while its prisoner was away releases it at "
-          "its first report after the login, and the report from the cell "
-          "leaves the record at the release's spot",
+// A prisoner whose sentence ended while it was away logs in where its record
+// left it, in the jail's cell. Its own game runs the release once it is in
+// the world, so the server tells it the term is served and moves nothing: a
+// server placement at the login raced the login's own and lost.
+TEST_CASE("A prisoner whose sentence ended while it was away is told so at "
+          "its login and left where its login put it, its term standing "
+          "until its own game releases it",
           "[Jail][espm]")
 {
   PartOne& p = GetPartOne();
   PinnedClock clock(p, 20.f);
   auto& prisoner = Arrive(p);
   Arrest(p, kFalkreath, 1);
-  REQUIRE(prisoner.GetCrimeRecord().jail);
   const auto jail = p.JailOf(kFalkreath);
   REQUIRE(jail.has_value());
-  // the arrest's jump into the jail's cell (the login's first report, the
-  // sentence not yet over)
-  Report(p, prisoner, jail->landingWorldOrCell, jail->landingPos);
-  REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
-          jail->landingWorldOrCell);
-  REQUIRE(prisoner.GetCrimeRecord().jail);
+  ServeInCell(p, prisoner, *jail);
 
   // away past the sentence's end; the next login marks its first movement
   // pass as SetUserActor does, and its game reports from the cell
   clock.Set(21.01f);
   prisoner.SetMapMarkersPending(true);
+  p.Messages().clear();
   const NiPoint3 inCell = jail->landingPos + NiPoint3{ 10.f, 0.f, 0.f };
   Report(p, prisoner, jail->landingWorldOrCell, inCell);
-  REQUIRE(!prisoner.GetCrimeRecord().jail);
+  const auto told = JailTermsTold(p);
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0]["faction"] == kFalkreath);
+  REQUIRE(told[0]["served"] == true);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
-          jail->releaseWorldOrCell);
-  REQUIRE((prisoner.GetPos() - jail->releasePos).Length() < 1.f);
+          jail->landingWorldOrCell);
+  REQUIRE((prisoner.GetPos() - inCell).Length() < 1.f);
+
+  // told at the login, so the tick's pass tells nothing more
+  p.Messages().clear();
+  REQUIRE(!p.ReleaseIfServed(prisoner));
+  REQUIRE(JailTermsTold(p).empty());
   Leave(p);
 }
 

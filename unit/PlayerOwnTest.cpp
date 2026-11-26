@@ -430,8 +430,8 @@ TEST_CASE("A form of another kind than the row's is refused by name "
 // own game's gain: recorded as an AddItem of one is (R2, no bound: a script
 // whose attachments name nothing still counts), and one the record holds
 // folds
-TEST_CASE("Outside an overlay EquipItem folds an item the record holds and "
-          "records one it lacks as the player's own gain, with no bound",
+TEST_CASE("A script's EquipItem of an item the record lacks is the player's "
+          "own gain outside an overlay, with no bound, and one it holds folds",
           "[PlayerOwn][espm]")
 {
   PartOne& p = GetPartOne();

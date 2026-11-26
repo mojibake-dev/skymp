@@ -7,6 +7,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import type * as ContainersModule from "../src/services/services/containersService";
 import type * as LastInvModule from "../src/services/services/lastInvService";
+import type * as ActivationModule from "../src/services/services/activationService";
 
 // a brewed potion as this engine holds it (a session form), its definition, and the template the wire names it by
 const SESSION_POTION = 0xff000a12;
@@ -48,6 +49,7 @@ Module._resolveFilename = function (request: string, ...rest: unknown[]) {
 require.cache["skyrimPlatform"] = { id: "skyrimPlatform", filename: "skyrimPlatform", loaded: true, exports: platform } as any;
 const { ContainersService } = require("../src/services/services/containersService") as typeof ContainersModule;
 const { LastInvService } = require("../src/services/services/lastInvService") as typeof LastInvModule;
+const { ActivationService } = require("../src/services/services/activationService") as typeof ActivationModule;
 
 test("a brewed potion this game picks up is reported in the wire's shape, its template and definition, and the baseline gains no session id", () => {
   const sent: any[] = [];
@@ -74,4 +76,26 @@ test("a brewed potion this game picks up is reported in the wire's shape, its te
   assert.deepEqual(sent[0].createdBase, DEFINITION);
   assert.equal(sent[0].count, 1);
   assert.deepEqual(lastInv.lastInv.entries.filter((e: any) => e.baseId > 0xfeffffff), []);
+});
+
+test("this player's own activation takes the container diff's baseline in the wire's shape, a brewed potion it holds by its template and definition", () => {
+  const handlers: Record<string, (e: unknown) => void> = {};
+  const lastInv = { lastInv: undefined as any };
+  const controller: any = new Proxy({
+    on: (name: string, fn: (e: unknown) => void) => { handlers[name] = fn; },
+    once: () => undefined,
+    emitter: { on: () => undefined, emit: () => undefined },
+    lookupListener: (cls: unknown) => (cls === LastInvService ? lastInv : anything),
+  }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
+  const sp: any = new Proxy(
+    { Game: { getPlayer: () => player, getFormEx: () => ({ getName: () => "Potion" }) } },
+    { get: (t, k) => (k in t ? (t as any)[k] : anything) },
+  );
+  new ActivationService(sp, controller);
+  handlers["activate"]({ caster: player, target: null });
+
+  assert.deepEqual(lastInv.lastInv.entries.filter((e: any) => e.baseId > 0xfeffffff), []);
+  const potion = lastInv.lastInv.entries.find((e: any) => e.baseId === TEMPLATE);
+  assert.ok(potion, JSON.stringify(lastInv.lastInv));
+  assert.deepEqual(potion.createdBase, DEFINITION);
 });

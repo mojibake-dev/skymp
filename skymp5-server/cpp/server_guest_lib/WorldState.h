@@ -414,6 +414,15 @@ public:
   // (PartOne::FateRollLevel)
   std::string npcRollLevel = "party-mean";
   uint16_t npcRollLevelFixed = 0;
+  // docs/verbs/leveling.md (the party's level): how far a party's level
+  // leans from its players' mean level toward its highest, 0 the mean, 1 the
+  // highest; the server setting npcScaleLean, the rule's default (wire-rules
+  // leveling, 0.75) set by PartOne
+  double npcScaleLean = 0.;
+  // the party level the game whose player is `actor` is told, the level its
+  // PC-level-mult NPCs scale to (PartOne::PartyLevelOf), 0 where none is
+  // known; installed by PartOne
+  std::function<uint16_t(uint32_t actor)> partyLevelOf;
   // a game-file actor's fate rolled anew (the respawn), installed by PartOne
   // to send the fate again
   std::function<void(MpActor&)> onActorFate;

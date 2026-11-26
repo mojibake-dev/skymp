@@ -47,14 +47,15 @@ int32_t IntSettingOf(WorldState* worldState, uint32_t id, int32_t fallback)
 }
 
 // An auto-calc NPC's level as the engine reads it (TESActorBaseData's level,
-// id 14384): its ACBS level, or with the PC level mult the player's level
-// times the mult, clamped to its calc levels; the server holds no player's
-// level for it, so the lowest player level stands in (1, then the clamp)
-int32_t AutoCalcLevel(const espm::NPC_::Data& npc)
+// id 14384): its ACBS level, or with the PC level mult the player level
+// times the mult, clamped to its calc levels; the player level is the party
+// level the engine running it is told
+int32_t AutoCalcLevel(const espm::NPC_::Data& npc, uint16_t playerLevel)
 {
   int32_t level = npc.level;
   if (npc.pcLevelMult) {
-    level = static_cast<int32_t>(1 * npc.level * 0.001);
+    level = static_cast<int32_t>(std::max<uint16_t>(playerLevel, 1) *
+                                 npc.level * 0.001);
     if (npc.calcLevelMin) {
       level = std::max(level, static_cast<int32_t>(npc.calcLevelMin));
     }
@@ -110,7 +111,8 @@ std::array<int32_t, 3> LevelShare(int32_t levelsPast, int32_t perLevel,
 
 BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
                                    uint32_t raceIdOverride,
-                                   const std::vector<FormDesc>& templateChain)
+                                   const std::vector<FormDesc>& templateChain,
+                                   uint16_t playerLevel)
 {
 
   auto npcData = espm::GetData<espm::NPC_>(baseId, worldState);
@@ -149,7 +151,8 @@ BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
     const auto* clas = espm::Convert<espm::CLAS>(classLookup.rec);
     if (clas && raceId) {
       const auto classData = clas->GetData(worldState->GetEspmCache());
-      const int32_t levelsPast = AutoCalcLevel(attributesNpcData) - 1;
+      const int32_t levelsPast =
+        AutoCalcLevel(attributesNpcData, playerLevel) - 1;
       const float bonus = baseId == 0x7
         ? SettingOf(worldState, espm::GMST::kFPCHealthLevelBonus, 0.f)
         : SettingOf(worldState, espm::GMST::kFNPCHealthLevelBonus, 5.f);

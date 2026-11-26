@@ -331,6 +331,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     // thuum docs/verbs/npc-fate.md (the memo's D2): the roll's level rule:
     // "loader", "party-mean" (the default), "party-min", or a number for
     // everyone (PartOne::FateRollLevel)
+    // docs/verbs/leveling.md (the party's level): how far a party's level
+    // leans from its players' mean toward its highest, 0 to 1
+    if (serverSettings.find("npcScaleLean") != serverSettings.end() &&
+        serverSettings.at("npcScaleLean").is_number()) {
+      partOne->worldState.npcScaleLean =
+        std::clamp(serverSettings.at("npcScaleLean").get<double>(), 0., 1.);
+    }
     if (serverSettings.find("npcRollLevel") != serverSettings.end()) {
       const auto& rule = serverSettings.at("npcRollLevel");
       if (rule.is_number()) {

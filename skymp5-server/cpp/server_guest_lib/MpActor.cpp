@@ -924,8 +924,9 @@ void MpActor::VisitProperties(CreateActorMessage& message,
   // this "if" is needed for unit testing: tests can call VisitProperties
   // without espm attached, which will cause tests to fail
   if (worldState && worldState->HasEspm()) {
-    baseActorValues = GetBaseActorValues(worldState, baseId, raceId,
-                                         ChangeForm().templateChain);
+    baseActorValues =
+      GetBaseActorValues(worldState, baseId, raceId,
+                         ChangeForm().templateChain, PlayerLevelForStats());
   }
 
   MpChangeForm changeForm = GetChangeForm();
@@ -1415,8 +1416,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
         // actor's own state and come from the record, or every restart
         // heals every actor (thuum docs/verbs/attributes.md)
         const ActorValues recorded = changeForm.actorValues;
-        changeForm.actorValues = GetBaseActorValues(
-          GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+        changeForm.actorValues =
+          GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
+                             changeForm.templateChain, PlayerLevelForStats());
         changeForm.actorValues.healthPercentage = recorded.healthPercentage;
         changeForm.actorValues.magickaPercentage = recorded.magickaPercentage;
         changeForm.actorValues.staminaPercentage = recorded.staminaPercentage;
@@ -4268,7 +4270,17 @@ void MpActor::DamageActorValue(espm::ActorValue av, float value)
 BaseActorValues MpActor::GetBaseValues()
 {
   return GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
-                            ChangeForm().templateChain);
+                            ChangeForm().templateChain, PlayerLevelForStats());
+}
+
+uint16_t MpActor::PlayerLevelForStats() const
+{
+  WorldState* world = GetParent();
+  MpActor* host = world ? world->HostOf(*this) : nullptr;
+  if (!host || !world->partyLevelOf) {
+    return 1;
+  }
+  return std::max<uint16_t>(world->partyLevelOf(host->GetFormId()), 1);
 }
 
 BaseActorValues MpActor::GetMaximumValues()
@@ -4936,8 +4948,9 @@ void MpActor::ApplyMagicEffect(espm::Effects::Effect& effect, bool hasSweetpie,
 
   if (isRate || isMult) {
     MpChangeForm changeForm = GetChangeForm();
-    BaseActorValues baseValues = GetBaseActorValues(
-      GetParent(), GetBaseId(), GetRaceId(), changeForm.templateChain);
+    BaseActorValues baseValues =
+      GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
+                         changeForm.templateChain, PlayerLevelForStats());
     const ActiveMagicEffectsMap& activeEffects = changeForm.activeMagicEffects;
     const float baseValue = baseValues.GetValue(av);
     const uint32_t formId = GetFormId();
@@ -5017,8 +5030,9 @@ void MpActor::ApplyMagicEffects(std::vector<espm::Effects::Effect>& effects,
 void MpActor::RemoveMagicEffect(const espm::ActorValue actorValue)
 {
   try {
-    const ActorValues baseActorValues = GetBaseActorValues(
-      GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
+    const ActorValues baseActorValues =
+      GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
+                         ChangeForm().templateChain, PlayerLevelForStats());
     const float baseActorValue = baseActorValues.GetValue(actorValue);
     SetActorValue(actorValue, baseActorValue);
     EditChangeForm([actorValue](MpChangeForm& changeForm) {
@@ -5033,8 +5047,9 @@ void MpActor::RemoveMagicEffect(const espm::ActorValue actorValue)
 void MpActor::RemoveAllMagicEffects()
 {
   try {
-    const ActorValues baseActorValues = GetBaseActorValues(
-      GetParent(), GetBaseId(), GetRaceId(), ChangeForm().templateChain);
+    const ActorValues baseActorValues =
+      GetBaseActorValues(GetParent(), GetBaseId(), GetRaceId(),
+                         ChangeForm().templateChain, PlayerLevelForStats());
     SetActorValues(baseActorValues);
     EditChangeForm(
       [](MpChangeForm& changeForm) { changeForm.activeMagicEffects.Clear(); });

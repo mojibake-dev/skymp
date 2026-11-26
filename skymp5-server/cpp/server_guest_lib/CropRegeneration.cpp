@@ -13,7 +13,8 @@ BaseActorValues GetValues(MpActor* actor)
   uint32_t raceId = appearance ? appearance->raceId : 0;
   auto worldState = actor->GetParent();
   return GetBaseActorValues(worldState, baseId, raceId,
-                            actor->GetTemplateChain());
+                            actor->GetTemplateChain(),
+                            actor->PlayerLevelForStats());
 }
 
 }

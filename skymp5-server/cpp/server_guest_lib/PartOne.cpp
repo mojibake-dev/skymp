@@ -28,6 +28,7 @@
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "JailTermMessage.h"
+#include "PartyLevelMessage.h"
 #include "PerkStateMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
@@ -510,6 +511,10 @@ struct PartOne::Impl
   // the prisoners whose game has been told its term is served since its
   // login, by form id: told once, then its own game's release
   std::unordered_set<uint32_t> jailServedTold;
+  // the party level each connected game was last told, by user: the player
+  // actor it was told for and the level
+  std::unordered_map<Networking::UserId, std::pair<uint32_t, uint16_t>>
+    partyLevelTold;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
@@ -1673,6 +1678,10 @@ void PartOne::Init()
   // sighting gate read this one
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
+  };
+  worldState.npcScaleLean = skymp::rules::leveling_party_lean_default();
+  worldState.partyLevelOf = [this](uint32_t actor) {
+    return PartyLevelOf(actor);
   };
   // thuum docs/verbs/prop-physics.md (physics rung 3): and who streams a
   // prop's live row, so a body flown past its owner's grid squares keeps the
@@ -3608,6 +3617,65 @@ void PartOne::RefreshReach(MpActor& player)
                        SteadyNowMs()));
 }
 
+uint16_t PartOne::PartyLevelOf(uint32_t playerId)
+{
+  const auto hostOfCellOf = [this](const MpActor& actor) -> uint32_t {
+    const auto cell = worldState.CellOf(actor);
+    return cell && worldState.cellHostOf ? worldState.cellHostOf(*cell) : 0u;
+  };
+  const auto& form = worldState.LookupFormByIdNoLoad(playerId);
+  MpActor* player = form ? form->AsActor() : nullptr;
+  if (!player) {
+    return 0;
+  }
+  uint32_t game = hostOfCellOf(*player);
+  if (!game) {
+    game = playerId;
+  }
+  std::vector<uint16_t> levels;
+  for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+    MpActor* member =
+      serverState.ActorByUser(static_cast<Networking::UserId>(i));
+    if (!member ||
+        (member->GetFormId() != game && hostOfCellOf(*member) != game)) {
+      continue;
+    }
+    if (const auto record = member->GetActorValueRecord()) {
+      levels.push_back(record->level);
+    }
+  }
+  return skymp::rules::leveling_party_level(
+    rust::Slice<const uint16_t>(levels.data(), levels.size()),
+    worldState.npcScaleLean);
+}
+
+void PartOne::SendPartyLevels()
+{
+  for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+    const auto userId = static_cast<Networking::UserId>(i);
+    MpActor* player = serverState.ActorByUser(userId);
+    if (!player) {
+      pImpl->partyLevelTold.erase(userId);
+      continue;
+    }
+    const uint16_t level = PartyLevelOf(player->GetFormId());
+    if (level == 0) {
+      continue;
+    }
+    const std::pair<uint32_t, uint16_t> told{ player->GetFormId(), level };
+    const auto it = pImpl->partyLevelTold.find(userId);
+    if (it != pImpl->partyLevelTold.end() && it->second == told) {
+      continue;
+    }
+    pImpl->partyLevelTold[userId] = told;
+    PartyLevelMessage message;
+    message.level = level;
+    player->SendToUser(message, true);
+    spdlog::info("[verb:leveling] {:x} (user {}) told its party's level {}",
+                 player->GetFormId(), userId, level);
+  }
+}
+
 uint16_t PartOne::FateRollLevel(MpActor& loader, uint32_t cellOrWorld,
                                 int16_t sx, int16_t sy)
 {
@@ -4541,6 +4609,7 @@ void PartOne::TickCellHosts(uint64_t nowMs)
     }
   }
   ApplyHostDecisions(*this, pImpl->cells->tick(nowMs));
+  SendPartyLevels();
 
   // thuum tracker #84 (docs/verbs/summon.md): the summons' clock, the
   // backstops due dispelled, the fades done deleted

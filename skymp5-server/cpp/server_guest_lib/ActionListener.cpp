@@ -11703,7 +11703,8 @@ float CalculateCurrentHealthPercentage(const MpActor& actor, float damage,
   // docs/verbs/actor-values.md: a player's base health, raised by
   // level-ups), the race's and the base NPC's otherwise
   float baseHealth =
-    GetBaseActorValues(espmProvider, baseId, raceId, actor.GetTemplateChain())
+    GetBaseActorValues(espmProvider, baseId, raceId, actor.GetTemplateChain(),
+                       actor.PlayerLevelForStats())
       .health;
   if (auto recorded = actor.GetRecordedActorValueBase(24);
       recorded && std::isfinite(*recorded) && *recorded > 0.f) {

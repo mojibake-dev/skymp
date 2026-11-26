@@ -1684,6 +1684,19 @@ public:
   // read.
   uint16_t FateRollLevel(MpActor& loader, uint32_t cellOrWorld, int16_t sx,
                          int16_t sy);
+  // docs/verbs/leveling.md (the party's level): the level the game whose
+  // player is `playerId` is told its PC-level-mult NPCs scale to. The party
+  // is the game that hosts that player's cell (the player's own where
+  // nobody hosts it): its player and every connected player whose cell it
+  // hosts, each at its actor value record's level (one with no record left
+  // out); its level is the mean leaned toward the highest by npcScaleLean
+  // (wire-rules leveling's party_level). 0 where no member has a record.
+  uint16_t PartyLevelOf(uint32_t playerId);
+  // Tells each connected game its party's level when it differs from the
+  // last told (a player joined, levelled up or left), and at a login; a
+  // game with no level known is told nothing and its engine keeps its own
+  // player's level. Runs at the end of every cell host tick.
+  void SendPartyLevels();
   // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): the
   // roll belongs to the actor, not to the grid square. A game-file actor
   // with no roll yet (MpActor::CanRollFate) rolls at `loader`'s level

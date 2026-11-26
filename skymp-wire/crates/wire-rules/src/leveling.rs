@@ -259,6 +259,30 @@ pub fn character_threshold(level: u16) -> f32 {
     XP_LEVEL_UP_BASE + XP_LEVEL_UP_MULT * f32::from(level)
 }
 
+/// The party lean's default: three quarters of the way from the party's mean
+/// level to its highest.
+pub const PARTY_LEAN_DEFAULT: f64 = 0.75;
+
+/// The level a party's PC-level-mult NPCs scale to: the mean of its players'
+/// levels leaned toward the highest by `lean` (0 the mean, 1 the highest;
+/// clamped, and the default when not a number), cut down to a whole level as
+/// the engine cuts its own level product (TESActorBaseData's GetLevel), and
+/// never below 1 nor above the highest. A player alone gets its own level.
+/// None for an empty party; a level of 0 counts as 1.
+#[must_use]
+pub fn party_level(levels: &[u16], lean: f64) -> Option<u16> {
+    let highest = levels.iter().copied().max()?.max(1);
+    let count = f64::from(u32::try_from(levels.len()).ok()?);
+    let mean = levels.iter().map(|&level| f64::from(level.max(1))).sum::<f64>() / count;
+    let lean = if lean.is_finite() { lean.clamp(0.0, 1.0) } else { PARTY_LEAN_DEFAULT };
+    // a hair over the cut, so a lean such as 0.7 lands on the level its
+    // decimal names rather than one under it
+    let level = (mean + lean * (f64::from(highest) - mean) + 1e-9).floor();
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 1..=highest
+    let level = level.clamp(1.0, f64::from(highest)) as u16;
+    Some(level)
+}
+
 /// One skill's standing: its level and the experience toward the next.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkillProgress {
@@ -457,6 +481,34 @@ mod tests {
 
     fn near(a: f32, b: f32, tolerance: f32) -> bool {
         (a - b).abs() <= tolerance
+    }
+
+    #[test]
+    fn a_party_scales_to_its_mean_leaned_toward_its_highest() {
+        // levels 10 and 30: 20 + 0.75 x 10 = 27.5, cut to 27
+        assert_eq!(party_level(&[10, 30], PARTY_LEAN_DEFAULT), Some(27));
+        // levels 18 and 20: 19 + 0.75 x 1 = 19.75, cut to 19
+        assert_eq!(party_level(&[18, 20], PARTY_LEAN_DEFAULT), Some(19));
+        // levels 10, 10 and 30: 16.67 + 0.75 x 13.33 = 26.67, cut to 26
+        assert_eq!(party_level(&[10, 10, 30], PARTY_LEAN_DEFAULT), Some(26));
+        // 14 and 30: 22 + 0.75 x 8 = 28
+        assert_eq!(party_level(&[14, 30], PARTY_LEAN_DEFAULT), Some(28));
+        // alone, its own level, whatever the lean
+        assert_eq!(party_level(&[42], PARTY_LEAN_DEFAULT), Some(42));
+        assert_eq!(party_level(&[42], 0.0), Some(42));
+        // the lean's ends: the mean and the highest
+        assert_eq!(party_level(&[10, 30], 0.0), Some(20));
+        assert_eq!(party_level(&[10, 30], 1.0), Some(30));
+        // a lean of 0.7 lands on 27 (20 + 7), not one under it
+        assert_eq!(party_level(&[10, 30], 0.7), Some(27));
+        // out of range or not a number: clamped, or the default
+        assert_eq!(party_level(&[10, 30], 2.0), Some(30));
+        assert_eq!(party_level(&[10, 30], -1.0), Some(20));
+        assert_eq!(party_level(&[10, 30], f64::NAN), Some(27));
+        // none for nobody; a level of 0 counts as 1
+        assert_eq!(party_level(&[], PARTY_LEAN_DEFAULT), None);
+        assert_eq!(party_level(&[0], PARTY_LEAN_DEFAULT), Some(1));
+        assert_eq!(party_level(&[u16::MAX, u16::MAX], PARTY_LEAN_DEFAULT), Some(u16::MAX));
     }
 
     fn total_15_to_100(skill: Skill) -> f32 {

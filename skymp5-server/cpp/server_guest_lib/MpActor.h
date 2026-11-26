@@ -717,6 +717,11 @@ public:
   void SetActorValues(const ActorValues& actorValues);
 
   BaseActorValues GetBaseValues();
+  // the level a PC-level-mult NPC's base values are computed at: the party
+  // level of the game that runs it (WorldState::partyLevelOf), which that
+  // game's engine is told and computes its own level from; 1 where nobody
+  // runs it or no level is known
+  uint16_t PlayerLevelForStats() const;
   BaseActorValues GetMaximumValues();
   // thuum docs/verbs/figure-values.md: the maxima the other games set as
   // this player's figure's base Health, Magicka and Stamina (the recorded

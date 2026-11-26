@@ -3264,6 +3264,12 @@ mod ffi {
         fn apply_book(self: &LevelingTable, skills: &[LevelingSkill], character: LevelingCharacter, skill_av: u8) -> LevelingOutcome;
         /// The character experience the step from `level` to the next needs.
         fn leveling_character_threshold(level: u16) -> f32;
+        /// The level a party's PC-level-mult NPCs scale to: the mean of its
+        /// players' levels leaned toward the highest by `lean`, cut to a
+        /// whole level (docs/verbs/leveling.md); 0 for an empty party.
+        fn leveling_party_level(levels: &[u16], lean: f64) -> u16;
+        /// The party lean's default, 0.75.
+        fn leveling_party_lean_default() -> f64;
 
         /// An activation of a reference whose lock is `state` by a player who holds its key or not
         /// (thuum docs/verbs/locks.md).
@@ -4938,6 +4944,14 @@ fn new_leveling_table() -> Box<LevelingTable> {
 
 fn leveling_character_threshold(level: u16) -> f32 {
     leveling::character_threshold(level)
+}
+
+fn leveling_party_level(levels: &[u16], lean: f64) -> u16 {
+    leveling::party_level(levels, lean).unwrap_or(0)
+}
+
+fn leveling_party_lean_default() -> f64 {
+    leveling::PARTY_LEAN_DEFAULT
 }
 
 impl LevelingTable {

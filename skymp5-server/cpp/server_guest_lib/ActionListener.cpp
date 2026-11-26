@@ -5012,8 +5012,7 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
         // another player's body begins the players' fight as a hit does: the
         // gripped player's game is told, and TickFights ends it on both games
         if (kind == PropKind::LiveBody && msg.touch == kTouchGrab && !self &&
-            propActor &&
-            propActor->GetUserId() != Networking::InvalidUserId) {
+            propActor && propActor->GetUserId() != Networking::InvalidUserId) {
           NotifyHostility(*myActor, *prop->AsActor(), now);
         }
         break;

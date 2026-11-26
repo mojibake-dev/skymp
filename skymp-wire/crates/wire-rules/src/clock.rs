@@ -324,6 +324,13 @@ mod tests {
     }
 
     #[test]
+    fn an_epoch_is_read_as_an_rfc_3339_instant_whatever_its_offset() {
+        assert_eq!(clock(r#"{"epoch": "2026-10-03T02:00:00+02:00"}"#).epoch_ms, EPOCH);
+        assert_eq!(clock(r#"{"epoch": "2026-10-02T17:00:00-07:00"}"#).epoch_ms, EPOCH);
+        assert_eq!(clock(r#"{"epoch": "2026-10-03T00:00:00.250Z"}"#).epoch_ms, EPOCH + 250);
+    }
+
+    #[test]
     fn at_the_epoch_it_reads_skyrim_esm_and_holds_before_it() {
         let c = clock("{}");
         let t = at(&c, 0);

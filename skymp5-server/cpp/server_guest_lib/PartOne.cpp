@@ -2922,13 +2922,12 @@ namespace {
 // engine number
 constexpr uint64_t kThrallRejoinMs = 1000;
 
-// `commander`'s living thralls its own game simulates, by the command rows
-// (wire-rules cells.rs FollowKind::Commanded), as EndLostNpcThralls reads
-// them: its own alone (PartOne::OwnerOf), the thralls on its side (thuum
-// ADR-077 decision 4). An NPC's raise its game commands for the NPC
-// (tracker #106, ClaimReanimated) is on no player's side and fights no
-// players' fight
-std::vector<MpActor*> CommandedThralls(
+// `commander`'s living minions its own game simulates, by the cells rule's
+// rows (a thrall's command row, a summon's own row): its own alone
+// (PartOne::OwnerOf), the minions on its side, summons and thralls alike. An
+// NPC's raise or summon its game runs for the NPC is on no player's side and
+// fights no players' fight
+std::vector<MpActor*> OwnMinions(
   PartOne& partOne, const std::vector<PartOne::CellFollowEntry>& rows,
   uint32_t commander)
 {
@@ -2939,9 +2938,7 @@ std::vector<MpActor*> CommandedThralls(
     }
     auto& form = partOne.worldState.LookupFormByIdNoLoad(row.actor);
     MpActor* thrall = form ? form->AsActor() : nullptr;
-    if (!thrall || thrall->IsDead() ||
-        partOne.CommanderOf(*thrall) != commander ||
-        partOne.OwnerOf(*thrall) != commander ||
+    if (!thrall || thrall->IsDead() || partOne.OwnerOf(*thrall) != commander ||
         partOne.SimulatorOf(*thrall) != commander) {
       continue;
     }
@@ -3011,7 +3008,7 @@ void PartOne::KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs)
     // (two told fights overwrote its record each tick, two StartCombat a
     // second with alternating targets)
     const auto fighting = PlayersFighting(*this, commanderId);
-    for (MpActor* thrall : CommandedThralls(*this, rows, commanderId)) {
+    for (MpActor* thrall : OwnMinions(*this, rows, commanderId)) {
       const uint32_t thrallId = thrall->GetFormId();
       auto it = pImpl->thrallsInFights.find(thrallId);
       const bool ofCommander = it != pImpl->thrallsInFights.end() &&
@@ -3033,13 +3030,15 @@ void PartOne::KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs)
         .Execute(commander, SpSnippetMode::kNoReturnResult);
       pImpl->thrallsInFights[thrallId] =
         Impl::ThrallInFight{ commanderId, opponent->GetFormId(), nowMs };
-      spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} {} "
-                   "its commander's fight with {:x}: Actor.StartCombat to "
-                   "its commander's game (playtest 53 #113, design A)",
-                   thrallId, commanderId,
+      const bool summon = thrall->IsSummon();
+      spdlog::info("PartOne::TickFights - hostility: {} {:x} of {:x} {} "
+                   "its {} fight with {:x}: Actor.StartCombat to its {} "
+                   "game (design A)",
+                   summon ? "summon" : "thrall", thrallId, commanderId,
                    told ? "rejoins (its host's last state names no target)"
                         : "joins",
-                   opponent->GetFormId());
+                   summon ? "caster's" : "commander's", opponent->GetFormId(),
+                   summon ? "caster's" : "commander's");
     }
   }
 }
@@ -3213,7 +3212,7 @@ std::vector<uint32_t> PartOne::StandDownThralls(MpActor& commander,
   // is gone): thuum ADR-077 decision 4, three players
   const auto fighting = PlayersFighting(*this, commanderId);
   std::vector<uint32_t> stood;
-  for (MpActor* thrall : CommandedThralls(*this, rows, commanderId)) {
+  for (MpActor* thrall : OwnMinions(*this, rows, commanderId)) {
     const uint32_t thrallId = thrall->GetFormId();
     auto it = pImpl->thrallsInFights.find(thrallId);
     const bool told = it != pImpl->thrallsInFights.end() &&
@@ -3227,11 +3226,13 @@ std::vector<uint32_t> PartOne::StandDownThralls(MpActor& commander,
     // another player its commander's fight with stands is in that fight,
     // and that fight's tick keeps it (KeepThrallsInFight)
     if (target != 0 && target != opponent && fighting.count(target) != 0) {
-      spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
-                   "stays in its commander's fight with {:x}, which its "
-                   "engine fights, past the end of the fight with {:x} "
-                   "(thuum ADR-077 decision 4)",
-                   thrallId, commanderId, target, opponent);
+      spdlog::info(
+        "PartOne::TickFights - hostility: {} {:x} of {:x} "
+        "stays in its {} fight with {:x}, which its "
+        "engine fights, past the end of the fight with {:x} "
+        "(ADR-077 decision 4)",
+        thrall->IsSummon() ? "summon" : "thrall", thrallId, commanderId,
+        thrall->IsSummon() ? "caster's" : "commander's", target, opponent);
       continue;
     }
     // thuum ADR-077 decision 4 (tracker #113, #131): its commander's fight
@@ -3254,11 +3255,13 @@ std::vector<uint32_t> PartOne::StandDownThralls(MpActor& commander,
     SpSnippet("Actor", "StopCombat", noArgs, thrallId)
       .Execute(&commander, SpSnippetMode::kNoReturnResult);
     stood.push_back(thrallId);
-    spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
-                 "stands down with its commander's fight with {:x}: "
-                 "Actor.StopCombat to its commander's game (playtest 53 "
-                 "#113, design A)",
-                 thrallId, commanderId, opponent);
+    const bool summon = thrall->IsSummon();
+    spdlog::info("PartOne::TickFights - hostility: {} {:x} of {:x} "
+                 "stands down with its {} fight with {:x}: "
+                 "Actor.StopCombat to its {} game (design A)",
+                 summon ? "summon" : "thrall", thrallId, commanderId,
+                 summon ? "caster's" : "commander's", opponent,
+                 summon ? "caster's" : "commander's");
   }
   for (auto it = pImpl->thrallsInFights.begin();
        it != pImpl->thrallsInFights.end();) {

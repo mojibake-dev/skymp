@@ -57,6 +57,14 @@ public:
   // friendly-hit setting the three set; Update.esm unread); the executable's
   // other friendly-hit settings keep its defaults (thuum ADR-077 decision 5)
   static constexpr uint32_t kIFriendHitCombatAllowed = 0x0001A23D;
+  // An auto-calc NPC's level settings, as Skyrim.esm holds them (lab/esm.py:
+  // 5.0, 0.0 and 10; Update, Dawnguard, HearthFires and Dragonborn set
+  // none): the health each level past the first adds, the player base's
+  // own, and the points each level past the first shares out by the class's
+  // weights
+  static constexpr uint32_t kFNPCHealthLevelBonus = 0x00023BB9;
+  static constexpr uint32_t kFPCHealthLevelBonus = 0x0010CFB7;
+  static constexpr uint32_t kIAVDhmsLevelUp = 0x00021A73;
 
   struct Data
   {

@@ -38,9 +38,16 @@ NPC_::Data NPC_::GetData(
         result.healthOffset = *reinterpret_cast<const int16_t*>(data + 20);
         result.templateDataFlags =
           *reinterpret_cast<const uint16_t*>(data + 18);
+        result.autoCalcStats = !!(flags & 0x10);
+        result.pcLevelMult = !!(flags & 0x80);
+        result.level = *reinterpret_cast<const uint16_t*>(data + 8);
+        result.calcLevelMin = *reinterpret_cast<const uint16_t*>(data + 10);
+        result.calcLevelMax = *reinterpret_cast<const uint16_t*>(data + 12);
 
       } else if (!std::memcmp(type, "RNAM", 4)) {
         result.race = *reinterpret_cast<const uint32_t*>(data);
+      } else if (!std::memcmp(type, "CNAM", 4) && dataSize >= 4) {
+        result.classId = *reinterpret_cast<const uint32_t*>(data);
       } else if (!std::memcmp(type, "OBND", 4)) {
         if (const auto objectBounds =
               reinterpret_cast<const ObjectBounds*>(data)) {

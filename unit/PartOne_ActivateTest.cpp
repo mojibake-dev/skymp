@@ -1060,7 +1060,12 @@ TEST_CASE("Regress: LvlGiant mustn't have Fox race health", "[PartOne][espm]")
   auto baseActorValues = GetBaseActorValues(&partOne.worldState, baseId,
                                             raceId, actor.GetTemplateChain());
 
-  REQUIRE(baseActorValues.health == 250.f);
+  // the giant race's 250 (never the fox's), and the engine's auto-calc on it:
+  // LvlGiant's list LCharGiant 0x30529 picks EncGiant01 0x23aae (Skyrim.esm:
+  // auto-calc, level 32, no offset, its class 0x1ce17 weighing health 3,
+  // magicka 0, stamina 2): 250 + 31 * fNPCHealthLevelBonus 5 + health's
+  // share of 31 * iAVDhmsLevelUp 10 points, 3 * floor(310 / 5) = 186
+  REQUIRE(baseActorValues.health == 591.f);
 }
 
 // thuum docs/verbs/containers.md (M4's row): the rest of the container row.

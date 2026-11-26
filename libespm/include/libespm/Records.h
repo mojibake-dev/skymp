@@ -7,6 +7,7 @@
 #include "AVIF.h"
 #include "BOOK.h"
 #include "CELL.h"
+#include "CLAS.h"
 #include "COBJ.h"
 #include "CONT.h"
 #include "DIAL.h"

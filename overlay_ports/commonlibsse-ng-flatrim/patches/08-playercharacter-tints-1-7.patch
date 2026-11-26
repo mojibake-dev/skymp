@@ -2,7 +2,7 @@ The 1.7.x releases carry the player's tint array 8 bytes further down than
 1.6.1170: GetNumTints and GetTintMask in the analyzed 1.7.104 binary read its
 data at this+0xB20 and its count at this+0xB30, where 1.6.629 through 1.6.1170
 kept the overlay-list pointer, so GetTintList took the tint count for that
-pointer and Skyrim Platform's PushTintMask faulted at 0x32 (sky-c1, 2026-10-01,
+pointer and Skyrim Platform's PushTintMask faulted at 0x32 (on a client seat, a
 Frida first-chance trace; thuum ghidra/notes/playercharacter-tints-1-7-104.md,
 docs/verbs/appearance.md). The overlay pointer is taken to follow the array at
 0xB38, a HYPOTHESIS until a run shows tints applying. thuum branch skyrim-1.7,

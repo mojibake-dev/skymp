@@ -3,7 +3,7 @@
 - fakeclient-stub.py: a stand-in for the fork's `fakeclient` binary
   (skymp5-server/cpp/fakeclient) that prints the same event lines without a
   network, so `cargo test -p difftest` exercises the legacy driver here. The
-  real binary is built by the fork's server image; on sky-srv,
+  real binary is built by the fork's server image; on the server host,
   `DIFFTEST_FAKECLIENT=/srv/skymp/fakeclient DIFFTEST_LEGACY_ADDR=127.0.0.1:7777`
   point the driver at it and at the legacy server.
 - fakeclient-flood.py: a stand-in whose login prints 292 KB, more than a pipe

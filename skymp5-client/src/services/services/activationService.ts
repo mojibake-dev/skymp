@@ -3,6 +3,7 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getInventory } from "../../sync/inventory";
+import { toWireInventory } from "../../sync/createdForms";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 
@@ -83,10 +84,13 @@ export class ActivationService extends ClientListener {
         // empty: rotfern's garnet never left c1 as a TakeItem ("diff:" with no
         // entry at 02:03:34.860Z) while her puts, with no activation in their
         // window, did. The baseline is the player's own activation's alone.
-        // HYPOTHESIS until a take under a busy cell's activations lands
+        // HYPOTHESIS until a take under a busy cell's activations lands.
+        // In the wire's shape, as containersService compares it (a created
+        // potion by its template and definition, never the engine's session
+        // id)
         if (caster === 0x14) {
             const lastInvService = this.controller.lookupListener(LastInvService);
-            lastInvService.lastInv = getInventory(this.sp.Game.getPlayer() as Actor);
+            lastInvService.lastInv = toWireInventory(getInventory(this.sp.Game.getPlayer() as Actor));
         }
 
         if (!target || !caster) {

@@ -228,3 +228,111 @@ TEST_CASE("An equipment report with one item the player's inventory lacks "
 
   Part(p);
 }
+
+// Skyrim.esm's RACE records list their spells (SPLO): KhajiitRace 0x13745
+// its lesser power Night Eye 0xAA01D, NordRace 0x13746 (the race of the
+// Player NPC_ 0x7, every player's base) its power Battle Cry 0xE40C3, and
+// NordRaceVampire 0x88794 Battle Cry and the lesser power Vampire's Sight
+// 0xC4DE1, which NordRace lacks. A power is reported in the voice slot.
+namespace {
+constexpr uint32_t kKhajiitRace = 0x00013745;
+constexpr uint32_t kNordRaceVampire = 0x00088794;
+constexpr uint32_t kNightEye = 0x000aa01d;
+constexpr uint32_t kBattleCry = 0x000e40c3;
+constexpr uint32_t kVampiresSight = 0x000c4de1;
+
+// the race the player wears, as its appearance records it
+void WearRace(MpActor& actor, uint32_t raceId)
+{
+  Appearance appearance;
+  appearance.raceId = raceId;
+  actor.SetAppearance(&appearance);
+}
+
+// the owner's report of one power in its voice slot
+void ReportPower(PartOne& p, const MpActor& owner, uint32_t power,
+                 uint32_t numChanges)
+{
+  UpdateEquipmentMessage msg;
+  msg.idx = owner.GetIdx();
+  msg.data.numChanges = numChanges;
+  msg.data.voiceSpell = power;
+  Report(p, msg);
+}
+
+// the owner's game casts a power from its voice slot
+void CastPower(PartOne& p, uint32_t power)
+{
+  DoMessage(
+    p, 0,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", 0 },
+                        { "spell", power },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 2 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+}
+}
+
+TEST_CASE("A player of a race other than its base record's keeps its race's "
+          "power equipped and casts it, and a power only the base record's "
+          "race lists is dropped",
+          "[PartOne][UpdateEquipment][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& owner = Pair(p);
+  WearRace(owner, kKhajiitRace);
+  p.Messages().clear();
+
+  ReportPower(p, owner, kNightEye, 9);
+  REQUIRE(owner.GetEquipment().voiceSpell.value_or(0) == kNightEye);
+  REQUIRE(Sent(p, 0, MsgType::SpSnippet).empty());
+  const auto relays = Sent(p, 1, MsgType::UpdateEquipment);
+  REQUIRE(relays.size() == 1);
+  REQUIRE(relays[0]["data"]["voiceSpell"] == kNightEye);
+
+  p.Messages().clear();
+  CastPower(p, kNightEye);
+  REQUIRE(Sent(p, 1, MsgType::SpellCast).size() == 1);
+
+  // Battle Cry is NordRace's alone: the record keeps no power, and the
+  // player's game has it removed
+  p.Messages().clear();
+  ReportPower(p, owner, kBattleCry, 10);
+  REQUIRE(!owner.GetEquipment().voiceSpell.has_value());
+  const auto snippets = Sent(p, 0, MsgType::SpSnippet);
+  REQUIRE(snippets.size() == 1);
+  REQUIRE(snippets[0]["function"] == "RemoveSpell");
+  REQUIRE(snippets[0]["arguments"][0]["formId"] == kBattleCry);
+
+  Part(p);
+}
+
+TEST_CASE("A vampire player keeps a power its vampire race lists equipped",
+          "[PartOne][UpdateEquipment][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& owner = Pair(p);
+  WearRace(owner, kNordRaceVampire);
+  p.Messages().clear();
+
+  ReportPower(p, owner, kVampiresSight, 11);
+  REQUIRE(owner.GetEquipment().voiceSpell.value_or(0) == kVampiresSight);
+  REQUIRE(Sent(p, 0, MsgType::SpSnippet).empty());
+
+  Part(p);
+}

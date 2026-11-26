@@ -36,7 +36,7 @@ pub const MAX_CHANGE_GAME_MINUTES: u32 = 1440;
 pub fn climate_slot_minutes(volatility: u8) -> u32 {
     let held = u32::from(u8::MAX.saturating_sub(volatility)).saturating_mul(22);
     // whole game minutes of the engine's hours, (held / 255 + 1) * 60
-    let minutes = held.saturating_mul(60) / 255 + 60;
+    let minutes = (held.saturating_mul(60) / 255).saturating_add(60);
     minutes.saturating_sub(1).clamp(1, MAX_CHANGE_GAME_MINUTES)
 }
 

@@ -1,5 +1,6 @@
 #include "FridaHooks.h"
 #include "ActingScope.h"
+#include "CauseOwner.h"
 #include "ChangeForm.h"
 #include "EventsApi.h"
 #include "Fates.h"
@@ -494,44 +495,76 @@ RE::TESObjectREFR* ReadPresser(const void* args, PresserRead& how)
 // and another seat's figure or puppet is another's. Every read is a
 // mutex-guarded set or a field of the cause, so any engine thread may ask
 // (the impulse's run on Havok's workers, the read's 080520 rows)
-enum class CauseOwner
-{
-  kThisSeat,
-  kOther,
-  kUndecided
-};
+using CauseOwner = CauseRule::Owner;
 
+// whether a reference's parent cell is hosted here
+bool CellHostedHere(const RE::TESObjectREFR* refr)
+{
+  const RE::TESObjectCELL* cell = refr ? refr->GetParentCell() : nullptr;
+  return cell && Frida::IsCellHosted(cell->GetFormID());
+}
+
+// what the rule reads of an actor (CauseOwner.h ActorFacts)
+CauseRule::ActorFacts ActorFactsOf(const RE::TESObjectREFR* actor)
+{
+  CauseRule::ActorFacts a;
+  a.formId = actor->formID;
+  a.simulatedHere = a.formId >= 0xff000000 && Hosted::SimulatedHere(a.formId);
+  a.dead = actor->IsDead();
+  a.hosted = Hosted::Is(a.formId);
+  a.puppet = Puppets::Is(a.formId);
+  a.hasCell = actor->GetParentCell() != nullptr;
+  a.cellHosted = CellHostedHere(actor);
+  return a;
+}
+
+// who fired a projectile or an explosion, as the engine names it (the
+// projectile's shooter, ProjectileRuntimeData; the explosion's actorOwner,
+// ExplosionRuntimeData), none for any other reference; `fired` says it is
+// one of the two
+RE::NiPointer<RE::TESObjectREFR> FirerOf(const RE::TESObjectREFR* cause,
+                                         bool& fired)
+{
+  auto* refr = const_cast<RE::TESObjectREFR*>(cause);
+  fired = false;
+  if (auto* projectile = refr->AsProjectile()) {
+    fired = true;
+    return projectile->GetProjectileRuntimeData().shooter.get();
+  }
+  if (auto* explosion = refr->AsExplosion()) {
+    fired = true;
+    const RE::NiPointer<RE::Actor> owner =
+      explosion->GetExplosionRuntimeData().actorOwner.get();
+    return RE::NiPointer<RE::TESObjectREFR>(owner.get());
+  }
+  return nullptr;
+}
+
+// the cause's owner: its facts read here, the rule CauseOwner.h's. Every
+// read is a mutex-guarded set or a field of the cause, so any engine thread
+// may ask (an impulse runs on Havok's workers)
 CauseOwner OwnerOf(const RE::TESObjectREFR* cause)
 {
-  const uint32_t id = cause->formID;
-  if (id == 0x14) {
-    return CauseOwner::kThisSeat;
+  CauseRule::CauseFacts c;
+  c.followedTrapBody = TrapFamily::Followed::Is(cause->formID);
+  if (cause->GetFormType() == RE::FormType::ActorCharacter) {
+    c.kind = CauseRule::CauseKind::kActor;
+    c.actor = ActorFactsOf(cause);
+    return CauseRule::OwnerOfCause(c);
   }
-  if (cause->GetFormType() != RE::FormType::ActorCharacter) {
-    return TrapFamily::Followed::Is(id) ? CauseOwner::kOther
-                                        : CauseOwner::kThisSeat;
+  bool fired = false;
+  const RE::NiPointer<RE::TESObjectREFR> firer = FirerOf(cause, fired);
+  if (fired) {
+    c.kind = CauseRule::CauseKind::kFired;
+    c.firer = firer != nullptr;
+    c.firerIsActor =
+      firer && firer->GetFormType() == RE::FormType::ActorCharacter;
+    if (c.firerIsActor) {
+      c.firerFacts = ActorFactsOf(firer.get());
+    }
+    c.cellHosted = CellHostedHere(cause);
   }
-  if (id >= 0xff000000) {
-    return Hosted::SimulatedHere(id) ? CauseOwner::kThisSeat
-                                     : CauseOwner::kOther;
-  }
-  if (cause->IsDead()) {
-    const RE::TESObjectCELL* cell = cause->GetParentCell();
-    return cell && Frida::IsCellHosted(cell->GetFormID())
-      ? CauseOwner::kThisSeat
-      : CauseOwner::kOther;
-  }
-  const bool hosted = Hosted::Is(id);
-  const bool puppet = Puppets::Is(id);
-  if (hosted || puppet) {
-    return hosted && !puppet ? CauseOwner::kThisSeat : CauseOwner::kOther;
-  }
-  const RE::TESObjectCELL* cell = cause->GetParentCell();
-  if (!cell) {
-    return CauseOwner::kOther;
-  }
-  return Frida::IsCellHosted(cell->GetFormID()) ? CauseOwner::kThisSeat
-                                                : CauseOwner::kUndecided;
+  return CauseRule::OwnerOfCause(c);
 }
 
 // whether the handle has an attached script (the VM's attachedScripts under

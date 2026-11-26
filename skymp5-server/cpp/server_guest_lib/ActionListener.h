@@ -171,7 +171,17 @@ public:
   // a word wall teaches each player once: a player who lacks
   // a wall's word at a wall that has fired gets the wall's player-decided
   // state put back on the owner's copy, then its walk-up raised there
-  void OverrideFiredWall(MpActor& player, MpObjectReference& trigger);
+  // `again`: the cell's new host hears it for a player still inside, the
+  // put-back only while the record still shows the wall fired
+  void OverrideFiredWall(MpActor& player, MpObjectReference& trigger,
+                         bool again = false);
+  // a player's walk-in at a fired wall ends when it is out of the wall's
+  // trigger; its next walk-in puts the wall back again
+  void CheckWallOverrides(MpActor& actor);
+  // a cell's grant to a new host (PartOne's host decisions, after the grant's
+  // word): each player inside a fired wall's trigger there who lacks its word
+  // has the wall put back on the new host's copy and its walk-up raised there
+  void OnCellGranted(uint32_t cell);
 
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
   // animation event its owner reports (a game-file reference that is no

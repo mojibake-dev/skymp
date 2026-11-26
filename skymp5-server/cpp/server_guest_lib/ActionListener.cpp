@@ -673,6 +673,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     if (isPlayersOwn && !wordWallArms.empty()) {
       CheckWordWallArm(rawMsgData, *actor);
     }
+    if (isPlayersOwn && !wallOverridesSent.empty()) {
+      CheckWallOverrides(*actor);
+    }
     // thuum docs/verbs/npc-fate.md (ADR-048's B): a game-file actor's
     // heights from its host's samples, a fall report's evidence
     if (actor->IsFateRespawned()) {
@@ -5478,24 +5481,23 @@ bool IsWordWallListener(const std::string& type)
 }
 
 void ActionListener::OverrideFiredWall(MpActor& player,
-                                       MpObjectReference& trigger)
+                                       MpObjectReference& trigger, bool again)
 {
   const auto key = std::make_pair(player.GetFormId(), trigger.GetFormId());
-  if (wallOverridesSent.count(key)) {
+  if (!again && wallOverridesSent.count(key)) {
     return;
   }
   // the wall has fired for someone: its own script, as the owner's record
-  // holds it, is in "done"; a wall still listening plays itself
+  // holds it, is in "done"; a wall still listening plays itself (and one put
+  // back already needs the walk-up alone, at a new host's grant)
   const auto& record = trigger.GetScriptState();
-  if (!record) {
-    return;
-  }
-  const auto fired = std::find_if(
-    record->scripts.begin(), record->scripts.end(), [](const auto& script) {
-      return SameName(script.type, kWordWallScript) &&
-        SameName(script.state, kWordWallDoneState);
-    });
-  if (fired == record->scripts.end()) {
+  const bool fired = record &&
+    std::any_of(record->scripts.begin(), record->scripts.end(),
+                [](const auto& script) {
+                  return SameName(script.type, kWordWallScript) &&
+                    SameName(script.state, kWordWallDoneState);
+                });
+  if (!fired && !again) {
     return;
   }
   // the owner: the host of the trigger's cell, whose engine runs its scripts
@@ -5515,7 +5517,8 @@ void ActionListener::OverrideFiredWall(MpActor& player,
   }
   ScriptStateOverrideMessage override;
   override.refrId = trigger.GetFormId();
-  for (const auto& script : record->scripts) {
+  for (const auto& script :
+       fired ? record->scripts : std::vector<ScriptStateObject>{}) {
     const bool wallScript = SameName(script.type, kWordWallScript);
     if (!wallScript && !IsWordWallListener(script.type)) {
       continue;
@@ -5535,7 +5538,9 @@ void ActionListener::OverrideFiredWall(MpActor& player,
     }
     override.scripts.push_back(put);
   }
-  owner->SendToUser(override, true);
+  if (!override.scripts.empty()) {
+    owner->SendToUser(override, true);
+  }
   // the player's walk-up raised on the owner's copy, the relay of a trigger
   // entry (its own actor to the owner itself, which its client maps to 0x14)
   RelayedActivationMessage relay;
@@ -5546,9 +5551,66 @@ void ActionListener::OverrideFiredWall(MpActor& player,
   wallOverridesSent.insert(key);
   spdlog::info("[verb:word-wall] {:x} lacks wall {:x}'s word, which the wall "
                "taught already: its {} script(s) put back on its owner {:x}'s "
-               "copy and its walk-up raised there",
+               "copy and its walk-up raised there{}",
                player.GetFormId(), trigger.GetFormId(),
-               override.scripts.size(), owner->GetFormId());
+               override.scripts.size(), owner->GetFormId(),
+               again ? " (the cell's new host)" : "");
+}
+
+namespace {
+// inside the wall's chamber: the trigger's primitive when it has one, else
+// its cell (CheckWordWallArm's own reach)
+bool InWallChamber(const MpActor& actor, const MpObjectReference& trigger)
+{
+  return actor.GetCellOrWorld() == trigger.GetCellOrWorld() &&
+    (!trigger.HasPrimitive() ||
+     trigger.IsPointInsidePrimitive(actor.GetPos()));
+}
+}
+
+void ActionListener::CheckWallOverrides(MpActor& actor)
+{
+  const uint32_t id = actor.GetFormId();
+  for (auto it = wallOverridesSent.lower_bound(std::make_pair(id, 0u));
+       it != wallOverridesSent.end() && it->first == id;) {
+    const auto& form = partOne.worldState.LookupFormById(it->second);
+    const MpObjectReference* trigger =
+      form ? form->AsObjectReference() : nullptr;
+    if (trigger && InWallChamber(actor, *trigger)) {
+      ++it;
+      continue;
+    }
+    spdlog::info("[verb:word-wall] {:x} left wall {:x}'s trigger: its next "
+                 "walk-in puts the wall back again",
+                 id, it->second);
+    it = wallOverridesSent.erase(it);
+  }
+}
+
+void ActionListener::OnCellGranted(uint32_t cell)
+{
+  std::vector<std::pair<MpActor*, MpObjectReference*>> again;
+  for (const auto& [actorId, triggerId] : wallOverridesSent) {
+    const auto& triggerForm = partOne.worldState.LookupFormById(triggerId);
+    auto* trigger = triggerForm ? triggerForm->AsObjectReference() : nullptr;
+    const auto& actorForm = partOne.worldState.LookupFormById(actorId);
+    auto* actor = actorForm ? actorForm->AsActor() : nullptr;
+    if (!trigger || !actor || !InWallChamber(*actor, *trigger)) {
+      continue;
+    }
+    const auto at = partOne.worldState.CellOf(
+      trigger->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles),
+      trigger->GetPos());
+    const auto wordWall = partOne.WordOfWall(*trigger);
+    if (!at || *at != cell || !wordWall ||
+        actor->HasShoutEntry(MpActor::ShoutEntry::WordKnown, wordWall->word)) {
+      continue;
+    }
+    again.emplace_back(actor, trigger);
+  }
+  for (auto& [actor, trigger] : again) {
+    OverrideFiredWall(*actor, *trigger, true);
+  }
 }
 
 void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,

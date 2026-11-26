@@ -12,6 +12,10 @@ import { SettingsService } from "./settingsService";
 import { questActing, relayScope } from "../../sync/questActing";
 
 const TAG = "verb:quest-stage";
+// sayCause's window: one trace a quest and kind each ten seconds, the keys
+// kept at most CAUSE_LINES_MAX (cleared past it)
+const CAUSE_LINE_MS = 10_000;
+const CAUSE_LINES_MAX = 4096;
 
 // The storage key of the sharing mode and its list (sp.storage survives a
 // plugin reload, ADR-041's survivor): they come once, at the login, and a
@@ -1910,12 +1914,30 @@ export class QuestStageService extends ClientListener {
         return { world, root: typeof e.root === "string" ? e.root : "", rootSelf };
     }
 
-    // the per-event trace, every event; the claimed words first, under
-    // printConsole's 128-byte cut
+    // the per-event trace; the claimed words first, under printConsole's
+    // 128-byte cut. A mod's own script can start and stop a quest twice a
+    // second, so a quest's first line of a kind is said always, then one each
+    // CAUSE_LINE_MS carrying the count of the lines it stands for (the lab
+    // driver's own quest lines keep the same rule)
     private sayCause(questId: number, what: string, cause: Cause) {
+        const key = `${questId} ${what}`;
+        const now = Date.now();
+        const seen = this.causeLineAt.get(key);
+        if (seen && now - seen[0] < CAUSE_LINE_MS) {
+            seen[1] += 1;
+            return;
+        }
+        const held = seen ? seen[1] : 0;
+        if (!seen && this.causeLineAt.size >= CAUSE_LINES_MAX) {
+            this.causeLineAt.clear();
+        }
+        this.causeLineAt.set(key, [now, 0]);
         const named = cause.world === undefined ? "unnamed" : cause.world ? "world" : "seat";
-        logTrace(this, `quest ${questId.toString(16)} ${what}: cause ${named} (root ${cause.root || "none"})`);
+        logTrace(this, `quest ${questId.toString(16)} ${what}: cause ${named} (root ${cause.root || "none"})${held > 0 ? ` (and ${held} more in the last 10 s)` : ""}`);
     }
+
+    // each (quest, kind)'s last said trace and the lines held since
+    private readonly causeLineAt = new Map<string, [number, number]>();
 
     // whether the rule lets a run word or a stage-0 report go: a world cause;
     // any while questRunCause is "any" or the platform names no cause

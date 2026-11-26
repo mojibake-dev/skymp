@@ -6,6 +6,7 @@ import { ScriptCallMessage } from "../messages/scriptCallMessage";
 import { SpSnippetArgument } from "../messages/spSnippetMessage";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { keepDeficit, keepSurplus } from "../../sync/inventory";
+import { ownItemHolds } from "../../sync/ownItemHold";
 import { AliasFillService } from "./aliasFillService";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
@@ -402,21 +403,19 @@ export class ScriptCallService extends ClientListener {
     // instead (HYPOTHESIS H-RW1: an apply in the tick before the hold is
     // healed by the server's SetInventory echo). JS state alone
     private holdOwnItem(call: ScriptCall, now: number) {
-        if (call.self !== 0x14 || call.cls !== "ObjectReference" || ScriptCallService.recordFamily(call) !== "own") {
-            return;
-        }
+        const first = call.args[0];
+        const holds = ownItemHolds({
+            self: call.self,
+            cls: call.cls,
+            fn: call.fn,
+            family: ScriptCallService.recordFamily(call),
+            item: first !== null && typeof first === "object" ? first.formId : 0,
+            landed: call.landed !== undefined ? call.landed.map((landing) => landing.formId) : undefined,
+        });
         const until = now + ScriptCallService.ownItemHoldMs;
-        if (call.fn === "AddItem" && call.landed !== undefined) {
-            for (const landing of call.landed) {
-                holdPcInventoryBase(landing.formId, keepSurplus, until);
-            }
-            return;
+        for (const hold of holds) {
+            holdPcInventoryBase(hold.formId, hold.keep === "surplus" ? keepSurplus : keepDeficit, until);
         }
-        const item = call.args[0];
-        if (item === null || typeof item !== "object" || item.formId === 0) {
-            return;
-        }
-        holdPcInventoryBase(item.formId, call.fn === "AddItem" ? keepSurplus : keepDeficit, until);
     }
 
     private forget(entry: Outgoing) {

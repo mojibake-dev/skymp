@@ -5675,6 +5675,23 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   return true;
 }
 
+void PartOne::SetNewPlayerQuestsSettings(
+  const std::string& newPlayerQuestsJson)
+{
+  (void)newPlayerQuestsJson;
+}
+
+size_t PartOne::TellNewPlayerQuests(MpActor& player)
+{
+  (void)player;
+  return 0;
+}
+
+void PartOne::SetStartingKitSettings(const std::string& startingKitJson)
+{
+  (void)startingKitJson;
+}
+
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)
 {
   pImpl->playerGlobals = skymp::rules::new_player_globals(playerGlobalsJson);

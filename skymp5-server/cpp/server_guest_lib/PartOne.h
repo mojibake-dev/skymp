@@ -194,6 +194,18 @@ public:
   // player_globals). AtLogin: the record's values still listed. Merge: the
   // latest value wins.
   void SetPlayerGlobalsSettings(const std::string& playerGlobalsJson);
+  // `startingKit` (a JSON list of {form, count, worn}, "[]" for none; a bad
+  // entry stops the server here, named): what a profile's new character's
+  // record holds at its creation, in place of an empty one, its worn items
+  // in its equipment (CreateActor)
+  void SetStartingKitSettings(const std::string& startingKitJson);
+  // `newPlayerQuests` (a JSON list of {quest, stage}, "[]" for none; a bad
+  // entry stops the server here, named): each quest's stage set in a new
+  // character's own game once its first race menu closes (TellNewPlayerQuests)
+  void SetNewPlayerQuestsSettings(const std::string& newPlayerQuestsJson);
+  // the new-player quests' stages, sent to the character's own game as
+  // Quest.SetStage snippets; how many were sent
+  size_t TellNewPlayerQuests(MpActor& player);
   std::vector<uint32_t> PlayerGlobalsWatch() const;
   uint8_t CheckPlayerGlobals(const std::vector<PlayerGlobal>& report) const;
   std::vector<PlayerGlobal> PlayerGlobalsAtLogin(

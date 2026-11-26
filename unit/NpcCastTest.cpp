@@ -2300,3 +2300,45 @@ TEST_CASE("A player's summon joins its caster's fight with another player and "
   REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
   Leave(p);
 }
+
+// An NPC's minion is its caster's host's game's: once another game runs the
+// caster, that game's engine holds none of the old host's effects, so the
+// server ends the minion, a summon as a raise (PartOne::EndLostNpcThralls).
+// The predator's summon, reported by the host's game, is dispelled when the
+// other player's game takes the predator's cell
+TEST_CASE("An NPC's summon ends on the server when another game runs its "
+          "caster, as its raise does",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  const uint32_t summon = Summoned(p, kPredator);
+  auto& atronach = p.worldState.GetFormAt<MpActor>(summon);
+  auto& predator = p.worldState.GetFormAt<MpActor>(kPredator);
+
+  // the host still runs the predator: nothing ends
+  p.EndLostNpcThralls();
+  REQUIRE_FALSE(atronach.IsDead());
+
+  // the host unloads the forest and the other player's game takes it
+  RawMessageData raw;
+  raw.userId = 0;
+  CellLoadedMessage unloaded;
+  unloaded.cell = kForestCell;
+  unloaded.loaded = false;
+  p.GetActionListener().OnCellLoaded(raw, unloaded);
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(predator) ==
+          &p.worldState.GetFormAt<MpActor>(kOther));
+  {
+    LogCapture log;
+    p.EndLostNpcThralls();
+    INFO(log.oss.str());
+    REQUIRE(log.Count(fmt::format("{:x} ends at its caster {:x}'s host "
+                                  "change",
+                                  summon, kPredator)) == 1);
+  }
+  REQUIRE(atronach.IsDead());
+  Leave(p);
+}

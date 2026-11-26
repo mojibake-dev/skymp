@@ -2260,3 +2260,43 @@ TEST_CASE("A player's summon that strikes an NPC another game runs is its "
   p.GetFights().forget(kPredator);
   Leave(p);
 }
+
+// A player and its minions are one side in a fight between two players: the
+// host's summon is told into its caster's fight with the other player as a
+// thrall is (Actor.StartCombat on the summon aimed at the other player, to
+// its caster's game alone), and stands down with that fight at its end
+TEST_CASE("A player's summon joins its caster's fight with another player and "
+          "stands down at its end, as a thrall does",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  const uint32_t summon = Summoned(p);
+  const uint64_t t0 = NowMs();
+  REQUIRE(p.GetFights().hit(kHost, kOther, t0));
+  {
+    LogCapture log;
+    p.TickFights(t0 + 1'000);
+    INFO(log.oss.str());
+    REQUIRE(log.Count(fmt::format("summon {:x} of ff000d20 joins its caster's "
+                                  "fight with ff000d21",
+                                  summon)) == 1);
+  }
+  p.Tick(); // snippets are deferred
+  REQUIRE(SnippetsOn(p, 0, "StartCombat", summon) == 1);
+  REQUIRE(SnippetsOn(p, 1, "StartCombat", summon) == 0);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    p.TickFights(t0 + 61'000);
+    INFO(log.oss.str());
+    REQUIRE(log.Count(fmt::format("summon {:x} of ff000d20 stands down with "
+                                  "its caster's fight with ff000d21",
+                                  summon)) == 1);
+  }
+  p.Tick(); // snippets are deferred
+  REQUIRE(SnippetsOn(p, 0, "StopCombat", summon) == 1);
+  REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+  Leave(p);
+}

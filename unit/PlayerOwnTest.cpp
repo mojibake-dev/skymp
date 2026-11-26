@@ -1946,6 +1946,7 @@ TEST_CASE("Chargen classed the player's by its start keeps its script's race "
   Own(p, "AddSpell", { FormArg(kSparks, "Spell") }, "MQ101QuestScript",
       "AddRaceSpells");
   const auto learned = turned.GetSpellList();
+  INFO(log.oss.str());
   REQUIRE(std::find(learned.begin(), learned.end(), kSparks) != learned.end());
 
   // a stage of it, even one the world's record held, is never the world's

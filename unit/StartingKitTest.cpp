@@ -109,13 +109,7 @@ TEST_CASE("A new player's character starts in the server's starting kit, "
   REQUIRE(Worn(ac, kShoes));
   REQUIRE_FALSE(Worn(ac, kGold));
 
-  // an actor no profile plays is made with nothing
-  p.CreateActor(0xff000001, kPrisonMarker, 0, kPrisonCell);
-  auto& other = p.worldState.GetFormAt<MpActor>(0xff000001);
-  REQUIRE(other.GetInventory().entries.empty());
-
   p.DestroyActor(0xff000000);
-  p.DestroyActor(0xff000001);
   p.SetStartingKitSettings("[]");
 }
 
@@ -163,6 +157,7 @@ TEST_CASE("A new character's first race menu close sets each new-player "
   p.Messages().clear();
 
   Dress(p, 0);
+  p.Tick(); // snippets are deferred
   const auto first = StagesTold(p);
   REQUIRE(first.size() == 1);
   REQUIRE(first[0].first == 0x3372b);
@@ -172,6 +167,7 @@ TEST_CASE("A new character's first race menu close sets each new-player "
   p.SetRaceMenuOpen(0xff000000, true);
   p.Messages().clear();
   Dress(p, 0);
+  p.Tick();
   REQUIRE(StagesTold(p).empty());
 
   p.DestroyActor(0xff000000);

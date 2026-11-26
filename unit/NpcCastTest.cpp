@@ -2350,3 +2350,29 @@ TEST_CASE("An NPC's summon ends on the server when another game runs its "
   REQUIRE(atronach.IsDead());
   Leave(p);
 }
+
+// A player's summon is on its follower list as its thrall is, and a load
+// door takes both with the player: the host's summon goes through the door
+// with its caster, its record at the landing (PartOne::TakeThrallsThroughDoor,
+// the load door's call after the player's own move)
+TEST_CASE("A player's summon goes through a load door with its caster, as "
+          "its thrall does",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  const uint32_t summon = Summoned(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& atronach = p.worldState.GetFormAt<MpActor>(summon);
+  const NiPoint3 landing = kForest + NiPoint3{ 20480.f, 0.f, 0.f };
+  const NiPoint3 facing{ 0.f, 0.f, 90.f };
+  REQUIRE(p.worldState.CellOf(kTamriel, landing).has_value());
+  host.SetPos(landing);
+  const auto taken = p.TakeThrallsThroughDoor(host, 0, kTamriel, kForest,
+                                              kTamriel, landing, facing);
+  REQUIRE(taken == std::vector<uint32_t>{ summon });
+  REQUIRE((atronach.GetPos() - landing).Length() < 1.f);
+  REQUIRE(p.SimulatorOf(atronach) == kHost);
+  Leave(p);
+}

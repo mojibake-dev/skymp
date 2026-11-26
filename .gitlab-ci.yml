@@ -222,6 +222,7 @@ server-build:
           - skymp5-scripts/**/*
           - unit/**/*
           - skyrim-platform/src/platform_se/skyrim_platform/assets/template.ess
+          - skyrim-platform/src/platform_se/skyrim_platform/CauseOwner.h
           - skyrim-platform/src/platform_se/skyrim_platform/PlatformCall.h
           - skyrim-platform/src/platform_se/skyrim_platform/HookPairing.h
           - skyrim-platform/src/platform_se/skyrim_platform/HandOff.h

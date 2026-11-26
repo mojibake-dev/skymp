@@ -4359,8 +4359,7 @@ void PartOne::EndLostNpcThralls()
       spdlog::info("[verb:summon] {:x} ends at its caster {:x}'s host "
                    "change: {:x}'s engine runs the caster now, not its "
                    "runner {:x}'s (ADR-063)",
-                   row.actor, minion.caster, host->GetFormId(),
-                   minion.runner);
+                   row.actor, minion.caster, host->GetFormId(), minion.runner);
       DispelSummon(*actor, "its caster's host change");
       continue;
     }
@@ -4870,9 +4869,9 @@ PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
   // raise names the NPC), else the commander's own
   const uint32_t stamped = actor.ReanimateAcceptedCaster();
   const uint32_t caster = stamped != 0 ? stamped : commander.GetFormId();
-  const auto code = pImpl->cells->claim_commanded(
-    actor.GetFormId(), commander.GetFormId(), *cell, caster, recordSeconds,
-    SteadyNowMs());
+  const auto code =
+    pImpl->cells->claim_commanded(actor.GetFormId(), commander.GetFormId(),
+                                  *cell, caster, recordSeconds, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
     // the word to every listening game: the commander simulates it now

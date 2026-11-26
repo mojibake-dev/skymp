@@ -351,3 +351,72 @@ TEST_CASE("The wall's Disable again after a second learner's walk-out turns "
   EnableTrigger(p);
   Leave(p);
 }
+
+// The wall is put back once a player's walk-in, not once a session: a player
+// who walks out of the trigger before it teaches has it put back again at
+// its next walk-in, and a new host of the wall's cell hears it put back for
+// a player who still stands inside lacking the word.
+namespace {
+// `user`'s own movement update at `pos` in the sanctum, the record put there
+// first so the movement rules spend nothing on the step
+void WalkTo(PartOne& p, Networking::UserId user, uint32_t actorId,
+            const NiPoint3& pos)
+{
+  auto& actor = p.worldState.GetFormAt<MpActor>(actorId);
+  actor.SetPos(pos);
+  auto j = jMovement;
+  j["idx"] = actor.GetIdx();
+  j["data"]["worldOrCell"] = kSanctum;
+  j["data"]["pos"] = nlohmann::json::array({ pos.x, pos.y, pos.z });
+  DoMessage(p, user, j);
+}
+
+// in the sanctum, far outside the trigger's 2,065-unit sphere
+const NiPoint3 kOutOfTheSphere{ -1600.f, -608.f, 540.f };
+}
+
+TEST_CASE("A player who walks out of a fired wall's trigger before it "
+          "teaches has the wall put back again at its next walk-in",
+          "[WordWallOverride][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  RecordWall(p, "done");
+  ReportWall(p, 1);
+  REQUIRE(SentAboutTheWall(p, 0) ==
+          std::vector<std::string>{ "override", "enter ff000f7b" });
+  // out of the sphere, then back in: its next report plays the wall again
+  p.Messages().clear();
+  WalkTo(p, 1, kGuestActor, kOutOfTheSphere);
+  WalkTo(p, 1, kGuestActor, kFarInTheSphere);
+  ReportWall(p, 1);
+  REQUIRE(SentAboutTheWall(p, 0) ==
+          std::vector<std::string>{ "override", "enter ff000f7b" });
+  Leave(p);
+}
+
+TEST_CASE("A new host of a fired wall's cell hears the wall put back for a "
+          "player who lacks its word and stands inside its trigger",
+          "[WordWallOverride][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  RecordWall(p, "done");
+  ReportWall(p, 1);
+  REQUIRE(SentAboutTheWall(p, 0) ==
+          std::vector<std::string>{ "override", "enter ff000f7b" });
+  // the host leaves; the guest, inside the trigger, is granted the cell and
+  // hears the wall put back on its own copy and its own walk-up raised there
+  p.Messages().clear();
+  DoDisconnect(p, 0);
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 4'000);
+  REQUIRE(p.GetCellHost(kSanctum).hosted);
+  REQUIRE(p.GetCellHost(kSanctum).player == kGuestActor);
+  REQUIRE(SentAboutTheWall(p, 1) ==
+          std::vector<std::string>{ "override", "enter ff000f7b" });
+  p.worldState.GetFormAt<MpObjectReference>(kTrigger).SetScriptState(
+    std::nullopt);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHostActor);
+  p.DestroyActor(kGuestActor);
+}

@@ -690,9 +690,10 @@ export class ScriptStateService extends ClientListener {
         this.overrides.set(m.refrId, { m, receivedAt: Date.now(), nextTryAt: 0, busy: "", waiting: old ? old.waiting : [] });
     }
 
-    // each held override: this game's own read of the reference, the override
-    // set over it by name, then the result applied as the record's scripts
-    // are (ApplyScriptState, under the VM's locks). A busy read or apply tries
+    // each held override, once its cell's grant pass (if any) is done: this
+    // game's own read of the reference, the override set over it by name,
+    // then the result applied as the record's scripts are (ApplyScriptState,
+    // under the VM's locks). A busy read or apply tries
     // again after BUSY_RETRY_MS, within BUSY_WINDOW_MS of the override; at the
     // apply, the give-up or a final refusal its waiting entries run
     private applyOverrides(now: number): void {
@@ -723,6 +724,12 @@ export class ScriptStateService extends ClientListener {
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
             if (!refr) {
                 wait("no reference here");
+                continue;
+            }
+            // the reference's cell's grant pass still applying its served
+            // records: the override waits for the pass, so it goes over them
+            const parent = refr.getParentCell();
+            if (parent && this.passes.has(parent.getFormID())) {
                 continue;
             }
             let raw: unknown;
@@ -947,11 +954,13 @@ export class ScriptStateService extends ClientListener {
             return;
         }
         const now = Date.now();
-        if (this.overrides.size > 0) {
-            this.applyOverrides(now);
-        }
+        // a grant's pass first: the cell's served records land, then an
+        // override goes back over them
         if (this.passes.size > 0) {
             this.runPasses(now);
+        }
+        if (this.overrides.size > 0) {
+            this.applyOverrides(now);
         }
         if (this.held.size > 0) {
             this.lookHeld(now);

@@ -3404,6 +3404,9 @@ void ApplyHostDecisions(PartOne& partOne,
                                      grant, true);
         FlipHostedFlags(partOne, *host, d.cell, host);
         partOne.ReplayHeldSightings(d.cell, *host);
+        // a fired word wall in the cell, put back for a player inside who
+        // lacks its word, is put back on the new host's copy too
+        partOne.GetActionListener().OnCellGranted(d.cell);
         // train 53's C-entry: the trigger enters held while nobody hosted
         // the cell, judged again now, after the grant's word on the same
         // ordered channel; the host's client plays a relayed entry only once

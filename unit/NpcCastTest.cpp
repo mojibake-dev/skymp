@@ -2197,3 +2197,66 @@ TEST_CASE("A thrall whose commander fights two players is told into one "
   p.DestroyActor(kThird);
   LeaveThrall(p, predator);
 }
+
+// ADR-077 decision 2: an attack on a minion is an attack on its owner,
+// whichever game runs the attacker. The predator, an NPC the host's game
+// runs, strikes the other player's summon, which the other player's game
+// runs: the fight is recorded between the predator and the summon's owner,
+// as a strike on the owner would be (no notice: a game's copy of an NPC
+// another game runs has its AI off; that copy's own combat is the client's,
+// from the predator's hosted target)
+TEST_CASE("An NPC one game runs that strikes another player's summon is in a "
+          "fight with the summon's owner (ADR-077 decision 2)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  const uint32_t summon = Summoned(p, 0, 1);
+  REQUIRE(p.OwnerOf(p.worldState.GetFormAt<MpActor>(summon)) == kOther);
+  {
+    LogCapture log;
+    Strikes(p, 0, kPredator, summon);
+    INFO(log.oss.str());
+    REQUIRE(log.Count(fmt::format("{:x} hit {:x}, a minion of ff000d21: a "
+                                  "fight with its owner",
+                                  kPredator, summon)) == 1);
+  }
+  REQUIRE(p.GetFights().between(kPredator, kOther));
+  // the predator's own game saw its strike, and the owner's copy of the
+  // predator has its AI off: no notice to either
+  REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+  REQUIRE(PlayersNoticesTo(p, 1).empty());
+  p.GetFights().forget(kPredator);
+  Leave(p);
+}
+
+// and the other way: the other player's summon strikes the predator, which
+// the host's game runs and whose engine never sees the hit (it landed on
+// the summon's game's copy). The fight is the summon's owner's with the
+// predator, and the predator's host is told as for a player's hit, both
+// ways (its predator at the summon, its copy of the summon at the predator)
+TEST_CASE("A player's summon that strikes an NPC another game runs is its "
+          "owner's fight, and the NPC's host is told (ADR-077 decision 2)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  const uint32_t summon = Summoned(p, 0, 1);
+  {
+    LogCapture log;
+    Strikes(p, 1, summon, kPredator);
+    INFO(log.oss.str());
+    REQUIRE(log.Count(fmt::format("{:x}, a minion of ff000d21, hit {:x}: a "
+                                  "fight with its owner; its host ff000d20's "
+                                  "game is told",
+                                  summon, kPredator)) == 1);
+  }
+  REQUIRE(p.GetFights().between(kOther, kPredator));
+  REQUIRE(SnippetsOn(p, 0, "StartCombat", kPredator) == 1);
+  REQUIRE(SnippetsOn(p, 0, "StartCombat", summon) == 1);
+  REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  p.GetFights().forget(kPredator);
+  Leave(p);
+}

@@ -8,5 +8,5 @@ characters' looks and inventories: nothing licensed.
 
 Extraction: RakNet datagrams parsed from `tshark -T fields -e udp.payload`
 (reliability header, ordering, split reassembly; the pcap holds both sides of
-docker's NAT, so only packets to or from 10.10.70.10:7777 count), keeping the
+docker's NAT, so only packets to or from the server's own address on port 7777 count), keeping the
 user messages that start with 0x86.

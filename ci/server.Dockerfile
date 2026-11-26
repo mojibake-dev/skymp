@@ -3,7 +3,7 @@
 # so the toolchain and the vcpkg cache are upstream's and nothing is rebuilt.
 # Everything happens inside the build: configure, build, T0 when the master
 # .esm files are present in skyrim_data_files/, and a runtime image carrying
-# build/dist/server that sky-srv's compose runs.
+# build/dist/server that the server host's compose runs.
 #
 # From the fork root:  docker build -f ci/server.Dockerfile -t skymp-server:parity .
 
@@ -53,7 +53,7 @@ RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
       && git -C vcpkg checkout -q FETCH_HEAD; \
     fi
 # The CMake build tree and cargo's registry are BuildKit cache mounts, kept by
-# sky-ci's daemon between builds, so a build recompiles what changed instead of
+# the CI host's daemon between builds, so a build recompiles what changed instead of
 # everything (configure and build were 342 s of server-build 8454's 468; thuum
 # ADR-040 item 4). The runner reuses its working copy, but a branch switch
 # changes the times of every file that differs, so the tree alone saved only the

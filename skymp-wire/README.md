@@ -31,7 +31,7 @@ Status (M1, branch `m1-wire`, ADR-019 proposed): SkyMP's own protocol is ported.
 
 Gates: `cargo test --workspace --all-features`, clippy with the deny set,
 `cargo deny check`, the committed header (`just wire-header-check`), bounded fuzzing
-per push and longer on the schedule (the fork's GitLab pipeline on sky-ci).
+per push and longer on the schedule (the fork's GitLab pipeline on its CI host).
 
 Licensing: these crates are MIT on their own. wire-bridge builds into
 skymp5-server (AGPLv3) and wire-client-ffi loads into skymp5-client (GPLv3),

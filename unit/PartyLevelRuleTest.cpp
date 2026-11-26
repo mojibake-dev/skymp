@@ -33,9 +33,12 @@ TEST_CASE("A PC-level-mult base takes the party's level times its mult, "
   REQUIRE(LevelFor(Ahtar(), 1) == std::optional<uint16_t>(6));
   REQUIRE(LevelFor(Ahtar(), 40) == std::optional<uint16_t>(30));
 
-  // a mult of 1.2: 27 x 1200 = 32400, times 0.001, cut to 32
+  // a mult of 1.2: 27 x 1200 = 32400, times 0.001, cut to 32, then his
+  // ceiling of 30; with no ceiling, the 32 itself
   BaseFacts tougher = Ahtar();
   tougher.level = 1200;
+  REQUIRE(LevelFor(tougher, 27) == std::optional<uint16_t>(30));
+  tougher.calcLevelMax = 0;
   REQUIRE(LevelFor(tougher, 27) == std::optional<uint16_t>(32));
 
   // no calc levels: no clamp, a half mult at party level 1 cut to 0 as the

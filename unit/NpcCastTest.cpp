@@ -1620,12 +1620,17 @@ TEST_CASE("A summon's hits on the other player or on that player's summon "
       REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
                         "minute quiet)") == 1);
       REQUIRE(log.Count("stays in the fight") == 0);
-      // the summon's own pair, as quiet, ends with its sides' fight (D2)
+      // the summon's own pair, as quiet, ends with its sides' fight (D2);
+      // each side's summon stands down with its owner's fight (design A),
+      // whose StopCombat stands for D2's own
       REQUIRE(
         log.Count(Between(mine, kOther) + " ends with its sides' fight") == 1);
-      REQUIRE(log.Count(fmt::format("{:x}'s host ff000d20 is told the end of "
-                                    "its fight with ff000d21 (D2)",
+      REQUIRE(log.Count(fmt::format("summon {:x} of ff000d20 stands down "
+                                    "with its caster's fight with ff000d21",
                                     mine)) == 1);
+      REQUIRE(log.Count(fmt::format("summon {:x} of ff000d21 stands down "
+                                    "with its caster's fight with ff000d20",
+                                    theirs)) == 1);
     }
     p.Tick(); // snippets are deferred
     // the owner's figure of the other player stands down once (the players'
@@ -1693,7 +1698,10 @@ TEST_CASE("A summon's hits on the other player or on that player's summon "
     REQUIRE(SnippetsOn(p, 0, "StopCombat", mine) == 1);
     REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kHost) == 1);
     REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", mine) == 1);
-    REQUIRE(SnippetsTo(p, 1, "StopCombat").empty());
+    // the other player's own summon stands down with its owner's fight
+    // (design A), the one StopCombat its game hears
+    REQUIRE(SnippetsTo(p, 1, "StopCombat").size() == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombat", theirs) == 1);
     REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
   }
 

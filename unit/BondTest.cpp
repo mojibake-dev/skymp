@@ -348,23 +348,28 @@ TEST_CASE("A bond left alone runs out: the concealments end and the target's "
   p.SetBondSettings(kBonds);
   auto [caster, target] = Pair(p);
   Cast(p);
+  // the claimed hit records the bond at the server's steady clock, read
+  // inside Hit: between these two reads, however slow the run
+  const uint64_t beforeHit = NowMs();
   Hit(p);
+  const uint64_t afterHit = NowMs();
   CastsFire(p);
   p.Messages().clear();
-  const uint64_t now = NowMs();
-  // not yet (the bonds rule's clock; the records' own seconds are the
-  // effects tick's, which barely moves here)
-  p.TickBonds(now + 19'000);
+  // not yet: under the bond's 20 s from its earliest possible record (the
+  // bonds rule's clock; the records' own seconds are the effects tick's,
+  // which barely moves here)
+  p.TickBonds(beforeHit + 19'000);
   p.Tick();
   REQUIRE(target->HasRunningEffectOfType(kInvisibility));
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell") == 0);
-  p.TickBonds(now + 21'000);
+  // past the bond's 20 s from its latest possible record
+  p.TickBonds(afterHit + 21'000);
   p.Tick();
   REQUIRE_FALSE(caster->HasRunningEffectOfType(kInvisibility));
   REQUIRE_FALSE(target->HasRunningEffectOfType(kInvisibility));
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
   // once, and no swap: the bond is spent
-  p.TickBonds(now + 22'000);
+  p.TickBonds(afterHit + 22'000);
   p.Tick();
   REQUIRE(Snippets(p, 1, "Actor", "DispelSpell", 0x14) == 1);
   REQUIRE(Sent(p, 1, MsgType::Teleport) == 0);

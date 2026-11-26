@@ -194,3 +194,23 @@ test("a served term whose release threw is kept and released at a later update, 
   assert.deepEqual(calls, RELEASE);
   assert.equal(jail.term, undefined);
 });
+
+test("a term told on an earlier connection is dropped at a reconnect: nothing is released until the new connection tells its own", () => {
+  const { jail, update, raise, served } = seat();
+  raise("ownSpawnSettled", { how: "moved" });
+  menus.add("Dialogue Menu");
+  served(true);
+  update();
+  assert.deepEqual(calls, []);
+  // the same game connects again (a reconnect, or a second character): the earlier connection's term is not this one's
+  raise("connectionAccepted");
+  raise("ownSpawnSettled", { how: "moved" });
+  menus.delete("Dialogue Menu");
+  update();
+  assert.deepEqual(calls, []);
+  assert.equal(jail.term, undefined);
+  // the server tells the new connection's term after its login
+  served(true);
+  update();
+  assert.deepEqual(calls, RELEASE);
+});

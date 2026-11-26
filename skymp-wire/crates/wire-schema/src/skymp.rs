@@ -3786,6 +3786,28 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 90: the level this game's PC-level-mult NPCs scale to, the
+    /// party's level of the players the game stands with
+    /// (docs/verbs/leveling.md): the mean of their levels leaned toward the
+    /// highest by the server setting npcScaleLean, cut to a whole level. The
+    /// party is the hosting game's player and every player whose cell that
+    /// game hosts; every game in it is told the same level. Server to client,
+    /// reliable, R0: the server computes it from its players' records and
+    /// sends it when it changes (a player joins, levels up or leaves) and at
+    /// a login. The game's engine computes a PC-level-mult NPC's level and
+    /// stats from it in place of its own player's level, so the engine and
+    /// the server count the same health. Safe to receive twice: the game
+    /// keeps the newest. Reason codes: `E_VAL_RANGE` (a level of 0).
+    pub struct PartyLevel {
+        /// `"t": 90`.
+        #[serde(default)]
+        pub t: MsgT<90>,
+        /// The party's level; at least 1.
+        pub level: u16,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

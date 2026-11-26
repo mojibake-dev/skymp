@@ -47,6 +47,7 @@
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
 #include "OwnHeadPartsMessage.h"
+#include "PartyLevelMessage.h"
 #include "PerkPickMessage.h"
 #include "PerkStateMessage.h"
 #include "PlacedReportMessage.h"
@@ -178,4 +179,5 @@
   REGISTER_MESSAGE(ArrestMessage)                                             \
   REGISTER_MESSAGE(CrimeGoldMessage)                                          \
   REGISTER_MESSAGE(JailTermMessage)                                           \
-  REGISTER_MESSAGE(ScriptStateOverrideMessage)
+  REGISTER_MESSAGE(ScriptStateOverrideMessage)                                \
+  REGISTER_MESSAGE(PartyLevelMessage)

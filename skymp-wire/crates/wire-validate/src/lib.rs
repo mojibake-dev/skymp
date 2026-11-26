@@ -1705,6 +1705,15 @@ fn check_jail_term(m: &skymp::JailTerm) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The level a game's PC-level-mult NPCs scale to (PartyLevel): at least 1;
+/// the transport refuses it from a client by direction.
+fn check_party_level(m: &skymp::PartyLevel) -> Result<(), Reject> {
+    if m.level == 0 {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// A script override (ScriptStateOverride): a reference of the
 /// shared load order, at least one script, each type named once and without a
 /// NUL, each state without a NUL, each variable named once in its script and
@@ -2751,6 +2760,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::SetWeather(m) => check_set_weather(m),
         Message::JailTerm(m) => check_jail_term(m),
         Message::ScriptStateOverride(m) => check_script_state_override(m),
+        Message::PartyLevel(m) => check_party_level(m),
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
@@ -5041,6 +5051,16 @@ mod tests {
     }
 
     #[test]
+    fn party_levels_are_at_least_one() {
+        use wire_schema::skymp::PartyLevel;
+        let party = |level| Message::PartyLevel(PartyLevel { level, ..Default::default() });
+        assert_eq!(validate_server(&party(27)), Ok(()));
+        assert_eq!(validate_server(&party(1)), Ok(()));
+        assert_eq!(validate_server(&party(u16::MAX)), Ok(()));
+        assert_eq!(validate_server(&party(0)), Err(Reject::Range));
+    }
+
+    #[test]
     fn script_overrides_name_a_shared_reference_and_set_named_values_of_their_kinds() {
         use wire_schema::skymp::{ScriptOverrideScript, ScriptOverrideVar, ScriptStateOverride};
         let name = |s: &str| s.try_into().unwrap_or_default();
@@ -5350,6 +5370,13 @@ mod tests {
                 Ok(())
             };
             prop_assert_eq!(validate_server(&m), want);
+        }
+
+        #[test]
+        fn party_levels_never_panic(level in any::<u16>()) {
+            use wire_schema::skymp::PartyLevel;
+            let m = Message::PartyLevel(PartyLevel { level, ..Default::default() });
+            prop_assert_eq!(validate_server(&m), if level == 0 { Err(Reject::Range) } else { Ok(()) });
         }
 
         #[test]

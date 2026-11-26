@@ -349,8 +349,11 @@ use bounded::{String, Vec};
 /// object's scripts a player's own record decides, by name, put back on the
 /// copy the object's owner runs (a word wall's second learner, docs/verbs/
 /// word-wall.md). A 72 peer has no wire id 97.
-/// MsgTypes 84 to 89 (wire ids 92 to 97) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 73;
+/// 74: PartyLevel (MsgType 90, wire id 98): the level a game's PC-level-mult
+/// NPCs scale to, its party's level (docs/verbs/leveling.md). A 73 peer has
+/// no wire id 98.
+/// MsgTypes 84 to 90 (wire ids 92 to 98) are all built here; none is held.
+pub const SCHEMA_VERSION: u16 = 74;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -959,6 +962,8 @@ pub enum Message {
     JailTerm(skymp::JailTerm),
     /// 97, MsgType 89. See [`skymp::ScriptStateOverride`].
     ScriptStateOverride(skymp::ScriptStateOverride),
+    /// 98, MsgType 90. See [`skymp::PartyLevel`].
+    PartyLevel(skymp::PartyLevel),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -996,7 +1001,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// transport takes from a client. No real inventory nears it (a merchant's
 /// chest holds hundreds of stacks of a few dozen bytes each), and a message
 /// past its cap is refused at its encode, whole, never truncated.
-const TABLE: [Row; 98] = [
+const TABLE: [Row; 99] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1162,14 +1167,16 @@ const TABLE: [Row; 98] = [
     // 16 scripts, each with two names and 16 variables at PAPYRUS_NAME and
     // every payload field carried: 41,047 bytes at the caps
     row("ScriptStateOverride", 89, 48 * KIB, S2C),
+    // a level at a three-byte varint
+    row("PartyLevel", 90, 16, S2C),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 98;
-const _: () = assert!(TABLE.len() == 98, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 99;
+const _: () = assert!(TABLE.len() == 99, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1292,6 +1299,7 @@ impl Message {
             Message::CrimeGold(_) => 95,
             Message::JailTerm(_) => 96,
             Message::ScriptStateOverride(_) => 97,
+            Message::PartyLevel(_) => 98,
         }
     }
 
@@ -1348,6 +1356,7 @@ mod tests {
         assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).name(), "CrimeGold");
         assert_eq!(Message::JailTerm(skymp::JailTerm::default()).name(), "JailTerm");
         assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).name(), "ScriptStateOverride");
+        assert_eq!(Message::PartyLevel(skymp::PartyLevel::default()).name(), "PartyLevel");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1439,7 +1448,10 @@ mod tests {
         // ScriptStateOverride, after 88: wire id 97, the server's word to an
         // object's owner
         assert_eq!(name_of_msg_type(89), Some("ScriptStateOverride"));
-        assert_eq!(name_of_msg_type(90), None);
+        // PartyLevel, after 89: wire id 98, the server's word to every game
+        // of a party
+        assert_eq!(name_of_msg_type(90), Some("PartyLevel"));
+        assert_eq!(name_of_msg_type(91), None);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
@@ -1458,6 +1470,9 @@ mod tests {
         assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).wire_id(), 97);
         assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).msg_type(), Some(89));
         assert_eq!(Message::ScriptStateOverride(skymp::ScriptStateOverride::default()).direction(), Direction::ServerToClient);
+        assert_eq!(Message::PartyLevel(skymp::PartyLevel::default()).wire_id(), 98);
+        assert_eq!(Message::PartyLevel(skymp::PartyLevel::default()).msg_type(), Some(90));
+        assert_eq!(Message::PartyLevel(skymp::PartyLevel::default()).direction(), Direction::ServerToClient);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1890,6 +1905,8 @@ mod tests {
             // the scripts of a world object a player's record decides, at
             // their caps
             Message::ScriptStateOverride(script_state_override_at_its_caps()),
+            // a party's level at its longest
+            Message::PartyLevel(skymp::PartyLevel { level: u16::MAX, ..Default::default() }),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)

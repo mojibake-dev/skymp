@@ -162,5 +162,7 @@ enum class MsgType : uint8_t
   ScriptStateOverride = 89, // the state of a world object's scripts a
                             // player's own record decides, put back by name
                             // on its owner's copy
+  PartyLevel = 90, // the level a game's PC-level-mult NPCs scale to, its
+                   // party's level, when it changes
   Max
 };

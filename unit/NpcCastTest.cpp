@@ -1346,8 +1346,12 @@ TEST_CASE("A player's hit on another player's thrall begins a fight with its "
   // command stays the host's, as ClaimReanimated grants an NPC's raise)
   SECTION("an NPC's raise: its host's command, no player's thrall")
   {
+    // the raise's stamp, then its command, as OnHit stamps it ahead of
+    // ClaimReanimated: the command's row names the stamped caster
     predator.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0,
                                    kBystanderA);
+    REQUIRE(p.ClaimCommanded(p.worldState.GetFormAt<MpActor>(kHost), predator,
+                             60) == PartOne::ClaimVerdict::Reclaimed);
     REQUIRE(p.CommanderOf(predator) == kHost);
     REQUIRE(p.OwnerOf(predator) == 0);
     {
@@ -1999,8 +2003,12 @@ TEST_CASE("An NPC's summon or raise is on no player's side: its hits keep no "
           "down")
   {
     auto& predator = HostsThrall(p);
+    // the raise's stamp, then its command, as OnHit stamps it ahead of
+    // ClaimReanimated: the command's row names the stamped caster
     predator.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0,
                                    kBystanderA);
+    REQUIRE(p.ClaimCommanded(p.worldState.GetFormAt<MpActor>(kHost), predator,
+                             60) == PartOne::ClaimVerdict::Reclaimed);
     REQUIRE(p.CommanderOf(predator) == kHost);
     REQUIRE(p.SideOf(predator) == nullptr);
     // its engine fights the other player (its host's state), so design A

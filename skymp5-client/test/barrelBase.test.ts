@@ -9,6 +9,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import type * as ModelApplyModule from "../src/view/modelApplyUtils";
+import type * as InventoryModule from "../src/sync/inventory";
 
 // a food barrel's base (a CONT) and two barrels of it; the items are stand-in forms
 const BARREL_BASE = 0x845;
@@ -105,6 +106,7 @@ Module._resolveFilename = function (request: string, ...rest: unknown[]) {
 };
 require.cache["skyrimPlatform"] = { id: "skyrimPlatform", filename: "skyrimPlatform", loaded: true, exports: platform } as any;
 const { ModelApplyUtils } = require("../src/view/modelApplyUtils") as typeof ModelApplyModule;
+const { applyBodyInventory } = require("../src/sync/inventory") as typeof InventoryModule;
 
 // two barrels of one base whose list holds two apples, neither changed yet
 const world = () => {
@@ -147,4 +149,31 @@ test("a leveled roll the engine lays at a barrel's first write is taken off agai
   rollOnFirstWrite = CABBAGE;
   apply(BARREL_OPENED, [{ baseId: APPLE, count: 2 }, { baseId: BREAD, count: 1 }]);
   assert.deepEqual(counted(BARREL_OPENED), { [APPLE]: 2, [BREAD]: 1 });
+});
+
+// a dead NPC of the game files: its base (an NPC_) lists plain gold, and the engine's own roll of its leveled loot (a
+// dagger) sits in its changes; the server's record of the body holds both, the base's items and its roll
+const NPC_BASE = 0xba5e;
+const BODY = 0x39fe4;
+const GOLD = 0x1004;
+const DAGGER = 0x1005;
+
+test("a looted body counts its base's gold once and its rolled dagger from its changes, each shown once", () => {
+  world();
+  bases.set(NPC_BASE, [{ baseId: GOLD, count: 10 }]);
+  refBase.set(BODY, NPC_BASE);
+  changes.set(BODY, new Map([[DAGGER, 1]]));
+  applyBodyInventory(reference(BODY) as any, { entries: [{ baseId: GOLD, count: 10 }, { baseId: DAGGER, count: 1 }] }, []);
+  assert.deepEqual(counted(BODY), { [GOLD]: 10, [DAGGER]: 1 });
+  assert.deepEqual(resets, []);
+});
+
+test("a body looted before keeps the gold taken off its base's list when its record is laid again", () => {
+  world();
+  bases.set(NPC_BASE, [{ baseId: GOLD, count: 10 }]);
+  refBase.set(BODY, NPC_BASE);
+  // a player took 3 of the base's 10 gold here: the engine keeps a -3 delta under the base's count
+  changes.set(BODY, new Map([[DAGGER, 1], [GOLD, -3]]));
+  applyBodyInventory(reference(BODY) as any, { entries: [{ baseId: GOLD, count: 7 }, { baseId: DAGGER, count: 1 }] }, []);
+  assert.deepEqual(counted(BODY), { [GOLD]: 7, [DAGGER]: 1 });
 });

@@ -18,6 +18,11 @@ steps:
   - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
 divergences:
   - client: c1
+    msg: {t: 90, level: 2}
+    legacy: 0
+    wire: 1
+    reason: the party's level (PartyLevel, docs/verbs/leveling.md), told to c1's game once its record names a level; the legacy server has no ActorValues record
+  - client: c1
     msg: {t: 7, propName: health}
     legacy: 0
     wire: 1

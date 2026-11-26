@@ -386,6 +386,15 @@ struct PartOne::Impl
     skymp::rules::new_script_variables("[]");
   rust::Box<skymp::rules::PlayerOverlays> playerOverlays =
     skymp::rules::new_player_overlays();
+  // the startingKit setting, parsed: what a profile's new character's record
+  // holds at its creation (CreateActor), each item worn or carried
+  struct StartingKitItem
+  {
+    FormDesc item;
+    uint32_t count = 1;
+    bool worn = false;
+  };
+  std::vector<StartingKitItem> startingKit;
   // the playerGlobals setting as written, recomposed with the player class's
   // globals (playerQuestGlobals) while the scope acts
   std::string playerGlobalsJson = "[]";
@@ -710,6 +719,36 @@ uint32_t PartOne::CreateActor(uint32_t formId, const NiPoint3& pos,
   if (profileId >= 0) {
     auto& ac = worldState.GetFormAt<MpActor>(formId);
     ac.RegisterProfileId(profileId);
+    // a profile's new character starts in the starting kit: its record's
+    // inventory, the worn items in its equipment, which the login dresses
+    // the player's game from
+    if (!pImpl->startingKit.empty()) {
+      Inventory inventory;
+      Equipment equipment;
+      for (const auto& kitItem : pImpl->startingKit) {
+        uint32_t baseId = 0;
+        try {
+          baseId = kitItem.item.ToFormId(worldState.espmFiles);
+        } catch (std::exception& e) {
+          spdlog::warn("PartOne::CreateActor {:x} - starting kit item {} "
+                       "left out ({})",
+                       formId, kitItem.item.ToString(), e.what());
+          continue;
+        }
+        Inventory::Entry entry(baseId, kitItem.count);
+        inventory.AddItems({ entry });
+        if (kitItem.worn) {
+          entry.SetWorn(Inventory::Worn::Right);
+          equipment.inv.AddItems({ entry });
+        }
+      }
+      ac.SetInventory(inventory);
+      ac.SetEquipment(equipment);
+      spdlog::info("PartOne::CreateActor {:x} - profile {}'s new character "
+                   "starts in the starting kit: {} item(s), {} worn",
+                   formId, profileId, inventory.entries.size(),
+                   equipment.inv.entries.size());
+    }
   }
 
   return formId;
@@ -5677,7 +5716,13 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
 
 void PartOne::SetStartingKitSettings(const std::string& startingKitJson)
 {
-  (void)startingKitJson;
+  std::vector<Impl::StartingKitItem> kit;
+  for (const auto& e : skymp::rules::starting_kit(startingKitJson)) {
+    kit.push_back(
+      { FormDesc(e.short_id, std::string(e.file)), e.count, e.worn });
+  }
+  pImpl->startingKit = std::move(kit);
+  spdlog::info("PartOne::SetStartingKitSettings - {}", startingKitJson);
 }
 
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)

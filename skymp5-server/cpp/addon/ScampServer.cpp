@@ -498,6 +498,9 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     // default) or "world", a one-line flip of this file
     partOne->SetQuestStoryInstancesSettings(
       settingOr("questStoryInstances", "\"seat\""));
+    // the kit a profile's new character starts in, `startingKit` (a list of
+    // {form, count, worn}; none when absent)
+    partOne->SetStartingKitSettings(settingOr("startingKit", "[]"));
     // thuum D-Q9 B (Eli 2026-11-11, train 52): whether a player alias's
     // OnLocationChange roots its seat's own cause, `questPlayerAliasCause`
     // "seat" (the default, Eli's B) or "world" (D-Q9 A), the same way

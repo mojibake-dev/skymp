@@ -53,6 +53,7 @@ pub mod scripted_effects;
 pub mod shouts;
 pub mod stagger;
 pub mod standing;
+pub mod starting_kit;
 pub mod summons;
 pub mod teleports;
 pub mod trigger_entry;

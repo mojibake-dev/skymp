@@ -152,8 +152,8 @@ TEST_CASE("The player's own create word carries the server's difficulty, so "
   p.Messages().clear();
   p.SetUserActor(0, kPlayer);
 
-  const auto own = std::find_if(
-    p.Messages().begin(), p.Messages().end(), [&](auto& m) {
+  const auto own =
+    std::find_if(p.Messages().begin(), p.Messages().end(), [&](auto& m) {
       return m.userId == 0 && m.j["t"] == MsgType::CreateActor &&
         m.j["isMe"] == true;
     });

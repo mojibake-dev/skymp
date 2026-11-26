@@ -65,6 +65,11 @@ public:
   static constexpr uint32_t kFNPCHealthLevelBonus = 0x00023BB9;
   static constexpr uint32_t kFPCHealthLevelBonus = 0x0010CFB7;
   static constexpr uint32_t kIAVDhmsLevelUp = 0x00021A73;
+  // Update.esm's record of the multiplier on the damage the player takes at
+  // Legendary, 3 over the executable's 2.5: the id within Update.esm, which
+  // the load order places (FormDesc). No master file sets the other eleven
+  // fDiffMultHPToPC* and fDiffMultHPByPC* settings
+  static constexpr uint32_t kUpdateFDiffMultHPToPCL = 0x000009D5;
 
   struct Data
   {

@@ -100,6 +100,11 @@ public:
   // a save; Init leaves such an actor's base unrolled for the fate pass
   bool CanRollFate() const;
   bool IsCreatedAsPlayer() const;
+  // the multiplier the server's difficulty puts on the damage this actor
+  // takes: fDiffMultHPToPC*'s entry for a player, fDiffMultHPByPC*'s for any
+  // other actor, as the engine's DamageActor (37335) applies it on the
+  // victim's game (wire-rules damage::difficulty_mult)
+  float DifficultyMult() const;
   const ActorValues& GetActorValues() const;
   const ActiveMagicEffectsMap& GetActiveMagicEffects() const;
   int32_t GetProfileId() const;

@@ -953,6 +953,13 @@ void MpActor::VisitProperties(CreateActorMessage& message,
                                                        changeForm, message);
   }
 
+  // the player's own CreateActor names the server's difficulty, which its
+  // game writes to the player's own difficulty field, so the hits its engine
+  // applies itself (a trap's, a fall's) take the one the server's take
+  if (mode == VisitPropertiesMode::All && worldState) {
+    message.props.difficulty = worldState->difficulty;
+  }
+
   // thuum docs/verbs/figure-values.md: another game's figure of this player
   // carries the player's recorded maxima as its base values, instead of the
   // million the client used to set, so a script there reads Skyrim's number
@@ -2673,6 +2680,39 @@ const std::vector<FormDesc>& MpActor::GetTemplateChain() const
 bool MpActor::IsCreatedAsPlayer() const
 {
   return GetFormId() >= 0xff000000 && GetBaseId() <= 0x7;
+}
+
+namespace {
+// the difficulty settings the master files hold: Update.esm's
+// fDiffMultHPToPCL alone; every entry left 0 keeps the executable's
+// (wire-rules damage::DIFF_MULT_HP_TO_PC and DIFF_MULT_HP_BY_PC)
+skymp::rules::DifficultyMults DifficultyMultsOf(WorldState* worldState)
+{
+  skymp::rules::DifficultyMults files{};
+  if (!worldState || !worldState->HasEspm()) {
+    return files;
+  }
+  try {
+    const uint32_t id =
+      FormDesc(espm::GMST::kUpdateFDiffMultHPToPCL, "Update.esm")
+        .ToFormId(worldState->espmFiles);
+    files.to_pc[5] = espm::GetData<espm::GMST>(id, worldState).value;
+  } catch (std::exception&) {
+    // no Update.esm in the load order, or no such record: the executable's
+  }
+  return files;
+}
+}
+
+float MpActor::DifficultyMult() const
+{
+  WorldState* worldState = GetParent();
+  if (!worldState) {
+    return 1.f;
+  }
+  return skymp::rules::difficulty_mult(worldState->difficulty,
+                                       IsCreatedAsPlayer(),
+                                       DifficultyMultsOf(worldState));
 }
 
 const ActorValues& MpActor::GetActorValues() const
@@ -5647,6 +5687,11 @@ void MpActor::ApplyEffects(uint32_t source,
   std::array<bool, 3> touched{};
   OtherDeltas others;
   const bool showReached = reached && stream;
+  // a Health loss takes the server's difficulty as a weapon's hit does
+  // (DifficultyMult): the engine's ValueModifierEffect::ModifyActorValue
+  // (35086) sends it through DamageActor (37335)
+  const auto difficultyFiles = DifficultyMultsOf(worldState);
+  const bool isPlayer = IsCreatedAsPlayer();
   for (const auto& effect : effects) {
     if (showReached) {
       // the caster's game applied it to report the hit, so every game shows
@@ -5681,8 +5726,10 @@ void MpActor::ApplyEffects(uint32_t source,
       facts->no_duration = false;
     }
     // the target's resistances take their share of a hostile effect before
-    // anything is applied (thuum docs/verbs/magic-effects.md, train-30)
-    const float resisted = scale * ResistanceFactorOf(source, effect);
+    // anything is applied, and the difficulty its share of a Health loss
+    const float resisted = scale * ResistanceFactorOf(source, effect) *
+      skymp::rules::effect_difficulty_mult(*facts, worldState->difficulty,
+                                           isPlayer, difficultyFiles);
     const auto applied =
       skymp::rules::apply_effect(*facts, resisted, caster,
                                  stream ? skymp::rules::EffectArrival::Stream

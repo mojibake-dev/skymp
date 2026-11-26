@@ -302,7 +302,6 @@ float TES5DamageFormulaImpl::CalculateDamage() const
 {
   const float incomingDamage = DetermineDamageFromSource(hitData.source);
 
-  // TODO(#461): add difficulty multiplier
   // TODO(#463): add sneak modifier
   float damage = incomingDamage * CalcArmorDamagePenalty();
 
@@ -317,6 +316,9 @@ float TES5DamageFormulaImpl::CalculateDamage() const
   if (hitData.isSneakAttack) {
     damage *= CalcSneakMultiplier();
   }
+
+  // the server's difficulty, on the damage the target takes
+  damage *= target.DifficultyMult();
 
   return damage;
 }

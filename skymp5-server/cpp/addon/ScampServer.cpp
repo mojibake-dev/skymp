@@ -328,6 +328,23 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
       partOne->worldState.sneakRangedMult =
         serverSettings.at("sneakRangedMult").get<float>();
     }
+    // the game's difficulty every hit takes and every player's own game is
+    // told, an integer from 0 (Novice) to 5 (Legendary); absent or refused,
+    // Adept (2), the game's own default
+    if (serverSettings.contains("difficulty")) {
+      const auto& setting = serverSettings.at("difficulty");
+      if (setting.is_number_integer() && setting.get<int64_t>() >= 0 &&
+          setting.get<int64_t>() <= 5) {
+        partOne->worldState.difficulty =
+          static_cast<uint8_t>(setting.get<int64_t>());
+      } else {
+        spdlog::warn("difficulty {} refused (an integer from 0 to 5); {} kept",
+                     setting.dump(), partOne->worldState.difficulty);
+      }
+    }
+    spdlog::info("difficulty {}: every hit takes it, every player's own game "
+                 "is told it",
+                 partOne->worldState.difficulty);
     // thuum docs/verbs/npc-fate.md (the memo's D2): the roll's level rule:
     // "loader", "party-mean" (the default), "party-min", or a number for
     // everyone (PartOne::FateRollLevel)

@@ -13823,6 +13823,73 @@ void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
     .Execute(&host, SpSnippetMode::kNoReturnResult);
 }
 
+// A player and its minions are one side (PartOne::SideOf): a hit between a
+// player's living minion and an NPC on no side is a fight between that NPC
+// and the minion's owner, recorded as a hit on or by the owner would be, so
+// the owner's fight (its rest refusal, its fights tick) holds while its
+// minion fights. The fight rule never counts two actors no user plays
+// (hostility.rs counted), so this runs ahead of it. When the minion struck
+// and another game runs the NPC, that game's engine never saw the strike
+// (it landed on the minion's game's copy of the NPC), so the NPC's host is
+// told as for a player's hit, both ways (TellHostOfFight). When the NPC
+// struck, its own engine saw it, and the owner's game's copy of the NPC has
+// its AI off, so nobody is told: the owner's game puts its copy into combat
+// from the NPC's hosted target. An NPC nobody runs is nobody's to fight.
+// True when the hit was such a pair, so NotifyHostility stops.
+bool ActionListener::HitBetweenMinionAndNpc(MpActor& aggressor,
+                                            MpActor& target, uint64_t nowMs)
+{
+  const auto isPlayer = [&](MpActor& actor) {
+    return partOne.serverState.UserByActor(&actor) !=
+      Networking::InvalidUserId;
+  };
+  MpActor* aggressorSide = partOne.SideOf(aggressor);
+  MpActor* targetSide = partOne.SideOf(target);
+  MpActor* minion = nullptr;
+  MpActor* owner = nullptr;
+  MpActor* npc = nullptr;
+  if (aggressorSide && aggressorSide != &aggressor && !targetSide &&
+      !isPlayer(target)) {
+    minion = &aggressor;
+    owner = aggressorSide;
+    npc = &target;
+  } else if (targetSide && targetSide != &target && !aggressorSide &&
+             !isPlayer(aggressor)) {
+    minion = &target;
+    owner = targetSide;
+    npc = &aggressor;
+  }
+  if (!minion || npc == minion) {
+    return false;
+  }
+  MpActor* npcHost = partOne.worldState.HostOf(*npc);
+  if (!npcHost) {
+    return true;
+  }
+  const bool begins =
+    partOne.GetFights().hit(npc->GetFormId(), owner->GetFormId(), nowMs);
+  if (minion == &target) {
+    if (begins) {
+      spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
+                   "minion of {:x}: a fight with its owner; no notice, "
+                   "its host's own engine saw the hit",
+                   npc->GetFormId(), minion->GetFormId(), owner->GetFormId());
+    }
+    return true;
+  }
+  MpActor* minionHost = partOne.worldState.HostOf(*minion);
+  if (!begins || npcHost == minionHost || !isPlayer(*npcHost)) {
+    return true;
+  }
+  TellHostOfFight(*minion, *npc, *npcHost);
+  spdlog::info("ActionListener::OnWeaponHit - hostility: {:x}, a minion of "
+               "{:x}, hit {:x}: a fight with its owner; its host {:x}'s "
+               "game is told, both ways",
+               minion->GetFormId(), owner->GetFormId(), npc->GetFormId(),
+               npcHost->GetFormId());
+  return true;
+}
+
 // thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks
 // the victim an enemy when its hit lands, but the victim's engine never sees
 // that hit. When a hit begins a fight (the Rust rule's fights table), the
@@ -13855,6 +13922,9 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
   // pair first, for any hit between their two sides; a minion's stray hit
   // while both sides fight one enemy begins nothing (decision 5)
   if (HitAcrossSides(partOne, aggressor, target, nowMs)) {
+    return;
+  }
+  if (HitBetweenMinionAndNpc(aggressor, target, nowMs)) {
     return;
   }
   skymp::rules::HostilityFacts facts{};

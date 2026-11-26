@@ -624,6 +624,10 @@ private:
   // pt53-112c (D2): `host`'s game starts the fight both ways, its NPC
   // `target` aimed at its figure of `aggressor` and that figure aimed at the
   // NPC (NotifyHostility's first tell and #126's re-tell)
+  // a hit between a player's minion and an NPC on no side: the NPC's fight
+  // with the minion's owner; true when the hit was one
+  bool HitBetweenMinionAndNpc(MpActor& aggressor, MpActor& target,
+                              uint64_t nowMs);
   void TellHostOfFight(MpActor& aggressor, MpActor& target, MpActor& host);
   // An enchanted weapon's hit: its enchantment's effects run on the target
   // by the effect rule, and its cast relayed to the struck actor's own game

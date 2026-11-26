@@ -511,6 +511,10 @@ public:
   // game names no setting for: measured against the engine (x-npc-sneak-shot)
   // and set here (server setting sneakRangedMult); 0 keeps SkyMP's 1.3
   float sneakRangedMult = 0.f;
+  // the game's difficulty every hit takes, Novice (0) to Legendary (5); Adept
+  // (2), Skyrim's own default, unless the server setting difficulty names
+  // another
+  uint8_t difficulty = 2;
   // the actors whose server number reached zero and whose host's report is
   // awaited (MpActor::BeginPendingDeath; PartOne::TickDeaths kills the ones
   // past the window)

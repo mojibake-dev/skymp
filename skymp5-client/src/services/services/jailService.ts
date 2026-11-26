@@ -66,7 +66,13 @@ export class JailService extends ClientListener {
             logTrace(this, `the jail's events are unavailable on this platform (${e}); no arrest or bounty is reported (#97)`);
         }
         this.controller.emitter.on("jailTermMessage", (e) => this.onJailTermMessage(e));
-        this.controller.emitter.on("connectionAccepted", () => { this.spawnSettled = false; });
+        // a new connection (a reconnect, or another character in this game)
+        // is told its own term after its login; the stored one was the
+        // earlier connection's, and its spawn settles again
+        this.controller.emitter.on("connectionAccepted", () => {
+            this.term = undefined;
+            this.spawnSettled = false;
+        });
         this.controller.emitter.on("ownSpawnSettled", () => { this.spawnSettled = true; });
         this.controller.on("update", () => this.releaseIfServed());
     }

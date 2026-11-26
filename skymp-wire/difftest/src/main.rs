@@ -62,6 +62,53 @@ struct Session {
     /// Expected differences between the legacy and the wire stack.
     #[serde(default)]
     divergences: Vec<Divergence>,
+    /// Sends the wire client's own transport refuses before they leave.
+    #[serde(default)]
+    refusals: Vec<Refusal>,
+}
+
+/// A send the wire client's own transport refuses before it leaves (a
+/// server-to-client type sent from a client, E_TX_DIRECTION), which the
+/// legacy client sends: on the legacy stack `client` sent MsgType `t` once
+/// more than on the wire stack, and on the wire stack it reported `error`
+/// once, for `reason`. Set aside only when both hold; a declared refusal
+/// that did not occur so is a difference.
+#[derive(Debug, Clone, Deserialize)]
+struct Refusal {
+    client: String,
+    t: i64,
+    error: String,
+    reason: String,
+}
+
+impl Refusal {
+    /// Sets this refusal aside in one client's two summaries: the legacy
+    /// send counted one lower and the wire's error taken out, when the
+    /// legacy count is the wire's plus one and the wire reported the error.
+    fn set_aside(&self, legacy: &mut Value, wire: &mut Value) -> bool {
+        let t = self.t.to_string();
+        let sent = |v: &Value| v.get("sent").and_then(|s| s.get(&t)).and_then(Value::as_u64).unwrap_or(0);
+        let (n, m) = (sent(legacy), sent(wire));
+        let at = wire
+            .get("errors")
+            .and_then(Value::as_array)
+            .and_then(|errors| errors.iter().position(|e| e.as_str() == Some(self.error.as_str())));
+        let Some(at) = at else { return false };
+        if n != m.saturating_add(1) {
+            return false;
+        }
+        if let Some(errors) = wire.get_mut("errors").and_then(Value::as_array_mut) {
+            errors.remove(at);
+        }
+        if let Some(counts) = legacy.get_mut("sent").and_then(Value::as_object_mut) {
+            if m == 0 {
+                counts.remove(&t);
+            } else {
+                counts.insert(t, json!(m));
+            }
+        }
+        true
+    }
 }
 
 /// Messages one client receives that match `msg`, `legacy` times on the
@@ -308,6 +355,14 @@ fn load_session(path: &Path) -> Result<Session, DiffError> {
             return Err(DiffError::Session(format!("divergence {} for {} has no reason", d.key(), d.client)));
         }
     }
+    for r in &s.refusals {
+        if !s.clients.contains_key(r.client.as_str()) {
+            return Err(DiffError::Session(format!("refusal for unknown client {}", r.client)));
+        }
+        if !(0..=255).contains(&r.t) || r.error.trim().is_empty() || r.reason.trim().is_empty() {
+            return Err(DiffError::Session(format!("refusal of MsgType {} for {} needs a MsgType 0 to 255, its error and a reason", r.t, r.client)));
+        }
+    }
     Ok(s)
 }
 
@@ -537,15 +592,35 @@ struct Outcome {
     declared: Vec<String>,
 }
 
-/// Every difference between two runs; `declared` (legacy against wire
-/// only, `a` legacy and `b` wire) moves the expected ones aside.
-fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<String, Value>, declared: &[Divergence]) -> Outcome {
+/// Every difference between two runs; `declared` and `refused` (legacy
+/// against wire only, `a` legacy and `b` wire) move the expected ones aside.
+fn diff(
+    a_name: &str,
+    a: &BTreeMap<String, Value>,
+    b_name: &str,
+    b: &BTreeMap<String, Value>,
+    declared: &[Divergence],
+    refused: &[Refusal],
+) -> Outcome {
     let mut out = Vec::new();
     let mut expected = Vec::new();
     let mut used = vec![false; declared.len()];
+    let mut refusals_used = vec![false; refused.len()];
     let names: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
     for name in names {
-        let (x, y) = (a.get(name).unwrap_or(&Value::Null), b.get(name).unwrap_or(&Value::Null));
+        let (mut xr, mut yr) = (a.get(name).cloned().unwrap_or(Value::Null), b.get(name).cloned().unwrap_or(Value::Null));
+        for (r, u) in refused.iter().zip(refusals_used.iter_mut()) {
+            if r.client == *name && r.set_aside(&mut xr, &mut yr) {
+                *u = true;
+                expected.push(format!(
+                    "{name}: MsgType {} sent on {a_name}, refused by the client on {b_name} with \"{}\" (declared: {})",
+                    r.t,
+                    r.error,
+                    r.reason.trim()
+                ));
+            }
+        }
+        let (x, y) = (&xr, &yr);
         for key in ["rc", "actor", "sent", "errors", "relays_seen"] {
             if x.get(key) != y.get(key) {
                 out.push(format!("{name}.{key}: {a_name} {} | {b_name} {}", x.get(key).unwrap_or(&Value::Null), y.get(key).unwrap_or(&Value::Null)));
@@ -596,6 +671,14 @@ fn diff(a_name: &str, a: &BTreeMap<String, Value>, b_name: &str, b: &BTreeMap<St
             }
         }
     }
+    for (r, u) in refused.iter().zip(&refusals_used) {
+        if !u {
+            out.push(format!(
+                "{}: declared refusal of MsgType {} (\"{}\") did not occur as declared",
+                r.client, r.t, r.error
+            ));
+        }
+    }
     for (d, u) in declared.iter().zip(&used) {
         if !u {
             out.push(format!(
@@ -614,19 +697,21 @@ fn run(path: &Path) -> Result<(bool, String), DiffError> {
     let s = load_session(path)?;
     let legacy = env_stack("legacy", &["DIFFTEST_LEGACY_FAKECLIENT", "DIFFTEST_FAKECLIENT"], "DIFFTEST_LEGACY_ADDR", "127.0.0.1:7777")?;
     let wire = env_stack("wire", &["DIFFTEST_WIRE_FAKECLIENT"], "DIFFTEST_WIRE_ADDR", "127.0.0.1:7778")?;
-    let (a, b, what, names, declared) = match (legacy, wire) {
+    let (a, b, what, names, declared, refused) = match (legacy, wire) {
         (Some(l), Some(w)) => (
             normalized(&l, &s, "a")?,
             normalized(&w, &s, "a")?,
             "legacy against wire".to_string(),
             ("legacy", "wire"),
             declarations(&s)?,
+            s.refusals.clone(),
         ),
         (Some(one), None) | (None, Some(one)) => (
             normalized(&one, &s, "a")?,
             normalized(&one, &s, "b")?,
             format!("{} against itself (determinism)", one.name),
             ("first", "second"),
+            Vec::new(),
             Vec::new(),
         ),
         (None, None) => {
@@ -635,7 +720,7 @@ fn run(path: &Path) -> Result<(bool, String), DiffError> {
             ))
         }
     };
-    let o = diff(names.0, &a, names.1, &b, &declared);
+    let o = diff(names.0, &a, names.1, &b, &declared, &refused);
     let mut verdict = if o.differences.is_empty() {
         format!("session {}: {what}: identical ({} clients, {} declared divergences)", s.id, a.len(), o.declared.len())
     } else {
@@ -771,7 +856,7 @@ mod tests {
         let s = load_session(&smoke_path()).expect("parse");
         let a = normalized(&stack(stub()), &s, "t1").expect("run");
         let b = normalized(&stack(stub()), &s, "t2").expect("run");
-        let same = diff("a", &a, "b", &b, &[]);
+        let same = diff("a", &a, "b", &b, &[], &[]);
         assert!(same.differences.is_empty(), "{:?}", same.differences);
         assert_eq!(a["c1"]["rc"], 0);
         assert!(a["c1"]["actor"].is_object());
@@ -779,7 +864,7 @@ mod tests {
         std::env::set_var("FAKECLIENT_STUB_VARIANT", "1");
         let c = normalized(&stack(stub()), &s, "t3").expect("run");
         std::env::remove_var("FAKECLIENT_STUB_VARIANT");
-        let lines = diff("a", &a, "c", &c, &[]).differences;
+        let lines = diff("a", &a, "c", &c, &[], &[]).differences;
         assert!(!lines.is_empty());
         assert!(lines.iter().any(|l| l.contains("relays_seen")), "{lines:?}");
     }
@@ -848,20 +933,55 @@ mod tests {
         let legacy = one_client(&[]);
         let wire = one_client(&[r#"{"idx":2,"t":25}"#]);
         // undeclared: a difference
-        let o = diff("legacy", &legacy, "wire", &wire, &[]);
+        let o = diff("legacy", &legacy, "wire", &wire, &[], &[]);
         assert_eq!(o.differences.len(), 1, "{:?}", o.differences);
         // declared with the observed counts: set aside, with its reason
-        let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 1)]);
+        let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 1)], &[]);
         assert!(o.differences.is_empty(), "{:?}", o.differences);
         assert_eq!(o.declared.len(), 1);
         assert!(o.declared[0].contains("departure detection"), "{:?}", o.declared);
         // declared, but the stacks agree now: the stale declaration fails
-        let o = diff("legacy", &wire, "wire", &wire, &[destroy_c1(0, 1)]);
+        let o = diff("legacy", &wire, "wire", &wire, &[destroy_c1(0, 1)], &[]);
         assert_eq!(o.differences.len(), 1, "{:?}", o.differences);
         assert!(o.differences[0].contains("did not occur"), "{:?}", o.differences);
         // declared with other counts: both the difference and the stale declaration
-        let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 2)]);
+        let o = diff("legacy", &legacy, "wire", &wire, &[destroy_c1(0, 2)], &[]);
         assert_eq!(o.differences.len(), 2, "{:?}", o.differences);
+    }
+
+    #[test]
+    fn a_declared_refusal_is_set_aside_and_must_occur() {
+        let error = "E_CLIENT_RECOGNIZE: E_TX_DIRECTION: a client does not send ScriptStateOverride";
+        let summary = |sent: Value, errors: &[&str]| {
+            let mut m = BTreeMap::new();
+            m.insert("c1".to_string(), json!({"rc": 0, "sent": sent, "errors": errors, "received": []}));
+            m
+        };
+        let legacy = summary(json!({"1": 1, "89": 1}), &[]);
+        let wire = summary(json!({"1": 1}), &[error]);
+        let refusal = Refusal { client: "c1".into(), t: 89, error: error.into(), reason: "a server-to-client type".into() };
+        // undeclared: the send count and the error both differ
+        let o = diff("legacy", &legacy, "wire", &wire, &[], &[]);
+        assert_eq!(o.differences.len(), 2, "{:?}", o.differences);
+        // declared: both set aside, with its reason
+        let o = diff("legacy", &legacy, "wire", &wire, &[], std::slice::from_ref(&refusal));
+        assert!(o.differences.is_empty(), "{:?}", o.differences);
+        assert_eq!(o.declared.len(), 1);
+        assert!(o.declared[0].contains("refused by the client"), "{:?}", o.declared);
+        // the wire client sent it after all: the stale declaration fails
+        let sent = summary(json!({"1": 1, "89": 1}), &[]);
+        let o = diff("legacy", &legacy, "wire", &sent, &[], std::slice::from_ref(&refusal));
+        assert_eq!(o.differences.len(), 1, "{:?}", o.differences);
+        assert!(o.differences[0].contains("did not occur"), "{:?}", o.differences);
+        // another error: the declaration fails and the error stays a difference
+        let other = summary(json!({"1": 1}), &["E_CLIENT_RECOGNIZE: something else"]);
+        let o = diff("legacy", &legacy, "wire", &other, &[], std::slice::from_ref(&refusal));
+        assert_eq!(o.differences.len(), 3, "{:?}", o.differences);
+        // two sends refused, one declared: the second is still a difference
+        let twice_legacy = summary(json!({"1": 1, "89": 2}), &[]);
+        let twice_wire = summary(json!({"1": 1}), &[error, error]);
+        let o = diff("legacy", &twice_legacy, "wire", &twice_wire, &[], std::slice::from_ref(&refusal));
+        assert!(!o.differences.is_empty(), "{:?}", o.differences);
     }
 
     #[test]
@@ -870,12 +990,12 @@ mod tests {
         let legacy = one_client(&[r#"{"data":{"pos":[1,2,3]},"idx":2,"t":2}"#, r#"{"data":{"pos":[5001,2,3]},"idx":2,"t":2}"#, r#"{"idx":3,"t":2}"#]);
         let wire = one_client(&[r#"{"idx":3,"t":2}"#]);
         let relayed = Divergence { client: "c2".into(), msg: json!({"t": 2, "idx": 2}), legacy: 2, wire: 0, reason: "validate before relay".into(), within: BTreeMap::new() };
-        let o = diff("legacy", &legacy, "wire", &wire, &[relayed]);
+        let o = diff("legacy", &legacy, "wire", &wire, &[relayed], &[]);
         assert!(o.differences.is_empty(), "{:?}", o.differences);
         assert_eq!(o.declared.len(), 1, "{:?}", o.declared);
         // a nested field narrows the pattern to one of them
         let one = Divergence { client: "c2".into(), msg: json!({"t": 2, "data": {"pos": [5001, 2, 3]}}), legacy: 1, wire: 0, reason: "the rejected jump".into(), within: BTreeMap::new() };
-        let o = diff("legacy", &legacy, "wire", &wire, &[one]);
+        let o = diff("legacy", &legacy, "wire", &wire, &[one], &[]);
         assert_eq!(o.differences.len(), 1, "the other idx 2 move still differs: {:?}", o.differences);
     }
 
@@ -947,7 +1067,7 @@ mod tests {
         let once = BTreeMap::from([("c1".to_string(), json!({"received": [r#"{"day":1,"t":34}"#]}))]);
         let twice = BTreeMap::from([("c1".to_string(), json!({"received": [r#"{"day":1,"t":34}"#, r#"{"day":1,"t":34}"#]}))]);
         let mine: Vec<Divergence> = clock.iter().filter(|d| d.client == "c1").map(|d| (*d).clone()).collect();
-        assert!(diff("legacy", &a, "wire", &once, &mine).differences.is_empty());
-        assert!(!diff("legacy", &a, "wire", &twice, &mine).differences.is_empty());
+        assert!(diff("legacy", &a, "wire", &once, &mine, &[]).differences.is_empty());
+        assert!(!diff("legacy", &a, "wire", &twice, &mine, &[]).differences.is_empty());
     }
 }

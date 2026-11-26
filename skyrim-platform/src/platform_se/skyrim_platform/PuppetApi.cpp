@@ -249,6 +249,19 @@ void Puppets::SetDetection(uint32_t formId, std::optional<int32_t> level)
   g_puppets.detection[formId] = relayed;
 }
 
+std::vector<int32_t> Puppets::RelayedLevels()
+{
+  std::lock_guard l(g_puppets.m);
+  std::vector<int32_t> out;
+  out.reserve(g_puppets.detection.size());
+  for (const auto& [formId, relayed] : g_puppets.detection) {
+    if (relayed.has && g_puppets.ids.count(formId) != 0) {
+      out.push_back(relayed.level);
+    }
+  }
+  return out;
+}
+
 Puppets::DetectionRead Puppets::ReadDetection(uint32_t formId)
 {
   std::lock_guard l(g_puppets.m);

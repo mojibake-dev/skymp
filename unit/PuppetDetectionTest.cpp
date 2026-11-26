@@ -1,5 +1,6 @@
 #include "../skyrim-platform/src/platform_se/skyrim_platform/PuppetDetection.h"
 #include <catch2/catch_all.hpp>
+#include <vector>
 
 // Whose answer the engine's detection reader gives on this game
 // (PuppetDetection.h, the hook on Actor::RequestDetectionLevel): a puppet's
@@ -51,4 +52,78 @@ TEST_CASE("A puppet whose host has relayed no level yet answers by the "
 {
   REQUIRE_FALSE(PuppetDetection::Answer(true, true, PuppetDetection::Relayed{})
                   .has_value());
+}
+
+TEST_CASE("The guest's stealth eye opens as the host's bandit finds it: the "
+          "highest level against this game's player takes a puppet's "
+          "relayed level above the engine's own",
+          "[PuppetDetection]")
+{
+  const std::vector<std::int32_t> relayed = { PuppetDetection::kUndetected,
+                                              57 };
+  REQUIRE(PuppetDetection::HighestWithRelayed(PuppetDetection::kUndetected,
+                                              relayed.data(),
+                                              relayed.size()) == 57);
+}
+
+TEST_CASE("The guest's stealth eye closes as the host's bandit loses it: "
+          "relayed undetected levels leave the engine's own",
+          "[PuppetDetection]")
+{
+  const std::vector<std::int32_t> relayed = { PuppetDetection::kUndetected };
+  REQUIRE(PuppetDetection::HighestWithRelayed(
+            PuppetDetection::kUndetected, relayed.data(), relayed.size()) ==
+          PuppetDetection::kUndetected);
+  REQUIRE(PuppetDetection::HighestWithRelayed(PuppetDetection::kUndetected,
+                                              nullptr, 0) ==
+          PuppetDetection::kUndetected);
+}
+
+TEST_CASE("An NPC this game runs that sees the player keeps the eye at its "
+          "own level when the puppets relay less",
+          "[PuppetDetection]")
+{
+  const std::vector<std::int32_t> relayed = { PuppetDetection::kUndetected,
+                                              10 };
+  REQUIRE(PuppetDetection::HighestWithRelayed(40, relayed.data(),
+                                              relayed.size()) == 40);
+}
+
+TEST_CASE("A bandit the host runs that attacks the guest holds its fight on "
+          "the guest's game: its host's relayed level of this game's player "
+          "feeds its combat group's detection",
+          "[PuppetDetection]")
+{
+  PuppetDetection::Relayed seen;
+  seen.has = true;
+  seen.level = 57;
+  const auto standIns = PuppetDetection::StandIns(
+    true, { { 0x2b, true, seen }, { 0x1a, false, {} } });
+  REQUIRE(standIns.size() == 1);
+  REQUIRE(standIns[0].member == 0x2b);
+  REQUIRE(standIns[0].level == 57);
+}
+
+TEST_CASE("A bandit whose host loses the guest feeds the lost level, so the "
+          "engine's own search and loss run on the guest's game",
+          "[PuppetDetection]")
+{
+  PuppetDetection::Relayed lost;
+  lost.has = true;
+  lost.level = PuppetDetection::kUndetected;
+  const auto standIns =
+    PuppetDetection::StandIns(true, { { 0x2b, true, lost } });
+  REQUIRE(standIns.size() == 1);
+  REQUIRE(standIns[0].level == PuppetDetection::kUndetected);
+}
+
+TEST_CASE("A group's other targets, and a puppet with no relayed level, get "
+          "no stand-in",
+          "[PuppetDetection]")
+{
+  PuppetDetection::Relayed seen;
+  seen.has = true;
+  seen.level = 57;
+  REQUIRE(PuppetDetection::StandIns(false, { { 0x2b, true, seen } }).empty());
+  REQUIRE(PuppetDetection::StandIns(true, { { 0x2b, true, {} } }).empty());
 }

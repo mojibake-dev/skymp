@@ -114,6 +114,9 @@ struct DetectionRead
   PuppetDetection::Relayed relayed;
 };
 DetectionRead ReadDetection(uint32_t formId);
+// every puppet's relayed level of this game's player, read under one lock (the
+// stealth eye's scan, FridaHooks.cpp)
+std::vector<int32_t> RelayedLevels();
 
 void InstallHooks();
 }

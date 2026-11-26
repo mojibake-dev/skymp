@@ -13,8 +13,11 @@
 // fDetectEventDistancePlayer (1536) where another actor's carries
 // fDetectEventDistanceNPC (512); and the player's projectiles in flight are
 // watched out of combat at the player's distance, another actor's only in
-// combat. Another player's figure is that player on this game, so its noise
-// and its arrows reach this game's actors as the player's do.
+// combat. A detector in combat sees a target that is neither the player
+// nor its own combat target at fDetectionCombatNonTargetDistanceMult's
+// share of its sight distance, and the player always at the whole of it.
+// Another player's figure is that player on this game, so its noise, its
+// arrows and its body reach this game's actors as the player's do.
 namespace FigureNoise {
 
 struct Target
@@ -43,9 +46,34 @@ inline std::uintptr_t ComparedWith(const Target& t, std::uintptr_t target,
 }
 
 // CalculateDetection (Address Library 37774, 0x690870 on 1.6.1170), read on
-// sky-re through REA: the three places it tests the target (r14) against
+// sky-re through REA: the four places it tests the target (r14) against
 // the player (the global at RIP + disp, Address Library 401069), with the
-// bytes each site holds
+// bytes each site holds; rsi is the detector
+//
+// the in-combat sight test, after the target's sight distance is in xmm6:
+//   +0x16a  4c 3b 35 d32   cmp  r14, [player]
+//   +0x171  74 3b          jz   +0x1ae (the whole sight distance)
+//   +0x173  ...            the detector's IsInCombat (vtable 0E3), its flag
+//                          +0xe8 bit 14, its combat target (+0x104) against
+//                          the target's handle, each jumping to +0x1ae
+//   +0x1a6                 mulss xmm6, fDetectionCombatNonTargetDistanceMult
+// The site's write keeps the jump's target and turns its test into the
+// answer of a call: `call` the stub (5 bytes, passing the target), then
+// `test al, al` and `jnz` +0x1ae, so a target that counts as the player is
+// seen at the whole distance. Volatile registers are dead there: the call
+// before the site ends them, and both of its paths write them before
+// reading
+inline constexpr std::size_t kCombatSight = 0x16a;
+inline constexpr std::array<std::uint8_t, 9> kCombatSightBytes = {
+  0x4c, 0x3b, 0x35, 0xb7, 0x6c, 0xaa, 0x02, 0x74, 0x3b
+};
+// the bytes after the call: `test al, al`, then `jnz` with the engine's
+// own jump's displacement, which stays at the same place
+inline constexpr std::array<std::uint8_t, 4> kCombatSightTail = {
+  0x84, 0xc0, 0x75, kCombatSightBytes[8]
+};
+static_assert(5 + kCombatSightTail.size() == kCombatSightBytes.size(),
+              "the call and the tail fill the site exactly");
 //
 // the gate before the target's noise is read, entered only when neither
 // actor has a combat controller (+0x160) and the fight reaction is neither
@@ -102,12 +130,26 @@ inline std::array<std::uint8_t, 17> Stub(std::uint64_t fn)
   return s;
 }
 
+// the in-combat sight test's stub: the target as the first argument and
+// the detector (rsi) as the second, then `jmp [rip]` to `fn`, which returns
+// to the site with its answer in al
+inline std::array<std::uint8_t, 20> SightStub(std::uint64_t fn)
+{
+  std::array<std::uint8_t, 20> s = { 0x49, 0x8b, 0xce, 0x48, 0x8b, 0xd6,
+                                     0xff, 0x25, 0x00, 0x00, 0x00, 0x00 };
+  std::memcpy(s.data() + 12, &fn, sizeof(fn));
+  return s;
+}
+
 struct Found
 {
   // the global the engine reads its player from
   std::uintptr_t playerSlot = 0;
   // the function the gate calls (Actor::GetHostileToActor's address)
   std::uintptr_t hostileCall = 0;
+  // where the in-combat sight test's jump lands: past the share, at the
+  // whole sight distance
+  std::uintptr_t combatSightWhole = 0;
 };
 
 namespace Detail {
@@ -126,7 +168,7 @@ bool Holds(const std::uint8_t* code, std::size_t offset,
 }
 }
 
-// the three sites read from the function's code (kCodeSize bytes from its
+// the four sites read from the function's code (kCodeSize bytes from its
 // entry, the function at `entry`): the player's global and the gate's
 // callee, both RIP-relative, or nothing when a site's bytes differ from the
 // ones above, and then no site is written
@@ -135,7 +177,8 @@ inline std::optional<Found> Find(const std::uint8_t* code,
 {
   if (!Detail::Holds(code, kGate, kGateBytes) ||
       !Detail::Holds(code, kNoiseDistance, kNoiseDistanceBytes) ||
-      !Detail::Holds(code, kProjectileWatch, kProjectileWatchBytes)) {
+      !Detail::Holds(code, kProjectileWatch, kProjectileWatchBytes) ||
+      !Detail::Holds(code, kCombatSight, kCombatSightBytes)) {
     return std::nullopt;
   }
   const auto ripTarget = [&](std::size_t insn, std::size_t dispAt,
@@ -145,6 +188,8 @@ inline std::optional<Found> Find(const std::uint8_t* code,
   Found f;
   f.playerSlot = ripTarget(kGate, 3, 7);
   f.hostileCall = ripTarget(kGateCall, 1, 5);
+  f.combatSightWhole = entry + kCombatSight + kCombatSightBytes.size() +
+    static_cast<std::int8_t>(kCombatSightBytes[8]);
   return f;
 }
 

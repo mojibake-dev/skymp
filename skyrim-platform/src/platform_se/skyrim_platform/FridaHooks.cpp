@@ -4026,6 +4026,132 @@ std::int32_t RequestDetectionLevelReplacement(RE::Actor* self,
 }
 }
 
+// the stealth eye's scan,
+// ProcessLists::RequestHighestDetectionLevelAgainstActor (Address Library
+// 41408, CommonLibSSE-NG src/RE/P/ProcessLists.cpp:89-92): it reads each high
+// actor's own detection state of the target, which a puppet never fills here,
+// so for this game's player its level folds in every puppet's relayed level
+// (PuppetDetection::HighestWithRelayed); the line of sight count stays the
+// engine's. The scan passes a fourth argument through to its per-actor read
+// (the decompile on sky-re), forwarded unchanged
+namespace {
+using HighestDetectionFn = std::int32_t (*)(RE::ProcessLists* self,
+                                            RE::Actor* target,
+                                            std::uint32_t* losCount,
+                                            std::uintptr_t passed);
+HighestDetectionFn g_highestDetectionOriginal = nullptr;
+
+std::int32_t HighestDetectionReplacement(RE::ProcessLists* self,
+                                         RE::Actor* target,
+                                         std::uint32_t* losCount,
+                                         std::uintptr_t passed)
+{
+  const std::int32_t engine = g_highestDetectionOriginal
+    ? g_highestDetectionOriginal(self, target, losCount, passed)
+    : PuppetDetection::kUndetected;
+  if (!target || target != RE::PlayerCharacter::GetSingleton()) {
+    return engine;
+  }
+  const auto relayed = Puppets::RelayedLevels();
+  return PuppetDetection::HighestWithRelayed(engine, relayed.data(),
+                                             relayed.size());
+}
+}
+
+// a combat group's stand-in pass (Address Library 44804, decompiled on
+// sky-re): once a second inside the group's update (44703, under the group's
+// write lock), for each member whose process is not high the engine builds a
+// DetectionState (42758), sets it to level 100 when the target is in reach
+// (42760, the target's position, TESObjectREFR::data.location) and hands it to
+// the group's detection update for that member and target (44725), the update
+// a member's own detection results reach through the group's listener. A
+// puppet is high but its AI is off, so it never asks for detection and its
+// group's target stays at the level the target was added with until it is
+// lost and the combat stops. After the engine's own pass, each puppet member's
+// level of this game's player is its host's relayed level, handed over the
+// same way (PuppetDetection::StandIns); the line of sight flag follows a level
+// above 0, and the two flags the engine's in-reach result sets ride with it
+// (their meaning unread)
+namespace {
+using StandInPassFn = void (*)(RE::CombatGroup* group);
+using DetectionStateInitFn = RE::DetectionState* (*)(RE::DetectionState*);
+using DetectionStateSetFn = void (*)(RE::DetectionState*, std::int32_t level,
+                                     std::uint8_t a, std::uint8_t lineOfSight,
+                                     std::uint8_t b,
+                                     const RE::NiPoint3* seenAt,
+                                     const RE::NiPoint3* lastAt);
+using DetectionStateEndFn = void (*)(RE::DetectionState*);
+using GroupDetectionUpdateFn = bool (*)(RE::CombatGroup* group,
+                                        RE::Actor* member, RE::Actor* target,
+                                        RE::DetectionState* state);
+StandInPassFn g_standInPassOriginal = nullptr;
+std::atomic<std::uint64_t> g_standInsFed{ 0 };
+
+void FeedStandIn(RE::CombatGroup* group, RE::Actor* member, RE::Actor* target,
+                 std::int32_t level)
+{
+  static REL::Relocation<DetectionStateInitFn> init{ REL::ID(42758) };
+  static REL::Relocation<DetectionStateSetFn> set{ REL::ID(42760) };
+  static REL::Relocation<DetectionStateEndFn> end{ REL::ID(42759) };
+  static REL::Relocation<GroupDetectionUpdateFn> update{ REL::ID(44725) };
+  alignas(RE::DetectionState) std::byte storage[sizeof(RE::DetectionState)];
+  auto* state = reinterpret_cast<RE::DetectionState*>(storage);
+  init(state);
+  const bool seen = level > 0;
+  set(state, level, seen ? 1 : 0, seen ? 1 : 0, seen ? 2 : 0,
+      &target->data.location, &target->data.location);
+  update(group, member, target, state);
+  end(state);
+}
+
+void StandInPassReplacement(RE::CombatGroup* group)
+{
+  if (g_standInPassOriginal) {
+    g_standInPassOriginal(group);
+  }
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  if (!group || !player) {
+    return;
+  }
+  std::vector<PuppetDetection::GroupMember> members;
+  std::vector<RE::NiPointer<RE::Actor>> actors;
+  for (const auto& member : group->members) {
+    const auto actor = member.memberHandle.get();
+    if (!actor) {
+      continue;
+    }
+    const auto read = Puppets::ReadDetection(actor->formID);
+    members.push_back({ actor->formID, read.isPuppet, read.relayed });
+    actors.push_back(actor);
+  }
+  if (members.empty()) {
+    return;
+  }
+  for (const auto& target : group->targets) {
+    const auto actor = target.targetHandle.get();
+    if (!actor) {
+      continue;
+    }
+    for (const auto& standIn :
+         PuppetDetection::StandIns(actor.get() == player, members)) {
+      for (std::size_t i = 0; i < members.size(); ++i) {
+        if (members[i].formId != standIn.member) {
+          continue;
+        }
+        FeedStandIn(group, actors[i].get(), actor.get(), standIn.level);
+        const auto n = ++g_standInsFed;
+        if (n <= 5 || n % 1000 == 0) {
+          logger::info("[verb:guest-witness] puppet {:x}'s combat group "
+                       "holds this game's player at its host's level {} "
+                       "(stand-in {})",
+                       standIn.member, standIn.level, n);
+        }
+      }
+    }
+  }
+}
+}
+
 void InstallGuestWitnessHook()
 {
   if (!REL::Module::IsAE()) {
@@ -4037,6 +4163,23 @@ void InstallGuestWitnessHook()
     RE::Offset::Actor::RequestDetectionLevel.address(),
     reinterpret_cast<void*>(&RequestDetectionLevelReplacement),
     reinterpret_cast<void**>(&g_requestDetectionLevelOriginal));
+  const bool eye = Frida::HookHandler::GetSingleton()->Replace(
+    REL::RelocationID(40394, 41408).address(),
+    reinterpret_cast<void*>(&HighestDetectionReplacement),
+    reinterpret_cast<void**>(&g_highestDetectionOriginal));
+  const bool standIn = Frida::HookHandler::GetSingleton()->Replace(
+    REL::ID(44804).address(), reinterpret_cast<void*>(&StandInPassReplacement),
+    reinterpret_cast<void**>(&g_standInPassOriginal));
+  logger::info("[verb:guest-witness] combat group stand-in hook (44804) {}",
+               standIn ? "installed: a puppet's combat group holds this "
+                         "game's player at its host's relayed level"
+                       : "NOT installed: a puppet's combat on this game's "
+                         "player lapses as its AI is off");
+  logger::info("[verb:guest-witness] stealth eye hook (41408) {}",
+               eye ? "installed: this game's player's highest detection level "
+                     "folds in its puppets' relayed levels"
+                   : "NOT installed: the eye reads this game's own actors "
+                     "alone");
   logger::info("[verb:guest-witness] detection hook (37764) {}",
                replaced ? "installed: a puppet's detection of this game's "
                           "player answers its host's relayed level"

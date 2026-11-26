@@ -1,55 +1,59 @@
 import { ClientListener, Sp, CombinedController } from "./clientListener";
-import { logError } from "../../logging";
+import { logError, logTrace } from "../../logging";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { CreateActorMessage } from "../messages/createActorMessage";
 
+// The server's difficulty is this game's: the player's own create word names
+// it (props.difficulty, 0 Novice to 5 Legendary), and this service writes it
+// to the player's own difficulty field through the platform's
+// setPlayerDifficulty, which DamageActor (37335) indexes for every hit this
+// engine applies itself (a trap's, a fall's): the damage one actor deals
+// another is the server's and takes the same difficulty there
+// (docs/verbs/difficulty.md). The INI setting iDifficulty:GamePlay is written
+// to the same value, though it never reaches the field. Both are written again
+// every 60 updates, so a choice in the game's menu is put back; the platform
+// writes the field, and logs it, only when it differs. Nothing is written
+// before the server names a difficulty, so the game keeps its own until then.
 export class DisableDifficultySelectionService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
-        this.difficulty = this.readDifficulty();
+        this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("update", () => this.onUpdate());
     }
 
-    private onUpdate() {
-        this.counter++;
-        if (this.counter >= 60) {
-            this.counter = 0;
-            this.sp.Utility.setINIInt("iDifficulty:GamePlay", this.difficulty);
+    private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
+        if (!e.message.isMe) {
+            return;
         }
-    }
-
-    // thuum D-T5 (Eli, 2026-11-05: "difficulty should apply to all things";
-    // "at testing everything should be set to adept"): the difficulty this
-    // client pins, from the client setting difficulty, an integer from 0
-    // (Novice) to 5 (Legendary), so the pin moves with a settings line instead
-    // of a build; Adept (2) when the setting is absent or refused (logged once,
-    // read once here), not upstream's 5, until the server applies the one
-    // difficulty to every hit a player takes or deals (D-T5 C; at Adept both
-    // tables read 1, so traps and bandits agree meanwhile). This writes the
-    // INI setting alone, and that never reaches the player's own difficulty
-    // field, which DamageActor indexes (docs/research/re-37335-and-rune-
-    // landing.md:30; CommonLib PlayerCharacter.h:399, GetGameStatsData's
-    // difficulty): CONFIRMED by run, x-trap-hit-difficulty 20261105-205713, a
-    // spike wall's hit cost 59 at the pin's 5 and at a laid 2 alike, the six
-    // fDiffMultHPToPC* at the engine's own table, so the difficulty in force is
-    // the seat's own (Adept on the lab's seats) and upstream's pin never pinned
-    // the damage; D-T5 C writes that field from the server's one value. The
-    // damage one actor deals another is the server's and takes no difficulty
-    // yet (TES5DamageFormula.cpp's TODO(#461))
-    private readDifficulty(): number {
-        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
-        const v = s ? s["difficulty"] : undefined;
+        const v = e.message.props?.difficulty;
         if (v === undefined) {
-            return DisableDifficultySelectionService.defaultDifficulty;
+            return;
         }
-        if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 5) {
-            return v;
+        if (!Number.isInteger(v) || v < 0 || v > 5) {
+            logError(this, `difficulty ${JSON.stringify(v)} refused (an integer from 0 to 5); ${this.difficulty ?? "the game's own"} kept`);
+            return;
         }
-        logError(this, `difficulty ${JSON.stringify(v)} refused (an integer from 0 to 5); ${DisableDifficultySelectionService.defaultDifficulty} instead`);
-        return DisableDifficultySelectionService.defaultDifficulty;
+        logTrace(this, `the server's difficulty ${v}`);
+        this.difficulty = v;
+        this.counter = DisableDifficultySelectionService.updatesPerWrite;
     }
 
-    private static readonly defaultDifficulty = 2;
+    private onUpdate() {
+        if (this.difficulty === undefined) {
+            return;
+        }
+        this.counter++;
+        if (this.counter < DisableDifficultySelectionService.updatesPerWrite) {
+            return;
+        }
+        this.counter = 0;
+        this.sp.setPlayerDifficulty(this.difficulty);
+        this.sp.Utility.setINIInt("iDifficulty:GamePlay", this.difficulty);
+    }
 
-    private readonly difficulty: number;
+    private static readonly updatesPerWrite = 60;
+
+    private difficulty: number | undefined;
 
     private counter = 0;
 }

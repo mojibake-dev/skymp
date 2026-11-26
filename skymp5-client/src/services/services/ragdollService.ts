@@ -227,8 +227,8 @@ export class RagdollService extends ClientListener {
     // scaled to difficulty"): the six keep the engine's own values, the
     // game's table for the difficulty in force (Update.esm's
     // fDiffMultHPToPCL 3.0 for Legendary; the difficulty in force is the
-    // player's own field, which the INI pin never reaches, x-trap-hit-difficulty
-    // 20261105-205713, DisableDifficultySelectionService), so this returns no number and
+    // player's own field, which DisableDifficultySelectionService writes from
+    // the server's difficulty), so this returns no number and
     // nothing is written. A fall read unzeroed under the old 0 (b-push), so
     // whether a fall passes through these at all is HYPOTHESIS, and the
     // static read of DamageActor (re-37335 (a)) skips them for a fall at 1.0

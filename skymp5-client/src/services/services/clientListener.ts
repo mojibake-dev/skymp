@@ -639,6 +639,9 @@ declare module "skyrimPlatform" {
     function setEngineDamageCut(on: boolean): void;
     // thuum D-T4 (ADR-028): whether DamageActor's replacement went in, the player's cut of another actor's damage with it
     function isDamageActorReplaced(): boolean;
+    // the server's difficulty, 0 (Novice) to 5 (Legendary), written to the player's own difficulty field on the game
+    // thread when it differs (DamageActor indexes it); false for a level outside 0 to 5
+    function setPlayerDifficulty(level: number): boolean;
     // thuum docs/verbs/npc-talk.md (ADR-052): the player's activation of its crosshair pick on the game thread
     function activatePickRef(): boolean;
 

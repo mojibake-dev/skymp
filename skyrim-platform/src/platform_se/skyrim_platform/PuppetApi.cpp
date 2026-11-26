@@ -4135,6 +4135,29 @@ Napi::Value PuppetApi::IsDamageActorReplaced(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), Frida::IsDamageActorReplaced());
 }
 
+Napi::Value PuppetApi::SetPlayerDifficulty(const Napi::CallbackInfo& info)
+{
+  const auto level = NapiHelper::ExtractInt32(info[0], "level");
+  if (level < 0 || level > 5) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask([level](Viet::Void) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+      return;
+    }
+    auto& difficulty = player->GetGameStatsData().difficulty;
+    if (difficulty == level) {
+      return;
+    }
+    logger::info("[verb:difficulty] the player's difficulty {} -> {}, the "
+                 "server's",
+                 difficulty, level);
+    difficulty = level;
+  });
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 namespace {
 // thuum #63: each read load door link by the door's form id (0: no load
 // door), bounded; written on the game thread, read on the JS thread

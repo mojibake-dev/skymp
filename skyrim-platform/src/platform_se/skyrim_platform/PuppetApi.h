@@ -359,6 +359,13 @@ Napi::Value SetEngineDamageCut(const Napi::CallbackInfo& info);
 // player's cut of another actor's damage with it (thuum D-T4); the client
 // keeps its world multiplier at 0 without it
 Napi::Value IsDamageActorReplaced(const Napi::CallbackInfo& info);
+// setPlayerDifficulty(level): the server's difficulty, 0 (Novice) to 5
+// (Legendary), written on the game thread to the player's own difficulty
+// field (CommonLibSSE-NG include/RE/P/PlayerCharacter.h:399,
+// GetGameStatsData's difficulty), which DamageActor (37335) indexes for
+// every hit this engine applies; written and logged only when it differs.
+// False for a level outside 0 to 5
+Napi::Value SetPlayerDifficulty(const Napi::CallbackInfo& info);
 // thuum #63: pollLinkedDoors(refrIds) reads, on the game thread (one task per
 // call; a lookup on the JS thread can wait on a cell load's form map lock,
 // SetPuppet's note), each named reference's load door link (CommonLibSSE-NG
@@ -546,6 +553,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("isDamageActorReplaced",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsDamageActorReplaced)));
+  exports.Set("setPlayerDifficulty",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetPlayerDifficulty)));
   exports.Set(
     "pollLinkedDoors",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollLinkedDoors)));

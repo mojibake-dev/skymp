@@ -1,6 +1,7 @@
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 
+#include "UpdateAppearanceMessage.h"
 #include "UpdateMovementMessage.h"
 
 PartOne& GetPartOne();
@@ -39,6 +40,36 @@ void Report(PartOne& p, MpActor& me, uint32_t worldOrCell, const NiPoint3& pos)
   msg.data.worldOrCell = worldOrCell;
   msg.data.runMode = "Standing";
   p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+// the player's appearance report, which closes the race menu
+void Dress(PartOne& p, Networking::UserId user)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateAppearanceMessage msg;
+  msg.idx = 0;
+  msg.data = Appearance();
+  msg.data->raceId = 0x00013746; // NordRace
+  p.GetActionListener().OnUpdateAppearance(raw, msg);
+}
+
+// the Quest.SetStage snippets user 0 was sent: each quest and its stage
+std::vector<std::pair<uint32_t, double>> StagesTold(PartOne& p)
+{
+  std::vector<std::pair<uint32_t, double>> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet &&
+        m.j["class"] == "Quest" && m.j["function"] == "SetStage" &&
+        m.j["arguments"].size() == 1) {
+      out.emplace_back(m.j["selfId"].get<uint32_t>(),
+                       m.j["arguments"][0].get<double>());
+    }
+  }
+  return out;
 }
 
 uint32_t Count(const Inventory& inv, uint32_t baseId)
@@ -114,4 +145,35 @@ TEST_CASE("A new player's first move out of the prison to the start it "
 
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
+}
+
+TEST_CASE("A new character's first race menu close sets each new-player "
+          "quest's stage in its own game, and a later close sets none",
+          "[StartingKit][espm]")
+{
+  PartOne& p = GetPartOne();
+  // MQ101 (Skyrim.esm), stage 10
+  p.SetNewPlayerQuestsSettings(
+    R"([{"quest": "03372b:Skyrim.esm", "stage": 10}])");
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, kPrisonMarker, 0, kPrisonCell, 9);
+  p.SetUserActor(0, 0xff000000);
+  p.SetRaceMenuOpen(0xff000000, true);
+  p.Messages().clear();
+
+  Dress(p, 0);
+  const auto first = StagesTold(p);
+  REQUIRE(first.size() == 1);
+  REQUIRE(first[0].first == 0x3372b);
+  REQUIRE(first[0].second == 10.0);
+
+  // a race menu opened again later: the character is not new
+  p.SetRaceMenuOpen(0xff000000, true);
+  p.Messages().clear();
+  Dress(p, 0);
+  REQUIRE(StagesTold(p).empty());
+
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+  p.SetNewPlayerQuestsSettings("[]");
 }

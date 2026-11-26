@@ -5714,6 +5714,18 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   return true;
 }
 
+void PartOne::SetNewPlayerQuestsSettings(
+  const std::string& newPlayerQuestsJson)
+{
+  (void)newPlayerQuestsJson;
+}
+
+size_t PartOne::TellNewPlayerQuests(MpActor& player)
+{
+  (void)player;
+  return 0;
+}
+
 void PartOne::SetStartingKitSettings(const std::string& startingKitJson)
 {
   std::vector<Impl::StartingKitItem> kit;

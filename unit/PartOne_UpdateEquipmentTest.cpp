@@ -236,6 +236,7 @@ TEST_CASE("An equipment report with one item the player's inventory lacks "
 // 0xC4DE1, which NordRace lacks. A power is reported in the voice slot.
 namespace {
 constexpr uint32_t kKhajiitRace = 0x00013745;
+constexpr uint32_t kNordRace = 0x00013746;
 constexpr uint32_t kNordRaceVampire = 0x00088794;
 constexpr uint32_t kNightEye = 0x000aa01d;
 constexpr uint32_t kBattleCry = 0x000e40c3;
@@ -332,6 +333,28 @@ TEST_CASE("A Nord vampire player keeps Vampire's Sight, a power its vampire "
 
   ReportPower(p, owner, kVampiresSight, 11);
   REQUIRE(owner.GetEquipment().voiceSpell.value_or(0) == kVampiresSight);
+  REQUIRE(Sent(p, 0, MsgType::SpSnippet).empty());
+
+  Part(p);
+}
+
+TEST_CASE("A Nord player keeps its race's power equipped, as does a player "
+          "with no appearance yet",
+          "[PartOne][UpdateEquipment][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& owner = Pair(p);
+  p.Messages().clear();
+
+  // no appearance: the race of its base record, NordRace
+  ReportPower(p, owner, kBattleCry, 12);
+  REQUIRE(owner.GetEquipment().voiceSpell.value_or(0) == kBattleCry);
+  REQUIRE(Sent(p, 0, MsgType::SpSnippet).empty());
+
+  WearRace(owner, kNordRace);
+  p.Messages().clear();
+  ReportPower(p, owner, kBattleCry, 13);
+  REQUIRE(owner.GetEquipment().voiceSpell.value_or(0) == kBattleCry);
   REQUIRE(Sent(p, 0, MsgType::SpSnippet).empty());
 
   Part(p);

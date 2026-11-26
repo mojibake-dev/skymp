@@ -70,12 +70,21 @@ inline Owner OwnerOfActor(const ActorFacts& a)
   return a.cellHosted ? Owner::kThisSeat : Owner::kUndecided;
 }
 
-// a cause: an actor by the actor's rule; any other reference this seat's,
-// but a trap body another seat's that this seat follows
+// a cause: an actor by the actor's rule; a projectile or an explosion by
+// the actor that fired it, and one no actor fired (none named, a dart, a
+// destructible's own explosion naming the object itself) its cell host's,
+// undecided where the cell is not hosted here; any other reference this
+// seat's, but a trap body another seat's that this seat follows
 inline Owner OwnerOfCause(const CauseFacts& c)
 {
   if (c.kind == CauseKind::kActor) {
     return OwnerOfActor(c.actor);
+  }
+  if (c.kind == CauseKind::kFired) {
+    if (c.firer && c.firerIsActor) {
+      return OwnerOfActor(c.firerFacts);
+    }
+    return c.cellHosted ? Owner::kThisSeat : Owner::kUndecided;
   }
   return c.followedTrapBody ? Owner::kOther : Owner::kThisSeat;
 }

@@ -540,10 +540,12 @@ RE::NiPointer<RE::TESObjectREFR> FirerOf(const RE::TESObjectREFR* cause,
   return nullptr;
 }
 
-// the cause's owner: its facts read here, the rule CauseOwner.h's. Every
-// read is a mutex-guarded set or a field of the cause, so any engine thread
-// may ask (an impulse runs on Havok's workers)
-CauseOwner OwnerOf(const RE::TESObjectREFR* cause)
+// the cause's owner: its facts read here, the rule CauseOwner.h's; for a
+// projectile or an explosion, `firerId` (when given) takes the form id of
+// the one the engine names as its firer, 0 for none. Every read is a
+// mutex-guarded set or a field of the cause, so any engine thread may ask
+// (an impulse runs on Havok's workers)
+CauseOwner OwnerOf(const RE::TESObjectREFR* cause, uint32_t* firerId = nullptr)
 {
   CauseRule::CauseFacts c;
   c.followedTrapBody = TrapFamily::Followed::Is(cause->formID);
@@ -557,6 +559,9 @@ CauseOwner OwnerOf(const RE::TESObjectREFR* cause)
   if (fired) {
     c.kind = CauseRule::CauseKind::kFired;
     c.firer = firer != nullptr;
+    if (firerId) {
+      *firerId = firer ? firer->formID : 0;
+    }
     c.firerIsActor =
       firer && firer->GetFormType() == RE::FormType::ActorCharacter;
     if (c.firerIsActor) {
@@ -5073,17 +5078,10 @@ ImpulseFrame* InnermostImpulseFrame()
   return &g_impulseFrames[std::min(depth, kImpulseDepth) - 1];
 }
 
-// the world's cause (no actor named): the bracket object's cell's host
-CauseOwner WorldCauseOwner(const RE::TESObjectREFR* site)
-{
-  const RE::TESObjectCELL* cell = site ? site->GetParentCell() : nullptr;
-  return cell && Frida::IsCellHosted(cell->GetFormID())
-    ? CauseOwner::kThisSeat
-    : CauseOwner::kUndecided;
-}
-
-// the frame's cause, once: the explosion's owner or the projectile's
-// shooter, each resolved and released here, judged by OwnerOf
+// the frame's cause, once: the explosion or the projectile itself judged by
+// OwnerOf, which reads the actor that fired it (the explosion's owner, the
+// projectile's shooter) and gives one no actor fired to its cell's host;
+// the cause the line names is the firer the engine named, 0 for none
 void JudgeImpulseCause(ImpulseFrame& frame)
 {
   if (frame.judged) {
@@ -5095,31 +5093,10 @@ void JudgeImpulseCause(ImpulseFrame& frame)
     frame.owner = CauseOwner::kUndecided;
     return;
   }
-  if (frame.kind == ImpulseBracket::kExplosion) {
-    auto* explosion = static_cast<RE::Explosion*>(frame.site);
-    frame.siteId = explosion->formID;
-    const RE::NiPointer<RE::Actor> owner =
-      explosion->GetExplosionRuntimeData().actorOwner.get();
-    if (owner) {
-      frame.causeId = owner->formID;
-      frame.owner = OwnerOf(owner.get());
-    } else {
-      frame.owner = WorldCauseOwner(explosion);
-    }
-    return;
-  }
-  auto* projectile = static_cast<RE::Projectile*>(frame.site);
-  frame.siteId = projectile->formID;
-  const RE::NiPointer<RE::TESObjectREFR> shooter =
-    projectile->GetProjectileRuntimeData().shooter.get();
-  if (shooter && shooter->GetFormType() == RE::FormType::ActorCharacter) {
-    frame.causeId = shooter->formID;
-    frame.owner = OwnerOf(shooter.get());
-  } else {
-    // no actor named (none, a trap's dart, a caster activator): the world's,
-    // its cell host's, as an explosion no actor owns
-    frame.owner = WorldCauseOwner(projectile);
-  }
+  // an Explosion or a Projectile, each a TESObjectREFR at offset 0
+  const auto* site = static_cast<const RE::TESObjectREFR*>(frame.site);
+  frame.siteId = site->formID;
+  frame.owner = OwnerOf(site, &frame.causeId);
 }
 
 // a counted call inside the frame: the cause judged first, then the call

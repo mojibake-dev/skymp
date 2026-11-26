@@ -754,6 +754,12 @@ public:
   // many items came back
   size_t GiveBackBelongings(MpActor& prisoner, const JailTerm& term,
                             const std::optional<JailOfFaction>& jail);
+  // A take that moved from a container: when the taker is a prisoner and the
+  // container its jail's prisoner-belongings chest, what it took comes off
+  // its own belongings first (MpActor::TakeJailBelonging), so its release
+  // gives back what is still its own and another prisoner's stays theirs
+  void OnJailChestTake(MpActor& taker, const MpObjectReference& container,
+                       const Inventory::Entry& taken);
   // A prisoner out of its jail's cell before its end, once it has stood in
   // it (the term's arrived, noted here) and the arrest's window closed,
   // escaped: the term ends with its belongings left in the chest and its

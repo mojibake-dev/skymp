@@ -2037,6 +2037,30 @@ bool MpActor::AddJailBelonging(const Inventory::Entry& entry)
   return true;
 }
 
+uint32_t MpActor::TakeJailBelonging(const Inventory::Entry& entry)
+{
+  const auto& record = ChangeForm().crimeRecord;
+  if (!record || !record->jail || entry.count == 0) {
+    return 0;
+  }
+  uint32_t own = 0;
+  for (const auto& e : record->jail->belongings.entries) {
+    if (e.EqualExceptCount(entry)) {
+      own += e.count;
+    }
+  }
+  const uint32_t off = std::min(own, entry.count);
+  if (off == 0) {
+    return 0;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    Inventory::Entry taken = entry;
+    taken.count = off;
+    changeForm.crimeRecord->jail->belongings.RemoveItems({ taken });
+  });
+  return off;
+}
+
 void MpActor::OpenArrestWindow(ArrestWindow window)
 {
   pImpl->arrestWindow = std::move(window);

@@ -3238,6 +3238,13 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   const uint32_t before = ref.GetInventory().GetItemCount(entry.baseId);
   ref.TakeItem(*actor, entry);
   const uint32_t after = ref.GetInventory().GetItemCount(entry.baseId);
+  // a prisoner's take back from its jail's belongings chest comes off its
+  // own belongings
+  if (after < before) {
+    Inventory::Entry taken = entry;
+    taken.count = before - after;
+    partOne.OnJailChestTake(*actor, ref, taken);
+  }
   // and its OnItemRemoved for a take that landed
   if (after < before) {
     RelayedActivationMessage event;

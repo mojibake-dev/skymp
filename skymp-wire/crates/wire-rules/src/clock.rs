@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
+use jiff::{Timestamp, civil, tz::Offset};
 use serde::Deserialize;
 
 /// Days in each month, Morning Star first (CommonLibSSE-NG
@@ -160,9 +160,11 @@ impl Clock {
         if !(s.days_passed.is_finite() && s.days_passed >= 0.0) {
             return bad("start.daysPassed must be at least 0");
         }
-        let epoch_ms = DateTime::parse_from_rfc3339(&settings.epoch)
+        let epoch_ms = settings
+            .epoch
+            .parse::<Timestamp>()
             .map_err(|e| SettingsError(format!("epoch {:?}: {e}", settings.epoch)))?
-            .timestamp_millis();
+            .as_millisecond();
         Ok(Self { settings, epoch_ms, heard_ms: HashMap::new() })
     }
 
@@ -198,19 +200,22 @@ impl Clock {
 
     fn real(&self, now_ms: i64) -> GameTime {
         let offset_ms = rounded_ms(self.settings.utc_offset_hours * MS_PER_HOUR);
-        let local = |ms: i64| DateTime::<Utc>::from_timestamp_millis(ms.saturating_add(offset_ms)).unwrap_or_default();
+        // the civil time at the offset, the Unix epoch for an instant past the calendar's range
+        let local = |ms: i64| -> civil::DateTime {
+            Offset::UTC.to_datetime(Timestamp::from_millisecond(ms.saturating_add(offset_ms)).unwrap_or(Timestamp::UNIX_EPOCH))
+        };
         let t = local(now_ms);
         let hour = f64::from(t.hour())
             + f64::from(t.minute()) / 60.0
             + f64::from(t.second()) / 3600.0
-            + f64::from(t.timestamp_subsec_millis()) / MS_PER_HOUR;
+            + f64::from(t.millisecond()) / MS_PER_HOUR;
         // whole days since the epoch's date, both in the offset's time zone
-        let days = t.date_naive().signed_duration_since(local(self.epoch_ms).date_naive()).num_days().max(0);
+        let days = t.date().since(local(self.epoch_ms).date()).map_or(0, |span| i64::from(span.get_days())).max(0);
         GameTime {
             // SkyMP's year mapping: 2020 was 4E 199
-            year: u32::try_from(t.year().saturating_sub(2020).saturating_add(199)).unwrap_or(0),
-            month: t.month0(),
-            day: t.day(),
+            year: u32::try_from(i32::from(t.year()).saturating_sub(2020).saturating_add(199)).unwrap_or(0),
+            month: u32::try_from(t.month().saturating_sub(1)).unwrap_or(0),
+            day: u32::try_from(t.day()).unwrap_or(1),
             hour: below_24(hour),
             days_passed: narrow(self.settings.start.days_passed + ms_as_f64(days) + hour / 24.0),
             time_scale: 1.0,

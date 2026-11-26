@@ -10,7 +10,7 @@ description = "Game rules (thuum ADR-020): the server's rules over facts its wor
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 thiserror.workspace = true
-chrono.workspace = true   # RFC 3339 epochs and the real-time mode's UTC calendar
+jiff.workspace = true     # RFC 3339 epochs and the real-time mode's UTC calendar
 
 # natives-gen (thuum ADR-073 step 4, D-NT1 C): the natives table's generator,
 # a tool over the pure rules of natives_rules.rs and the crate's only I/O

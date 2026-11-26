@@ -3820,7 +3820,7 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
 // sends the landing itself, a Teleport for the thrall's idx. The commander's
 // own move and the door's call are made here as the door's path makes them
 // (MpObjectReference's load door: the player's record first, then
-// PartOne::TakeThrallsThroughDoor), five squares across Tamriel
+// PartOne::TakeMinionsThroughDoor), five squares across Tamriel
 TEST_CASE("A load door within one world sends the commander's game its "
           "thrall's landing, the pair held through it",
           "[CellHost][espm]")
@@ -3853,7 +3853,7 @@ TEST_CASE("A load door within one world sends the commander's game its "
   p.Messages().clear();
   c1.SetPos(kLanding);
   REQUIRE(thrall.GetListeners().count(&c1) == 1);
-  const auto taken = p.TakeThrallsThroughDoor(c1, 0, kTamriel, kHere, kTamriel,
+  const auto taken = p.TakeMinionsThroughDoor(c1, 0, kTamriel, kHere, kTamriel,
                                               kLanding, kFacing);
   REQUIRE(taken == std::vector<uint32_t>{ kThrall });
   REQUIRE((thrall.GetPos() - kLanding).Length() < 1.f);

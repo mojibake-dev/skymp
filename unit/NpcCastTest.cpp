@@ -2361,7 +2361,7 @@ TEST_CASE("An NPC's summon ends on the server when another game runs its "
 
 // A player's summon is on its follower list as its thrall is, and a load
 // door takes both with the player: the host's summon goes through the door
-// with its caster, its record at the landing (PartOne::TakeThrallsThroughDoor,
+// with its caster, its record at the landing (PartOne::TakeMinionsThroughDoor,
 // the load door's call after the player's own move)
 TEST_CASE("A player's summon goes through a load door with its caster, as "
           "its thrall does",
@@ -2377,7 +2377,7 @@ TEST_CASE("A player's summon goes through a load door with its caster, as "
   const NiPoint3 facing{ 0.f, 0.f, 90.f };
   REQUIRE(p.worldState.CellOf(kTamriel, landing).has_value());
   host.SetPos(landing);
-  const auto taken = p.TakeThrallsThroughDoor(host, 0, kTamriel, kForest,
+  const auto taken = p.TakeMinionsThroughDoor(host, 0, kTamriel, kForest,
                                               kTamriel, landing, facing);
   REQUIRE(taken == std::vector<uint32_t>{ summon });
   REQUIRE((atronach.GetPos() - landing).Length() < 1.f);

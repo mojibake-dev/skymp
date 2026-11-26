@@ -369,10 +369,9 @@ public:
   std::function<bool(const MpActor& sender, MpActor& actor,
                      uint32_t destWorldOrCell, const NiPoint3& destPos)>
     npcDoorVerdict;
-  // thuum #48 leg D (ADR-060): a player's load door, once the player's
-  // record moved: the thralls it commands go through with it
-  // (PartOne::TakeThrallsThroughDoor), installed by PartOne; none installed,
-  // none go
+  // ADR-060, ADR-077: a player's load door, once the player's record
+  // moved: its minions go through with it (PartOne::TakeMinionsThroughDoor),
+  // installed by PartOne; none installed, none go
   std::function<void(MpActor& commander, uint32_t door,
                      uint32_t fromWorldOrCell, const NiPoint3& fromPos,
                      uint32_t destWorldOrCell, const NiPoint3& destPos,

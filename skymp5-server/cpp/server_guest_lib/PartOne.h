@@ -1348,25 +1348,24 @@ public:
   // an actor to a side: NotifyHostility's hit between two sides and
   // TickFights' ends of a sides' fight ask it
   MpActor* SideOf(MpActor& actor);
-  // thuum #48 leg D (x-reanimate-claim v2.4 20261116-035932; ADR-060): a
-  // player's load door is the server's teleport (MpObjectReference's
-  // ProcessActivateNormal), so the engine's door transit, which keeps a
-  // commanded actor with the player in single player, never runs, and the
-  // player's game drops the thrall it left outside ("demote 13491: the
-  // engine had it at ... in 3c", c1 04:05:18.267). Every actor `commander`
-  // commands (CommanderOf), alive and standing in `fromWorldOrCell` within
-  // kThrallDoorReach of `fromPos`, goes through `door` with it: the
-  // command's row to the destination (MayMoveActor with the commander as
-  // the reporter, which a claim takes into any cell, ADR-052, so its
-  // simulator stays the commander there), then the record to the landing
-  // by MpActor::Teleport's three sets without its message (the actor has no
-  // game of its own: its old grid's games are told the move and dropped,
-  // and the landing's subscribe carries it to the commander's game, whose
-  // command upkeep asks the engine's command again). Which actors the
-  // engine keeps with the player through a door, and from how far, is
-  // HYPOTHESIS (unread); one exterior cell's span stands for it. The
-  // actors taken
-  std::vector<uint32_t> TakeThrallsThroughDoor(
+  // ADR-060, ADR-077: a player's load door is the server's teleport
+  // (MpObjectReference's ProcessActivateNormal), so the engine's door
+  // transit never runs. In single player that transit takes the player's
+  // follower list with it, where the engine links a player's summon and its
+  // thrall alike (37404, adding to ExtraFollower through 11648; the door's
+  // teleport 17924 and its arrival 17927 read the list; a static read,
+  // HYPOTHESIS), and the player's game drops a minion it left outside. Every
+  // minion `commander` owns (OwnerOf, a summon or a thrall), alive and
+  // standing in `fromWorldOrCell` within kThrallDoorReach of `fromPos`, goes
+  // through `door` with it: its row to the destination (MayMoveActor with
+  // the commander as the reporter, which a minion's row takes into any
+  // cell, so its simulator stays the commander there), then the record to
+  // the landing by MpActor::Teleport's three sets without its message (the
+  // actor has no game of its own: its old grid's games are told the move
+  // and dropped, and the landing's subscribe carries it to the commander's
+  // game). The engine reads no distance on that path; one exterior cell's
+  // span stands for the list's reach. The actors taken
+  std::vector<uint32_t> TakeMinionsThroughDoor(
     MpActor& commander, uint32_t door, uint32_t fromWorldOrCell,
     const NiPoint3& fromPos, uint32_t destWorldOrCell, const NiPoint3& destPos,
     const NiPoint3& destRot);

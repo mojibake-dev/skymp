@@ -1770,7 +1770,7 @@ void PartOne::Init()
     [this](MpActor& commander, uint32_t door, uint32_t fromWorldOrCell,
            const NiPoint3& fromPos, uint32_t destWorldOrCell,
            const NiPoint3& destPos, const NiPoint3& destRot) {
-      TakeThrallsThroughDoor(commander, door, fromWorldOrCell, fromPos,
+      TakeMinionsThroughDoor(commander, door, fromWorldOrCell, fromPos,
                              destWorldOrCell, destPos, destRot);
     };
   // thuum ADR-068 rung 4 (amendment B, read 8): the quest aliases' created
@@ -4957,7 +4957,7 @@ namespace {
 constexpr float kThrallDoorReach = 4096.f;
 }
 
-std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
+std::vector<uint32_t> PartOne::TakeMinionsThroughDoor(
   MpActor& commander, uint32_t door, uint32_t fromWorldOrCell,
   const NiPoint3& fromPos, uint32_t destWorldOrCell, const NiPoint3& destPos,
   const NiPoint3& destRot)
@@ -4965,23 +4965,17 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
   std::vector<uint32_t> taken;
   const uint32_t commanderId = commander.GetFormId();
   for (const auto& row : GetFollows()) {
-    if (row.player != commanderId ||
-        pImpl->cells->commander_of(row.actor) != commanderId) {
+    if (row.player != commanderId) {
       continue;
     }
     const auto& form = worldState.LookupFormById(row.actor);
     MpActor* thrall = form ? form->AsActor() : nullptr;
-    if (!thrall || thrall->IsDead() ||
+    // the player's own minions alone, a summon as a thrall (OwnerOf: an
+    // NPC's minion stays with its caster, whose host runs it)
+    if (!thrall || OwnerOf(*thrall) != commanderId ||
         thrall->GetCellOrWorld().ToFormId(worldState.espmFiles) !=
           fromWorldOrCell ||
         (thrall->GetPos() - fromPos).Length() > kThrallDoorReach) {
-      continue;
-    }
-    // tracker #106: an NPC's thrall stays with its caster, whose host
-    // commands it (ClaimReanimated); a door takes the commander's own raise
-    // alone (the accepted caster 0 for a command no hit stamped)
-    if (const uint32_t caster = thrall->ReanimateAcceptedCaster();
-        caster != 0 && caster != commanderId) {
       continue;
     }
     // the row first, the commander its reporter: a claim's report into any
@@ -5031,10 +5025,11 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
       }
     }
     spdlog::info("[verb:npc-fate] {:x} goes through door {:x} with its "
-                 "commander {:x}: the record to ({:.0f}, {:.0f}, {:.0f}) in "
-                 "{:x}, the command with it, cell {:x} (ADR-060)",
-                 row.actor, door, commanderId, destPos.x, destPos.y, destPos.z,
-                 destWorldOrCell, worldState.CellOf(*thrall).value_or(0u));
+                 "{} {:x}: the record to ({:.0f}, {:.0f}, {:.0f}) in "
+                 "{:x}, its row with it, cell {:x} (ADR-060, ADR-077)",
+                 row.actor, door, thrall->IsSummon() ? "caster" : "commander",
+                 commanderId, destPos.x, destPos.y, destPos.z, destWorldOrCell,
+                 worldState.CellOf(*thrall).value_or(0u));
   }
   return taken;
 }

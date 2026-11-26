@@ -1397,10 +1397,10 @@ void MpObjectReference::ForceSubscriptionsUpdate()
     // way a TES3MP cell's authority sees everyone in its cell. Only a game
     // simulates, so only a played actor's pass asks, and only of a listener
     // the grid would drop. The keep holds on the grid this pass reads alone:
-    // a door into another world or cell parts the pair, since a commander's
-    // thralls reach its game at the landing by that part and the create
-    // word after it (PartOne::TakeThrallsThroughDoor, thuum #48 leg D; a
-    // door within one world or cell sends the landing itself)
+    // a door into another world or cell parts the pair, since a player's
+    // minions reach its game at the landing by that part and the create
+    // word after it (PartOne::TakeMinionsThroughDoor; a door within one
+    // world or cell sends the landing itself)
     if (AsActor()->GetUserId() != Networking::InvalidUserId) {
       for (MpObjectReference* listener : was) {
         MpActor* other = listener->AsActor();
@@ -3079,10 +3079,11 @@ void MpObjectReference::ProcessActivateNormal(
         activationSource.SetPos(pos);
         activationSource.SetAngle(rot);
 
-        // thuum #48 leg D (ADR-060): a player's door is this teleport, never
-        // its engine's own door transit, which keeps a commanded actor with
-        // the player in single player; so the server takes the player's
-        // thralls through with it (PartOne::TakeThrallsThroughDoor)
+        // ADR-060, ADR-077: a player's door is this teleport, never its
+        // engine's own door transit, which takes the player's follower list
+        // (its summons and thralls among them) with it in single player; so
+        // the server takes the player's minions through with it
+        // (PartOne::TakeMinionsThroughDoor)
         if (actorActivator && actorActivator->IsCreatedAsPlayer() &&
             worldState->commanderDoor) {
           worldState->commanderDoor(*actorActivator, GetFormId(),

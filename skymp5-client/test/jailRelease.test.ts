@@ -26,7 +26,13 @@ const anything: any = new Proxy(function () {
 const calls: string[] = [];
 const faction = {
   getFormID: () => WHITERUN,
-  setCrimeGold: (n: number) => { calls.push(`setCrimeGold ${n}`); },
+  setCrimeGold: (n: number) => {
+    if (engine.throwOnce) {
+      engine.throwOnce = false;
+      throw new Error("'Faction.setCrimeGold' can't be called in this context");
+    }
+    calls.push(`setCrimeGold ${n}`);
+  },
   setCrimeGoldViolent: (n: number) => { calls.push(`setCrimeGoldViolent ${n}`); },
   playerPayCrimeGold: (removeStolen: boolean, goToJail: boolean) => { calls.push(`playerPayCrimeGold ${removeStolen} ${goToJail}`); },
   getCrimeGoldViolent: () => 0,
@@ -35,12 +41,14 @@ const faction = {
 
 // the menus open on this game
 const menus = new Set<string>();
+// whether this game finds the hold's faction yet, and whether its next fine call throws
+const engine = { factionFound: true, throwOnce: false };
 
 const platform = new Proxy({
   storage: {},
   Ui: { isMenuOpen: (name: string) => menus.has(name) },
   Faction: { from: (f: unknown) => (f === faction ? faction : null) },
-  Game: { getFormEx: (id: number) => (id === WHITERUN ? faction : null) },
+  Game: { getFormEx: (id: number) => (id === WHITERUN && engine.factionFound ? faction : null) },
 }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
 
 const Module = require("module");
@@ -66,6 +74,8 @@ const seat = (reload = false) => {
   if (!reload) {
     menus.clear();
     sp.storage = {};
+    engine.factionFound = true;
+    engine.throwOnce = false;
   }
   const handlers: Record<string, Array<(e?: unknown) => void>> = {};
   const messages: Record<string, Array<(e?: unknown) => void>> = {};
@@ -155,4 +165,32 @@ test("a term released before a hot reload is not released again after it", () =>
   const after = seat(true);
   after.update();
   assert.deepEqual(calls, []);
+});
+
+test("a served term whose release did not run (its faction not found yet) is kept and released at a later update", () => {
+  const { jail, update, raise, served } = seat();
+  raise("ownSpawnSettled", { how: "moved" });
+  engine.factionFound = false;
+  served(true);
+  update();
+  assert.deepEqual(calls, []);
+  assert.notEqual(jail.term, undefined);
+  engine.factionFound = true;
+  update();
+  assert.deepEqual(calls, RELEASE);
+  assert.equal(jail.term, undefined);
+});
+
+test("a served term whose release threw is kept and released at a later update, once", () => {
+  const { jail, update, raise, served } = seat();
+  raise("ownSpawnSettled", { how: "moved" });
+  engine.throwOnce = true;
+  served(true);
+  update();
+  assert.deepEqual(calls, []);
+  assert.notEqual(jail.term, undefined);
+  update();
+  update();
+  assert.deepEqual(calls, RELEASE);
+  assert.equal(jail.term, undefined);
 });

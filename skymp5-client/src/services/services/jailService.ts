@@ -44,6 +44,15 @@ const kTimeScaleId = 0x3a;
 //   released by this game's own engine once this connection's login spawn has
 //   settled (releaseIfServed); the server gives the prisoner's own belongings
 //   back when the move out leaves the jail's cell.
+interface JailTerm {
+    faction: number;
+    releaseAt: number;
+    served: boolean;
+}
+
+const TERM_KEY = "jailService.term";
+const SPAWN_SETTLED_KEY = "jailService.spawnSettled";
+
 export class JailService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -169,9 +178,22 @@ export class JailService extends ClientListener {
     private sent = new Map<number, { violent: number; nonViolent: number }>();
     // this game's player's jail term as the server's record holds it (the
     // newest JailTerm), whole; none before the first word or once the term's
-    // release has run here
-    term: { faction: number; releaseAt: number; served: boolean } | undefined = undefined;
+    // release has run here. Kept in the platform's storage, which a hot reload
+    // of the client keeps: the connection stays, so the server's one tell of
+    // it per connection does not come again
+    get term(): JailTerm | undefined {
+        return this.sp.storage[TERM_KEY] as JailTerm | undefined;
+    }
+    set term(term: JailTerm | undefined) {
+        this.sp.storage[TERM_KEY] = term;
+    }
     // this connection's own login spawn has put the player at the record's
-    // spot (RemoteServer's ownSpawnSettled)
-    private spawnSettled = false;
+    // spot (RemoteServer's ownSpawnSettled); in the storage too, since a
+    // reload runs no login spawn again
+    private get spawnSettled(): boolean {
+        return this.sp.storage[SPAWN_SETTLED_KEY] === true;
+    }
+    private set spawnSettled(settled: boolean) {
+        this.sp.storage[SPAWN_SETTLED_KEY] = settled;
+    }
 }

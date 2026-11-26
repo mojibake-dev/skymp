@@ -991,6 +991,19 @@ mod tests {
             ),
             other => panic!("{other:?}"),
         }
+        // SCHEMA_VERSION 74 (docs/verbs/difficulty.md): 33-7 is a player's
+        // own create word at a Legendary server; the same word to another
+        // game is refused
+        let own = recognize(&read("33-CreateActor-7.json")).unwrap_or_else(|e| panic!("33-CreateActor-7.json: {e}"));
+        assert_eq!(validate_server(&own), Ok(()));
+        match own {
+            Message::CreateActor(mut c) => {
+                assert_eq!((c.props.difficulty, c.is_me), (Some(5), true));
+                c.is_me = false;
+                assert_eq!(validate_server(&Message::CreateActor(c)), Err(wire_validate::Reject::Range));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// thuum ADR-068 rung 4: a script set's placement names its reporter on

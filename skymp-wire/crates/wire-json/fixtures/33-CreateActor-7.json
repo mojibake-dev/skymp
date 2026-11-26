@@ -1,0 +1,23 @@
+{
+  "customPropsJsonDumps": [],
+  "idx": 0,
+  "isMe": true,
+  "props": {
+    "difficulty": 5
+  },
+  "refrId": 4278190080,
+  "t": 33,
+  "transform": {
+    "pos": [
+      22659.0,
+      -8697.0,
+      -3594.0
+    ],
+    "rot": [
+      0.0,
+      0.0,
+      268.0
+    ],
+    "worldOrCell": 60
+  }
+}

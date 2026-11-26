@@ -143,6 +143,9 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // the summon's arrival art for its watchers (SCHEMA_VERSION 59, thuum
     // tracker #111, docs/verbs/summon.md)
     ("CreateActorProps", "summonEffect"),
+    // the server's difficulty on the player's own create word
+    // (SCHEMA_VERSION 74, docs/verbs/difficulty.md)
+    ("CreateActorProps", "difficulty"),
     // a created form by its definition: a stack's brewed potion or poison,
     // its made enchantment, its brewed poison, and a drink's
     // (SCHEMA_VERSION 61)

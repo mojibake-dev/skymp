@@ -122,7 +122,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("overlay", overlay)
       .Serialize("looks", looks)
       .Serialize("ownLocal", ownLocal)
-      .Serialize("summonEffect", summonEffect);
+      .Serialize("summonEffect", summonEffect)
+      .Serialize("difficulty", difficulty);
   }
 
   std::optional<bool> isOpen;
@@ -192,6 +193,11 @@ struct CreateActorMessageAdditionalProps
   // hit-effect art; absent for the caster, a later loader and every other
   // form
   std::optional<uint32_t> summonEffect;
+
+  // docs/verbs/difficulty.md (SCHEMA_VERSION 74): the server's difficulty, 0
+  // (Novice) to 5 (Legendary), on the player's own create word alone, which
+  // its game writes to the player's own difficulty field
+  std::optional<uint8_t> difficulty;
 };
 
 struct CreateActorMessageMainProps

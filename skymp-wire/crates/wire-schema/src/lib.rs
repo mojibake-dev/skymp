@@ -349,8 +349,13 @@ use bounded::{String, Vec};
 /// object's scripts a player's own record decides, by name, put back on the
 /// copy the object's owner runs (a word wall's second learner, docs/verbs/
 /// word-wall.md). A 72 peer has no wire id 97.
+/// 74: CreateActorProps' optional `difficulty` (docs/verbs/difficulty.md):
+/// the server's difficulty on the player's own create word, which its game
+/// writes to the player's own difficulty field so the engine's own hits take
+/// the server's difficulty. A 73 peer would misread every CreateActor
+/// (postcard writes one presence byte per Option).
 /// MsgTypes 84 to 89 (wire ids 92 to 97) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 73;
+pub const SCHEMA_VERSION: u16 = 74;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

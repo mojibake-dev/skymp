@@ -1093,6 +1093,13 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
     }
+    // docs/verbs/difficulty.md (SCHEMA_VERSION 74): the server's difficulty,
+    // Novice (0) to Legendary (5), on the player's own create word alone
+    if let Some(difficulty) = m.props.difficulty {
+        if difficulty > 5 || !m.is_me {
+            return Err(Reject::Range);
+        }
+    }
     // thuum docs/verbs/character-creation.md (the permit): the restricted
     // races and the ones this profile may wear travel together, on the
     // player's own CreateActor alone; no race id is 0 or repeated, and every
@@ -4797,6 +4804,28 @@ mod tests {
         assert_eq!(validate_server(&watched(Some(0x4e945), None, Some("NPC_"), true)), Err(Reject::Range));
         // absent, as before
         assert_eq!(validate_server(&watched(None, None, Some("NPC_"), false)), Ok(()));
+    }
+
+    #[test]
+    fn the_servers_difficulty_rides_the_players_own_create_word_alone_novice_to_legendary() {
+        // docs/verbs/difficulty.md (SCHEMA_VERSION 74)
+        let own = |difficulty: Option<u8>, is_me: bool| {
+            Message::CreateActor(skymp::CreateActor {
+                idx: 7,
+                is_me,
+                props: skymp::CreateActorProps { difficulty, ..Default::default() },
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&own(Some(0), true)), Ok(()));
+        assert_eq!(validate_server(&own(Some(2), true)), Ok(()));
+        assert_eq!(validate_server(&own(Some(5), true)), Ok(()));
+        assert_eq!(validate_server(&own(Some(6), true)), Err(Reject::Range));
+        assert_eq!(validate_server(&own(Some(u8::MAX), true)), Err(Reject::Range));
+        // another actor's create word, or another player's figure, carries none
+        assert_eq!(validate_server(&own(Some(2), false)), Err(Reject::Range));
+        assert_eq!(validate_server(&own(None, false)), Ok(()));
+        assert_eq!(validate_server(&own(None, true)), Ok(()));
     }
 
     #[test]

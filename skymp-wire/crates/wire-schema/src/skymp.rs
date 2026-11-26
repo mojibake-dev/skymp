@@ -394,6 +394,14 @@ wire_struct! {
         /// plain. Only with `base_record_type` NPC_, never beside
         /// `own_local` and never on a player's own word (`E_VAL_RANGE`).
         pub summon_effect: Option<u32>,
+        /// Since SCHEMA_VERSION 74 (docs/verbs/difficulty.md): the server's
+        /// difficulty, 0 (Novice) to 5 (Legendary), on the player's own
+        /// CreateActor (`is_me`) alone, every time. The game writes it to the
+        /// player's own difficulty field, which the engine's DamageActor
+        /// indexes, so the hits that engine applies itself (a trap's, a
+        /// fall's) take the difficulty the server's damage takes. Above 5,
+        /// or on any other create word, `E_VAL_RANGE`.
+        pub difficulty: Option<u8>,
     }
 }
 

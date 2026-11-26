@@ -52,6 +52,7 @@ ModelApplyUtils.applyModelInventory = (refr: { getFormID: () => number }, inv: I
   applied.push({ id: refr.getFormID(), arrows: inv.entries.find((e) => e.baseId === 0x1397d)?.count ?? 0 });
 };
 const { RemoteServer } = require("../src/services/services/remoteServer") as { RemoteServer: typeof RemoteServerClass };
+const { ContainerApplyQueue } = require("../src/view/containerApplyQueue");
 
 const service = () => {
   const controller: any = new Proxy({
@@ -96,3 +97,19 @@ test("a record after the tick's apply lands at the next tick", () => {
   tick();
   assert.deepEqual([...applied], [{ id: CHEST, arrows: 60 }, { id: CHEST, arrows: 20 }]);
 });
+
+test("a container's record queued at its cell load gives way to a newer record of it, which stays the one applied", () => {
+  const { record } = service();
+  // a cell load's records queue, one container a tick: another chest's ahead
+  ContainerApplyQueue.enqueue(OTHER_CHEST, { entries: [{ baseId: 0x1397d, count: 5 }] });
+  ContainerApplyQueue.enqueue(CHEST, { entries: [{ baseId: 0x1397d, count: 60 }] });
+  // then the server's newer record of the chest itself
+  record(CHEST, 20);
+  for (let i = 0; i < 4; ++i) {
+    tick();
+  }
+  const ofChest = applied.filter((a) => a.id === CHEST);
+  assert.ok(ofChest.length > 0);
+  assert.equal(ofChest[ofChest.length - 1].arrows, 20);
+});
+

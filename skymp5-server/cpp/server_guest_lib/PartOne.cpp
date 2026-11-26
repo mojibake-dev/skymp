@@ -10845,11 +10845,30 @@ bool PartOne::ReleaseIfServed(MpActor& prisoner)
 size_t PartOne::TellCrimeRecord(MpActor& player)
 {
   const auto record = player.GetCrimeRecord();
+  const float now =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  // a served term's hold is cleared by the prisoner's own game's release
+  // (the engine's fine path), and a bounty told after that release would
+  // put it back: the term is told at once and the bounties a tick later, so
+  // a game whose spawn had settled could release between them. The served
+  // hold's bounty is never told; the record keeps it until the release ends
+  // the term (ReleaseIfServed)
+  const bool served =
+    record.jail && static_cast<double>(now) >= record.jail->releaseAt;
+  size_t told = 0;
   for (const auto& gold : record.crimeGold) {
-    TellCrimeGold(player, gold.faction.ToFormId(worldState.espmFiles),
-                  gold.violent, gold.nonViolent);
+    const uint32_t faction = gold.faction.ToFormId(worldState.espmFiles);
+    if (served && gold.faction == record.jail->faction) {
+      spdlog::info("[verb:jail] {:x}'s bounty in {:x} not told at its "
+                   "login: its term there is served, and its own game's "
+                   "release clears it",
+                   player.GetFormId(), faction);
+      continue;
+    }
+    TellCrimeGold(player, faction, gold.violent, gold.nonViolent);
+    ++told;
   }
-  return record.crimeGold.size();
+  return told;
 }
 
 void PartOne::TickJailsEverySecond()

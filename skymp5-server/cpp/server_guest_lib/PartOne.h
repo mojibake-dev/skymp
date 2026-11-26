@@ -786,8 +786,9 @@ public:
                       const Inventory::Entry& entry);
   bool OnArrestStripTake(MpActor& prisoner, const Inventory::Entry& entry);
   // The player's bounty per hold, told to its game as the console's
-  // Faction.SetCrimeGold and SetCrimeGoldViolent tell it (a login's); how
-  // many holds
+  // Faction.SetCrimeGold and SetCrimeGoldViolent tell it (a login's), but a
+  // served term's hold, whose bounty its own game's release clears; how many
+  // holds were told
   size_t TellCrimeRecord(MpActor& player);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);

@@ -1943,8 +1943,8 @@ TEST_CASE("Chargen classed the player's by its start keeps its script's race "
   p.SetQuestScopeSettings(R"("derived")", "[]", R"(["3372b:Skyrim.esm"])");
 
   REQUIRE(p.QuestAttachmentLive(kChargen));
-  Own(p, "AddSpell", { FormArg(kSparks, "Spell") }, "MQ101QuestScript",
-      "AddRaceSpells");
+  Own(p, "AddSpell", { FormArg(kSparks, "Spell"), Arg(false) },
+      "MQ101QuestScript", "AddRaceSpells");
   const auto learned = turned.GetSpellList();
   INFO(log.oss.str());
   REQUIRE(std::find(learned.begin(), learned.end(), kSparks) != learned.end());

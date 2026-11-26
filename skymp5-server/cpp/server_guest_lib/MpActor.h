@@ -379,6 +379,10 @@ public:
   // Adds to the jail term's belongings what the prisoner's game put into its
   // faction's prisoner-belongings chest; false without a term
   bool AddJailBelonging(const Inventory::Entry& entry);
+  // Takes off the jail term's belongings what the prisoner took back from
+  // its faction's prisoner-belongings chest, from its own stacks equal to
+  // the entry but the count; how many came off (0 without a term)
+  uint32_t TakeJailBelonging(const Inventory::Entry& entry);
 
   // The moments of an arrest the player's own game reported
   // (PartOne::OnArrest): until the window closes, the moves its game reports

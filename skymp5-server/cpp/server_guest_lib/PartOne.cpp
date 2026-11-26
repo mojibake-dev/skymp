@@ -10749,6 +10749,26 @@ void PartOne::TellJailTermAtLogin(MpActor& prisoner)
   }
 }
 
+void PartOne::OnJailChestTake(MpActor& taker,
+                              const MpObjectReference& container,
+                              const Inventory::Entry& taken)
+{
+  const auto record = taker.GetCrimeRecord();
+  if (!record.jail || taken.count == 0) {
+    return;
+  }
+  const auto jail =
+    JailOf(record.jail->faction.ToFormId(worldState.espmFiles));
+  if (!jail || jail->belongingsChest != container.GetFormId()) {
+    return;
+  }
+  const uint32_t off = taker.TakeJailBelonging(taken);
+  spdlog::info("[verb:jail] {:x} takes {} of {:x} back from its belongings "
+               "chest {:x}: {} off its own belongings, {} of another's",
+               taker.GetFormId(), taken.count, taken.baseId,
+               container.GetFormId(), off, taken.count - off);
+}
+
 size_t PartOne::GiveBackBelongings(MpActor& prisoner, const JailTerm& term,
                                    const std::optional<JailOfFaction>& jail)
 {

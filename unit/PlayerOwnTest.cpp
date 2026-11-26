@@ -425,28 +425,36 @@ TEST_CASE("A form of another kind than the row's is refused by name "
   Leave(p);
 }
 
+// A Papyrus EquipItem of an item the actor lacks adds it, so a script's
+// EquipItem on its own player of an item the record lacks is that player's
+// own game's gain: recorded as an AddItem of one is (R2, no bound: a script
+// whose attachments name nothing still counts), and one the record holds
+// folds
 TEST_CASE("Outside an overlay EquipItem folds an item the record holds and "
-          "refuses one it lacks (E_SCRIPTCALL_UNNAMED): no row mints an item",
+          "records one it lacks as the player's own gain, with no bound",
           "[PlayerOwn][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p);
   OwnLog log;
   auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
-  const char* const script = "PlayerWerewolfChangeScript";
 
   Own(p, "EquipItem", { FormArg(kWolfSkin, "Armor"), Arg(false), Arg(true) },
-      script, "StartTracking");
-  REQUIRE(log.Count("E_SCRIPTCALL_UNNAMED") == 1);
-  REQUIRE(log.Count("is no item the player's record holds") == 1);
-  REQUIRE(!turned.GetInventory().HasItem(kWolfSkin));
+      "NoSuchScript", "StartTracking");
+  REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
+  REQUIRE(turned.GetInventory().GetItemCount(kWolfSkin) == 1);
 
-  turned.AddItem(kWolfSkin, 1);
+  // held now: the same equip folds, nothing more is added
   p.Messages().clear();
   Own(p, "EquipItem", { FormArg(kWolfSkin, "Armor"), Arg(false), Arg(true) },
-      script, "StartTracking");
+      "PlayerWerewolfChangeScript", "StartTracking");
   REQUIRE(turned.GetInventory().GetItemCount(kWolfSkin) == 1);
   REQUIRE(LooksTo(p, 1).empty());
+
+  // a form that is no item is still refused by its kind
+  Own(p, "EquipItem", { FormArg(kNordRace, "Armor"), Arg(false), Arg(true) },
+      "NoSuchScript", "StartTracking");
+  REQUIRE(!turned.GetInventory().HasItem(kNordRace));
   Leave(p);
 }
 

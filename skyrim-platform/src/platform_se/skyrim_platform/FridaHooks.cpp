@@ -10,6 +10,7 @@
 #include "JsUtils.h"
 #include "MagicApi.h"
 #include "PapyrusTESModPlatform.h"
+#include "PartyLevel.h"
 #include "PlatformCall.h"
 #include "PropBodies.h"
 #include "Puppets.h"
@@ -5871,6 +5872,9 @@ void Frida::InstallHooks()
   // thuum docs/verbs/npc-fate.md: the roll's two detours, inert until
   // setActorFateEnabled(true)
   Fates::InstallHooks();
+  // docs/verbs/leveling.md: the party level's GetLevel detour, the engine's
+  // own level until a party level is told
+  PartyLevel::InstallHooks();
   // thuum docs/verbs/change-form.md (ADR-065): the id census on 35928 and
   // the address proof line of the change-form natives
   ChangeForm::InstallHooks();

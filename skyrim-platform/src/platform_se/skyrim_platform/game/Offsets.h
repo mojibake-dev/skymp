@@ -393,6 +393,30 @@ inline REL::ID CommandRefresh(38799);
 inline REL::ID CommandUnlink(38800);
 }
 
+// docs/verbs/leveling.md (the party's level): the engine calls the party
+// level makes (PartyLevel.cpp). AE only, 1.6.1170's ids by `just addr`, the
+// bodies a static read (REA), HYPOTHESIS by rule 2.
+namespace PartyLevel {
+// TESActorBaseData::GetLevel `std::uint16_t (const TESActorBaseData*)`, the
+// one function every level read of an actor base passes through: the ACBS
+// level, or with kPCLevelMult the player's level times the mult, clamped to
+// the calc levels (CommonLibSSE-NG include/RE/T/TESActorBaseData.h:120,
+// RELOCATION_ID(14262, 14384)); addrlib: 14384 at 0x1d7cf0
+inline REL::Relocation<std::uintptr_t> GetLevel{ RELOCATION_ID(14262, 14384) };
+// the level-up's recompute of every PC-level-mult base `void
+// (TESDataHandler*)`: each NPC_ in the data handler's list with kPCLevelMult
+// has its auto-calc stats computed again from GetLevel (24723, then 24765),
+// as PlayerSkills::AdvanceLevel (41567) does at a level-up; addrlib: 13697
+// at 0x1b1cb0
+inline REL::ID RecomputePCLevelMultBases(13697);
+// a loaded non-player actor's actor values read again from its base `void
+// (Actor*)`: the cached base values dropped and the process caches marked,
+// so its base and maximum health follow the recomputed base and its damage
+// taken is kept (the level-up's second step, 38481 for a non-player);
+// addrlib: 38479 at 0x6b2dc0
+inline REL::ID RefreshActorValues(38479);
+}
+
 // thuum docs/verbs/change-form.md (ADR-065, system 1): the engine's own
 // change-form serializer and apply, called on demand by TESModPlatform's
 // SerializeChangeForm and ApplyChangeForm (ChangeForm.cpp). AE only,

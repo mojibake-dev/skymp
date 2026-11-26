@@ -59,6 +59,7 @@ import { HostService } from "./services/services/hostService";
 import { LoginCellService } from "./services/services/loginCellService";
 import { PuppetService } from "./services/services/puppetService";
 import { ActorFateService } from "./services/services/actorFateService";
+import { PartyLevelService } from "./services/services/partyLevelService";
 import { DeathReportService } from "./services/services/deathReportService";
 import { HostedStateService } from "./services/services/hostedStateService";
 import { DamageCauseService } from "./services/services/damageCauseService";
@@ -169,6 +170,7 @@ const main = () => {
       new LoginCellService(sp, controller),
       new PuppetService(sp, controller),
       new ActorFateService(sp, controller),
+      new PartyLevelService(sp, controller),
       new DeathReportService(sp, controller),
       new HostedStateService(sp, controller),
       new DamageCauseService(sp, controller),

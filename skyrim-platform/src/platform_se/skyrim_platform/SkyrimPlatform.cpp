@@ -20,6 +20,7 @@
 #include "MagicApi.h"
 #include "MpClientPluginApi.h"
 #include "ObjectReferenceApi.h"
+#include "PartyLevel.h"
 #include "PlatformCall.h"
 #include "PuppetApi.h"
 #include "ScriptNatives.h"
@@ -338,6 +339,7 @@ private:
       MagicApi::Register(env, e);
       PuppetApi::Register(env, e);
       FateApi::Register(env, e);
+      PartyLevelApi::Register(env, e);
       ConstEnumApi::Register(env, e);
       CallNativeApi::Register(env, e, getNativeCallRequirements);
       Sp3Api::Register(env, e, getNativeCallRequirements);

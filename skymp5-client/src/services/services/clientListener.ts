@@ -656,6 +656,10 @@ declare module "skyrimPlatform" {
     // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): a dead body's
     // record-worn armor that it holds unworn, equipped again after an apply
     function dressBody(refrId: number, worn: number[]): boolean;
+    // docs/verbs/leveling.md (the party's level): the level this game's
+    // PC-level-mult NPCs scale to, read by the detour of the engine's level;
+    // true when it changed
+    function setPartyLevel(level: number): boolean;
     function actorFateCount(): number;
     // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): the command of a
     // living thrall this game's player cast and simulates though its engine

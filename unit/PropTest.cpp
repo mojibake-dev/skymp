@@ -2544,6 +2544,82 @@ TEST_CASE("Another player's grip holds a player's body: its grab is granted "
   p.DestroyActor(kC2);
 }
 
+// A grip is an assault (thuum docs/verbs/hostility-sync.md): the gripper's
+// own engine fights the gripped player's copy from the grab, so the granted
+// grab of another player's body begins the players' fight as a hit does. The
+// gripped player's game is told (Actor.StartCombat on its figure of the
+// gripper, aimed at its own player, 0x14 there), a grab in the fight tells
+// nothing again, and a minute quiet ends the fight on both games
+// (Actor.StopCombatAlarm on each one's figure of the other)
+TEST_CASE("A player's grip of another player begins their fight: the gripped "
+          "player's game is told, and a minute quiet ends it on both games",
+          "[Prop][espm]")
+{
+  constexpr uint32_t kGripped = 0xff000d18;
+  constexpr uint32_t kGripper = 0xff000d19;
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  Player(p, 0, kGripped, kForest);
+  Player(p, 1, kGripper, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  MpActor* gripped = p.worldState.LookupFormByIdNoLoad(kGripped)->AsActor();
+  REQUIRE(gripped != nullptr);
+  // the snippets of `function` the users received since the last clear
+  const auto snippets = [&](const char* function) {
+    p.Tick(); // snippets are deferred
+    std::vector<std::pair<Networking::UserId, nlohmann::json>> out;
+    for (auto& m : p.Messages()) {
+      if (m.j["t"] == MsgType::SpSnippet && m.j["function"] == function) {
+        out.emplace_back(m.userId, m.j);
+      }
+    }
+    return out;
+  };
+  REQUIRE(!p.GetFights().in_fight(kGripped));
+
+  p.Messages().clear();
+  Claim(p, 1, kGripped, 1);
+  REQUIRE(p.PropLiveOwner(*gripped) == kGripper);
+  const auto told = snippets("StartCombat");
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0].first == 0);
+  REQUIRE(told[0].second["class"] == "Actor");
+  REQUIRE(told[0].second["selfId"] == kGripper);
+  REQUIRE(told[0].second["arguments"] ==
+          nlohmann::json::array(
+            { nlohmann::json{ { "formId", 0x14 }, { "type", "Actor" } } }));
+  REQUIRE(p.GetFights().in_fight(kGripped));
+  REQUIRE(p.GetFights().in_fight(kGripper));
+
+  // the gripper's rest returns the body; a second grab in the fight tells
+  // nothing again
+  Sample(p, 1, kGripped, gripped->GetPos(), true);
+  REQUIRE(p.PropLiveOwner(*gripped) == 0);
+  p.Messages().clear();
+  Claim(p, 1, kGripped, 1);
+  REQUIRE(p.PropLiveOwner(*gripped) == kGripper);
+  REQUIRE(snippets("StartCombat").empty());
+  const uint64_t grabbedAt = NowMs();
+
+  // half a minute quiet: still on; a minute: over, on both games
+  p.Messages().clear();
+  p.TickFights(grabbedAt + 30'000);
+  REQUIRE(snippets("StopCombatAlarm").empty());
+  p.Messages().clear();
+  p.TickFights(grabbedAt + 61'000);
+  const auto over = snippets("StopCombatAlarm");
+  REQUIRE(over.size() == 2);
+  for (auto& [user, j] : over) {
+    REQUIRE(j["selfId"] == (user == 0 ? kGripper : kGripped));
+  }
+  REQUIRE(!p.GetFights().in_fight(kGripped));
+
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kGripped);
+  p.DestroyActor(kGripper);
+}
+
 // Dawnguard.esm: the Vampire Lord's grip, DLC1nVampireBloodyGripSpell
 // 0x0200E7D2, is a concentration spell whose cloak effect
 // DLC1nVampireBloodyGripCloakEffect 0x0200E7D7 reaches DLC1VampireGripDmg

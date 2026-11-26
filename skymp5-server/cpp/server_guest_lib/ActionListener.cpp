@@ -5021,6 +5021,15 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
                      "granted, epoch {}; {} listener(s) told",
                      myActor->GetFormId(), prop->GetFormId(), msg.touch, epoch,
                      told);
+        // a grip is an assault (thuum docs/verbs/hostility-sync.md): the
+        // gripper's own engine fights its copy of the gripped player from the
+        // grab, and the server hears the grab alone, so the granted grab of
+        // another player's body begins the players' fight as a hit does: the
+        // gripped player's game is told, and TickFights ends it on both games
+        if (kind == PropKind::LiveBody && msg.touch == kTouchGrab && !self &&
+            propActor && propActor->GetUserId() != Networking::InvalidUserId) {
+          NotifyHostility(*myActor, *prop->AsActor(), now);
+        }
         break;
       }
       case PartOne::PropClaimVerdict::Held:

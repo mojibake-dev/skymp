@@ -69,26 +69,9 @@ TEST_CASE("A projectile another player's figure fired is another seat's, so "
   puppet.hosted = false;
   puppet.puppet = true;
   REQUIRE(OwnerOfCause(FiredBy(puppet)) == Owner::kOther);
-}
-
-TEST_CASE("An explosion or a projectile no actor fired is its cell host's: "
-          "a destructible's own explosion, a trap's dart",
-          "[CauseOwner]")
-{
-  // the object named as its own explosion's owner, in a cell hosted here
-  REQUIRE(OwnerOfCause(FiredByNoActor(true, true)) == Owner::kThisSeat);
-  // the same on a seat that does not host the cell: no claim of its own
-  REQUIRE(OwnerOfCause(FiredByNoActor(true, false)) == Owner::kUndecided);
-  // none named (a dart, a caster activator)
-  REQUIRE(OwnerOfCause(FiredByNoActor(false, true)) == Owner::kThisSeat);
-  REQUIRE(OwnerOfCause(FiredByNoActor(false, false)) == Owner::kUndecided);
-}
-
-TEST_CASE("Actors and other references keep their owners: the player, a "
-          "figure, a hosted NPC, a puppet, a body, an NPC no word reached, a "
-          "prop, a followed trap body",
-          "[CauseOwner]")
-{
+  // an actor itself keeps its owner: the player, a figure, a body (its cell
+  // host's), an NPC no seat's word reached (undecided where the cell is not
+  // hosted here)
   const auto actor = [](const ActorFacts& a) {
     CauseFacts c;
     c.kind = CauseKind::kActor;
@@ -111,6 +94,21 @@ TEST_CASE("Actors and other references keep their owners: the player, a "
   REQUIRE(actor(stranger) == Owner::kUndecided);
   stranger.cellHosted = true;
   REQUIRE(actor(stranger) == Owner::kThisSeat);
+}
+
+TEST_CASE("An explosion or a projectile no actor fired is its cell host's: "
+          "a destructible's own explosion, a trap's dart",
+          "[CauseOwner]")
+{
+  // the object named as its own explosion's owner, in a cell hosted here
+  REQUIRE(OwnerOfCause(FiredByNoActor(true, true)) == Owner::kThisSeat);
+  // the same on a seat that does not host the cell: no claim of its own
+  REQUIRE(OwnerOfCause(FiredByNoActor(true, false)) == Owner::kUndecided);
+  // none named (a dart, a caster activator)
+  REQUIRE(OwnerOfCause(FiredByNoActor(false, true)) == Owner::kThisSeat);
+  REQUIRE(OwnerOfCause(FiredByNoActor(false, false)) == Owner::kUndecided);
+  // any other reference keeps its owner: a prop this seat's, a trap body
+  // another seat runs that this seat follows another's
   CauseFacts prop;
   REQUIRE(OwnerOfCause(prop) == Owner::kThisSeat);
   prop.followedTrapBody = true;

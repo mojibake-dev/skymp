@@ -14,5 +14,8 @@ export interface CorpseCopyFacts {
 export type CorpseCopyWait = "kill" | "3d" | undefined;
 
 export const corpseCopyWait = (f: CorpseCopyFacts): CorpseCopyWait => {
-    return f.dead ? undefined : "kill";
+    if (!f.dead) {
+        return "kill";
+    }
+    return f.loaded3D ? undefined : "3d";
 };

@@ -1,6 +1,8 @@
 // The bases an own script row on this seat's player holds against remoteServer.ts's inventory apply until the
 // server's SetInventory carries the row (ScriptCallService.holdOwnItem), JS state alone: an AddItem's surplus
-// (each landed base's, for a leveled list's roll), a RemoveItem's deficit.
+// (each landed base's, for a leveled list's roll), a RemoveItem's deficit, and an EquipItem's surplus (a Papyrus
+// EquipItem adds an item the actor lacks, which the server records as the player's own gain; one the actor holds
+// keeps its count, so its hold changes nothing).
 export interface OwnItemCall {
     // the call's self: 0x14 for this seat's own player
     self: number;
@@ -21,7 +23,13 @@ export interface OwnItemHold {
 }
 
 export const ownItemHolds = (c: OwnItemCall): OwnItemHold[] => {
-    if (c.self !== 0x14 || c.cls !== "ObjectReference" || c.family !== "own") {
+    if (c.self !== 0x14 || c.family !== "own") {
+        return [];
+    }
+    if (c.cls === "Actor" && c.fn === "EquipItem") {
+        return c.item === 0 ? [] : [{ formId: c.item, keep: "surplus" }];
+    }
+    if (c.cls !== "ObjectReference") {
         return [];
     }
     if (c.fn === "AddItem" && c.landed !== undefined) {

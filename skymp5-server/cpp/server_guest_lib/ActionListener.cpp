@@ -6613,6 +6613,19 @@ void RecordPlayerOwn(
   const bool shoutRow =
     NamesFunc(msg.fn, "AddShout") || NamesFunc(msg.fn, "RemoveShout");
   const bool equipRow = NamesFunc(msg.fn, "EquipItem");
+  if (equipRow) {
+    // an EquipItem of an item the record lacks is judged as an AddItem of
+    // one: what the record holds and the stack bound, as an add's
+    const auto& inventory = reporter.GetInventory();
+    facts.held_count = form != 0 ? inventory.GetItemCount(form) : 0;
+    facts.stacks = inventory.entries.size();
+    const Inventory::Entry plain(form, 0);
+    facts.new_stack =
+      std::none_of(inventory.entries.begin(), inventory.entries.end(),
+                   [&](const Inventory::Entry& entry) {
+                     return entry.EqualExceptCount(plain);
+                   });
+  }
   if (form != 0) {
     if (spellRow) {
       facts.held = reporter.IsSpellLearned(form);
@@ -6649,6 +6662,17 @@ void RecordPlayerOwn(
                             "(D-R1 C, R2), {} held now",
                             verdict.count,
                             addItem ? "added to" : "removed from",
+                            reporter.GetInventory().GetItemCount(form)));
+  }
+  if (equipRow && verdict.code == 0 && verdict.count > 0) {
+    // an EquipItem of an item the record lacks, which the engine added: the
+    // player's own game's gain, recorded as an own AddItem is (R2); its game
+    // hears its inventory, nobody else
+    reporter.AddItem(form, verdict.count);
+    return said(fmt::format("{} added to its inventory, its script's "
+                            "EquipItem adding what the record lacked (R2), "
+                            "{} held now",
+                            verdict.count,
                             reporter.GetInventory().GetItemCount(form)));
   }
   if (itemRow && verdict.code == 1) {

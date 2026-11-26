@@ -412,6 +412,12 @@ impl PlayerOverlays {
         if !facts.kind {
             return Verdict::Refuse(Code::Args, format!("{form:x} is no {} record, the form {}.{row:?} takes", row.kind(), row.class()));
         }
+        // a Papyrus EquipItem of an item the actor lacks adds it: outside an
+        // overlay that is the player's own game's gain, judged as an AddItem
+        // of one (no bound)
+        if row == Row::EquipItem && !facts.held && !self.open.contains_key(&player) {
+            return self.items(player, Row::AddItem, form, Facts { count: Some(1), ..facts });
+        }
         let returns = row == Row::SetRace && form == facts.recorded_race;
         if !returns && !named(form, properties) {
             return Verdict::Refuse(Code::Unnamed, format!("{form:x} is no value of the calling script's live attachments, nor of a FormList one"));
@@ -429,11 +435,10 @@ impl PlayerOverlays {
         }
         let Some(overlay) = self.open.get_mut(&player) else {
             // no overlay: the record's, an add of what it holds or a removal
-            // of what it lacks folding; an item the record lacks is minted by
-            // no row (R0's inventory is never a client's word: the fresh
-            // review's note 4), so EquipItem folds or is refused
+            // of what it lacks folding; an EquipItem of an item the record
+            // lacks was judged above as its game's gain, so here it folds
             if row == Row::EquipItem {
-                return if facts.held { Verdict::Fold } else { Verdict::Refuse(Code::Unnamed, format!("{form:x} is no item the player's record holds, and outside an overlay EquipItem adds none")) };
+                return Verdict::Fold;
             }
             let adds = matches!(row, Row::AddSpell | Row::AddShout);
             return if adds == facts.held { Verdict::Fold } else { Verdict::Record { ended: None } };
@@ -876,16 +881,17 @@ mod tests {
     }
 
     #[test]
-    fn an_item_outside_an_overlay_folds_when_held_and_is_refused_when_not() {
-        // the fresh review's note 4: no row mints an item (R0's inventory)
+    fn an_item_outside_an_overlay_folds_when_held_and_is_the_players_gain_when_not() {
+        // a Papyrus EquipItem adds an item the actor lacks: outside an overlay
+        // it is the player's own game's gain, an AddItem of one with no bound
+        // (a script naming nothing counts), at the record's stack cap refused
         let mut o = PlayerOverlays::default();
         let script = werewolf_script();
         let nord = Facts { recorded_race: NORD, kind: true, ..Facts::default() };
         assert_eq!(o.judge(ARIADNE, Row::EquipItem, SKIN, &script, Facts { held: true, ..nord }), Verdict::Fold);
-        match o.judge(ARIADNE, Row::EquipItem, SKIN, &script, nord) {
-            Verdict::Refuse(Code::Unnamed, why) => assert_eq!(why, "10d4f9 is no item the player's record holds, and outside an overlay EquipItem adds none"),
-            other => panic!("not refused: {other:?}"),
-        }
+        assert_eq!(o.judge(ARIADNE, Row::EquipItem, SKIN, &[], nord), Verdict::Items(1));
+        let full = Facts { new_stack: true, stacks: INVENTORY_STACKS, ..nord };
+        assert!(matches!(o.judge(ARIADNE, Row::EquipItem, SKIN, &script, full), Verdict::Refuse(Code::Full, _)));
         // inside one the item is the overlay's, as before
         assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &script, nord), Verdict::Overlay);
         assert_eq!(o.judge(ARIADNE, Row::EquipItem, SKIN, &script, nord), Verdict::Overlay);

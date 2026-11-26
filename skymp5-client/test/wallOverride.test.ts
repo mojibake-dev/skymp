@@ -210,4 +210,3 @@ test("at a new host's grant the served record applies first and the override goe
   assert.ok(calls.includes(APPLIED), "the override is applied");
   assert.ok(calls.indexOf(servedApply) < calls.indexOf(APPLIED), `the served record first, the put-back over it: ${calls.join(" | ")}`);
 });
-

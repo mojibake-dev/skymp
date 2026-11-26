@@ -1,8 +1,9 @@
+#include "ActionListener.h"
+#include "RawMessageData.h"
 #include "TestUtils.hpp"
-#include <catch2/catch_all.hpp>
-
 #include "UpdateAppearanceMessage.h"
 #include "UpdateMovementMessage.h"
+#include <catch2/catch_all.hpp>
 
 PartOne& GetPartOne();
 

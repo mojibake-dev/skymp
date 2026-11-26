@@ -1,0 +1,69 @@
+# difftest party-level (docs/verbs/leveling.md, "The party's level"; docs/
+# WIRE.md's PartyLevel, MsgType 90, wire id 98): PartyLevel is the server's
+# word to every game of a party, the level its PC-level-mult NPCs scale to.
+# c1 and c2 are new characters (profiles 9 and 10), both at the spawn. At 2 s
+# c1 reports a snapshot at level 27 (actor-values' first step at another
+# level), which the wire server records; its next cell host tick tells c1's
+# game its party's level, 27, the only player with a record. The legacy
+# server has no ActorValues, so it records nothing and tells nothing. At 3 s
+# c1 sends a PartyLevel itself: the wire client's own transport refuses it
+# by direction before it leaves (E_CLIENT_RECOGNIZE wrapping E_TX_DIRECTION),
+# declared below and required to occur once; the legacy client sends it and
+# the legacy server, which has no handler for it, answers nothing. The
+# party's mean and lean are T0's (unit/PartyLevelTest.cpp), which places two
+# players in one hosted cell. c2 steps aside at 4 s so it outlives c1, as in
+# every session.
+id: party-level
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 40, bases: [{av: 6, base: 16.0}, {av: 24, base: 110.0}], skills: [{skill: 0, level: 16.0, xp: 1.0, threshold: 10.0}], xp: 5.0, threshold: 75.0, level: 27, legendary: []}}
+  - {client: c1, at_ms: 3000, send: {t: 90, level: 27}, reliable: true}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+refusals:
+  - client: c1
+    t: 90
+    error: "E_CLIENT_RECOGNIZE: E_TX_DIRECTION: a client does not send PartyLevel"
+    reason: the wire client's transport refuses a server-to-client type before it is sent; the legacy client sends it and the legacy server answers nothing
+divergences:
+  - client: c1
+    msg: {t: 90, level: 27}
+    legacy: 0
+    wire: 1
+    reason: the party's level (PartyLevel, docs/verbs/leveling.md), told to c1's game once its record names a level; the legacy server has no ActorValues record
+  - client: c1
+    msg: {t: 7, idx: "refr:ff000002", propName: health}
+    legacy: 0
+    wire: 1
+    reason: figure-values (docs/verbs/figure-values.md), c1's recorded maximum as a property of its own actor, as in actor-values
+  - client: c1
+    msg: {t: 7, idx: "refr:ff000002", propName: magicka}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c1
+    msg: {t: 7, idx: "refr:ff000002", propName: stamina}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 7, idx: "refr:ff000002", propName: health}
+    legacy: 0
+    wire: 1
+    reason: figure-values, the same maxima for c2's figure of c1
+  - client: c2
+    msg: {t: 7, idx: "refr:ff000002", propName: magicka}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 7, idx: "refr:ff000002", propName: stamina}
+    legacy: 0
+    wire: 1
+    reason: figure-values, as above
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

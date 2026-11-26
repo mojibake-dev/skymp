@@ -556,3 +556,32 @@ TEST_CASE("A pull of Bleak Falls Temple's puzzle lever makes the server "
   REQUIRE(counter->activated[kDartPorts[0]] == 1);
   Leave(p);
 }
+
+TEST_CASE("The host's report of its engine's activation of a parent-only "
+          "reference through a script link is recorded and relayed, never "
+          "refused by the player's parent-only rule",
+          "[Traps][espm]")
+{
+  // the lever's script names the portcullis as refActOnSuccess01; the
+  // portcullis is parent-only (XAPD 1) and its XAPR names the marker and the
+  // lever 0x6a9e2, not the puzzle lever. The host's engine ran the activation
+  // and its own checks, so the server's player-only parent rule refuses
+  // nothing the host reports
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& lever = p.worldState.GetFormAt<MpObjectReference>(kPuzzleLever);
+  Place(p, kHostActor, lever.GetPos() + NiPoint3{ 60.f, 0.f, 0.f });
+  Place(p, kGuestActor, lever.GetPos() + NiPoint3{ -60.f, 0.f, 0.f });
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Activation(p, 0, kPuzzleLever, kPortcullis));
+    REQUIRE(log.Count("[verb:traps] aa8c3 activates 3b9f1 in cell 371de (its "
+                      "host ff000ff1 reports)") == 1);
+    REQUIRE(log.Count("E_TRAP_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 1).size() == 1);
+  REQUIRE(RelayedTo(p, 1)[0].target == kPortcullis);
+  REQUIRE(RelayedTo(p, 1)[0].caster == kPuzzleLever);
+  Leave(p);
+}

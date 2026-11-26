@@ -574,9 +574,14 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
     // Pillars puzzle Bleak Falls Barrow
     bool workaroundBypassParentsCheck = &activationSource == this;
 
-    // Block if only activation parents can activate this
+    // Block if only activation parents can activate this. The rule is the
+    // engine's own for a player's activation; an activation a host reports is
+    // one its engine already ran, its own checks included (a script's
+    // Activate through a property link names no XAPR parent), so it is
+    // recorded and relayed, never refused here
     auto refrId = GetFormId();
-    if (!workaroundBypassParentsCheck && IsEspmForm() && !AsActor()) {
+    if (!workaroundBypassParentsCheck && !reportedByHost && IsEspmForm() &&
+        !AsActor()) {
       auto lookupRes = worldState->GetEspm().GetBrowser().LookupById(refrId);
       auto data = espm::GetData<espm::REFR>(refrId, worldState);
       auto it = std::find_if(

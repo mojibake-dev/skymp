@@ -1,5 +1,5 @@
 import { ObjectReference, Actor, Game, FormType, TextureSet, NetImmerse } from "skyrimPlatform";
-import { Inventory, applyInventory } from "../sync/inventory";
+import { ApplyInventoryReport, Inventory, applyInventory } from "../sync/inventory";
 import { FormTypeEx } from "../extensions/formTypeEx";
 import { logError, logLab, logTrace } from "../logging";
 import { bookHeld } from "../sync/bookHold";
@@ -8,8 +8,20 @@ import { SetNodeScaleEntry, SetNodeTextureSetEntry } from "src/services/messages
 // For 0xff000000+ used from FormView
 // For objects from master files used directly from remoteServer.ts
 export class ModelApplyUtils {
-  static applyModelInventory(refr: ObjectReference, inventory: Inventory, resetBaseFirst = true) {
-    applyInventory(refr, inventory, false, true, resetBaseFirst);
+  // A container's record lands on that reference alone. Every placement of a
+  // base shares its base's list, and the engine counts a reference as that
+  // list plus its own changes (TESObjectCONT::GetActivateText's "Empty" is
+  // that count at 0), so the base is left as the game files hold it and the
+  // record is laid as a diff against the engine's count there. An apply that
+  // wrote something is read back and laid once more: a container's first
+  // write may make the engine lay its own leveled roll into the reference,
+  // which the second pass takes off (HYPOTHESIS until a seat's look reads it)
+  static applyModelInventory(refr: ObjectReference, inventory: Inventory) {
+    const report: ApplyInventoryReport = { changed: new Set<number>() };
+    applyInventory(refr, inventory, false, true, false, report);
+    if (report.changed.size > 0 && !report.pending) {
+      applyInventory(refr, inventory, false, true, false);
+    }
   }
 
   static applyModelIsOpen(refr: ObjectReference, isOpen: boolean) {

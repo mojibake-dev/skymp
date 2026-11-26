@@ -6,7 +6,6 @@ import { ModelApplyUtils } from "./modelApplyUtils";
 
 interface PendingApply {
   inventory: Inventory;
-  resetBaseFirst: boolean;
 }
 
 // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change that
@@ -22,8 +21,8 @@ interface PendingApply {
 // opener's and the occupants' sends, memo D52 B) stays immediate in its
 // callers.
 export class ContainerApplyQueue {
-  static enqueue(refrId: number, inventory: Inventory, resetBaseFirst = true): void {
-    ContainerApplyQueue.pending.set(refrId, { inventory, resetBaseFirst });
+  static enqueue(refrId: number, inventory: Inventory): void {
+    ContainerApplyQueue.pending.set(refrId, { inventory });
     if (!ContainerApplyQueue.armed) {
       ContainerApplyQueue.armed = true;
       once("update", () => ContainerApplyQueue.drain());
@@ -51,7 +50,7 @@ export class ContainerApplyQueue {
     ContainerApplyQueue.pending.delete(refrId);
     const refr = ObjectReference.from(Game.getFormEx(refrId));
     if (refr) {
-      ModelApplyUtils.applyModelInventory(refr, apply.inventory, apply.resetBaseFirst);
+      ModelApplyUtils.applyModelInventory(refr, apply.inventory);
       logLab("verb:containers", `container ${refrId.toString(16)}: the server's inventory applied at its load (${apply.inventory.entries.length} entries, ${ContainerApplyQueue.pending.size} queued)`);
     }
     if (ContainerApplyQueue.pending.size > 0) {

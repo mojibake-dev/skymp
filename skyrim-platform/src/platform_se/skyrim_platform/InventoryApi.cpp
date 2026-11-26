@@ -230,30 +230,33 @@ Napi::Value InventoryApi::GetExtraContainerChanges(
   return resultArray;
 }
 
+// A base's own container list (a CONT's, or an NPC_'s through TESActorBase),
+// which the engine counts under every placement of it beside the
+// reference's changes (TESObjectREFR::GetInventory adds the base's counts to
+// the changes' deltas). A leveled list's entry is left out: the engine rolls
+// it into the reference's changes, where the caller reads the roll, and
+// GetInventory skips the base entry of an item it rolled
 Napi::Value InventoryApi::GetContainer(const Napi::CallbackInfo& info)
 {
   auto formID = NapiHelper::ExtractUInt32(info[0], "formId");
-  auto form = RE::TESForm::LookupByID<RE::TESObjectREFR>(formID);
-
-  if (!form) {
-    return Napi::Array::New(info.Env(), 0);
-  }
-
-  auto pContainer = form->As<RE::TESContainer>();
+  auto form = RE::TESForm::LookupByID(formID);
+  auto pContainer = form ? form->As<RE::TESContainer>() : nullptr;
 
   if (!pContainer) {
     return Napi::Array::New(info.Env(), 0);
   }
 
-  auto res = Napi::Array::New(info.Env(), pContainer->numContainerObjects);
-
+  auto res = Napi::Array::New(info.Env());
+  uint32_t n = 0;
   for (uint32_t i = 0; i < pContainer->numContainerObjects; ++i) {
     auto e = pContainer->containerObjects[i];
+    if (!e || !e->obj || e->obj->Is(RE::FormType::LeveledItem)) {
+      continue;
+    }
     auto jEntry = Napi::Object::New(info.Env());
     jEntry.Set("count", Napi::Number::New(info.Env(), e->count));
-    jEntry.Set("baseId",
-               Napi::Number::New(info.Env(), e->obj ? e->obj->formID : 0));
-    res.Set(i, jEntry);
+    jEntry.Set("baseId", Napi::Number::New(info.Env(), e->obj->formID));
+    res.Set(n++, jEntry);
   }
 
   return res;

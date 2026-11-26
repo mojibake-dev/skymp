@@ -242,7 +242,10 @@ const extractExtraData = (
   }
 };
 
-const squash = (inv: Inventory): Inventory => {
+// the entries of one base and the same extras as one, each count summed; a
+// changes entry's negative delta (an item taken below its base list's
+// count) is kept, since it counts against that list
+const merged = (inv: Inventory): Inventory => {
   const res = new Array<Entry>();
   inv.entries.forEach((e) => {
     const same = res.find((x) => e.baseId === x.baseId && extrasEqual(x, e));
@@ -252,10 +255,13 @@ const squash = (inv: Inventory): Inventory => {
       res.push(JSON.parse(JSON.stringify(e)));
     }
   });
-  // a count under one is a base-relative residue (a stack taken below the
-  // base container's default), not an item; the wire's count is a u32
-  // (thuum, playtest 31, 2026-10-22)
-  return { entries: res.filter((x) => x.count > 0) };
+  return { entries: res };
+};
+
+const squash = (inv: Inventory): Inventory => {
+  // a count under one left after the base's list and the changes are summed
+  // is no item; the wire's count is a u32
+  return { entries: merged(inv).entries.filter((x) => x.count > 0) };
 };
 
 const getExtraContainerChangesAsInventory = (
@@ -285,9 +291,9 @@ const getExtraContainerChangesAsInventory = (
     }
   });
 
-  let res: Inventory = { entries };
-  res = squash(res);
-  return res;
+  // the deltas as the engine keeps them, a removal below the base's list
+  // included; getInventory sums them with that list
+  return merged({ entries });
 };
 
 // thuum docs/verbs/npc-stream.md (fork m4-npc-worn; ADR-063, ADR-065): what
@@ -411,6 +417,10 @@ export const isBaseReset = (refr: ObjectReference): boolean => {
   return basesReset().has(base ? base.getFormID() : 0);
 };
 
+// the player's own apply alone (resetBaseFirst): its base is its own, and its
+// inventory is the record's from its first apply on. A container's or a body's
+// apply never resets its base, which every placement of it shares; it lands
+// as a diff against the base's list and the reference's changes
 const resetBase = (refr: ObjectReference): void => {
   const base = refr.getBaseObject();
   const baseId = base ? base.getFormID() : 0;
@@ -801,6 +811,10 @@ export const applyBodyInventory = (
     record.set(e.baseId, (record.get(e.baseId) || 0) + e.count);
   });
   const held = getInventory(refr);
+  // the base's own list counts once beside the body's changes, the engine's
+  // count (TESObjectREFR::GetInventory); said per apply, so a seat's log shows
+  // the platform's read of it
+  logLab("verb:npc-fate", `body ${hex}: its base's list holds ${getBaseContainerAsInventory(refr).entries.length} entries, counted with its changes`);
   const here = new Map<number, { worn: number; loose: number }>();
   held.entries.forEach((e) => {
     const row = here.get(e.baseId) || { worn: 0, loose: 0 };

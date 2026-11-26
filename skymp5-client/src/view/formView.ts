@@ -1309,7 +1309,7 @@ export class FormView {
             .map((e) => e.baseId);
           applyBodyInventory(refr, model.inventory, worn);
         } else {
-          ModelApplyUtils.applyModelInventory(refr, model.inventory, true);
+          ModelApplyUtils.applyModelInventory(refr, model.inventory);
         }
         model.inventory = undefined;
         if (liveChest) {

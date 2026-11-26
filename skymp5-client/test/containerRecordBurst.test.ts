@@ -112,4 +112,3 @@ test("a container's record queued at its cell load gives way to a newer record o
   assert.ok(ofChest.length > 0);
   assert.equal(ofChest[ofChest.length - 1].arrows, 20);
 });
-

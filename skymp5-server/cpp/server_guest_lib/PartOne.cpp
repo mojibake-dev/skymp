@@ -5675,6 +5675,11 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
   return true;
 }
 
+void PartOne::SetStartingKitSettings(const std::string& startingKitJson)
+{
+  (void)startingKitJson;
+}
+
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)
 {
   pImpl->playerGlobals = skymp::rules::new_player_globals(playerGlobalsJson);

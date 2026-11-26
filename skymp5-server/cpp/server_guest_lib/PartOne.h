@@ -194,6 +194,11 @@ public:
   // player_globals). AtLogin: the record's values still listed. Merge: the
   // latest value wins.
   void SetPlayerGlobalsSettings(const std::string& playerGlobalsJson);
+  // `startingKit` (a JSON list of {form, count, worn}, "[]" for none; a bad
+  // entry stops the server here, named): what a profile's new character's
+  // record holds at its creation, in place of an empty one, its worn items
+  // in its equipment (CreateActor)
+  void SetStartingKitSettings(const std::string& startingKitJson);
   std::vector<uint32_t> PlayerGlobalsWatch() const;
   uint8_t CheckPlayerGlobals(const std::vector<PlayerGlobal>& report) const;
   std::vector<PlayerGlobal> PlayerGlobalsAtLogin(

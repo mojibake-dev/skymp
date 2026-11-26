@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, ash, attributes, block, bonds, casts, cells, clock, console, created, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, starting_kit, summons, teleports, trigger_entry, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, ash, attributes, block, bonds, casts, cells, clock, console, created, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, new_player_quests, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, starting_kit, summons, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -405,6 +405,18 @@ mod ffi {
         file: String,
         /// Its value.
         value: f32,
+    }
+
+    /// One quest stage a new character's own game sets (wire-rules
+    /// new_player_quests), by the quest's FormDesc's parts.
+    #[derive(Debug, Clone, PartialEq)]
+    struct NewPlayerQuestEntry {
+        /// The quest's form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// The stage set.
+        stage: u16,
     }
 
     /// One item of a new player's starting kit (wire-rules starting_kit),
@@ -3168,6 +3180,9 @@ mod ffi {
         /// The `startingKit` setting's items, in its order; a bad entry is
         /// the error, named.
         fn starting_kit(settings_json: &str) -> Result<Vec<StartingKitEntry>>;
+        /// The `newPlayerQuests` setting's stages, in its order; a bad entry
+        /// is the error, named.
+        fn new_player_quests(settings_json: &str) -> Result<Vec<NewPlayerQuestEntry>>;
         fn new_player_globals(settings_json: &str) -> Result<Box<PlayerGlobalsList>>;
         /// The listed globals, in the settings' order (values 0): what a
         /// client watches.
@@ -4189,7 +4204,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, StartingKitEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
+pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, StartingKitEntry, NewPlayerQuestEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4750,6 +4765,13 @@ impl MovementBudgets {
 
 /// The globals the server keeps per player (wire-rules player_globals).
 pub struct PlayerGlobalsList(player_globals::PlayerGlobals);
+
+fn new_player_quests(settings_json: &str) -> Result<Vec<NewPlayerQuestEntry>, clock::SettingsError> {
+    Ok(new_player_quests::from_json(settings_json)?
+        .into_iter()
+        .map(|q| NewPlayerQuestEntry { short_id: q.quest.short_id, file: q.quest.file, stage: q.stage })
+        .collect())
+}
 
 fn starting_kit(settings_json: &str) -> Result<Vec<StartingKitEntry>, clock::SettingsError> {
     Ok(starting_kit::from_json(settings_json)?

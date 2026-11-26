@@ -1786,6 +1786,9 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
   const bool isRaceMenuOpen = actor->IsRaceMenuOpen();
   const bool isAllowed =
     isRaceMenuOpen && IsAllowedRace(partOne, *actor, msg.data->raceId);
+  // a record with no appearance yet is a new character's: its first race
+  // menu close finishes its creation
+  const bool firstLook = !actor->GetAppearance();
 
   if (isRaceMenuOpen && !isAllowed) {
     spdlog::warn("ActionListener::OnUpdateAppearance - E_APPEARANCE_RACE: "
@@ -1840,6 +1843,12 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
         }
       }
     }
+  }
+
+  // a new character's own game sets the new-player quests' stages now, its
+  // race chosen
+  if (isAllowed && firstLook) {
+    partOne.TellNewPlayerQuests(*actor);
   }
 
   UpdateAppearanceAttemptEvent updateAppearanceAttemptEvent(

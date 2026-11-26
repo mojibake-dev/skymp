@@ -34,6 +34,7 @@ pub mod melee;
 pub mod movement;
 pub mod natives;
 pub mod natives_rules;
+pub mod new_player_quests;
 pub mod object_animation;
 pub mod perks;
 pub mod placements;

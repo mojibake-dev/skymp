@@ -395,6 +395,9 @@ struct PartOne::Impl
     bool worn = false;
   };
   std::vector<StartingKitItem> startingKit;
+  // the newPlayerQuests setting, parsed: each quest's stage, set in a new
+  // character's own game once its first race menu closes
+  std::vector<std::pair<FormDesc, uint16_t>> newPlayerQuests;
   // the playerGlobals setting as written, recomposed with the player class's
   // globals (playerQuestGlobals) while the scope acts
   std::string playerGlobalsJson = "[]";
@@ -5717,13 +5720,39 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
 void PartOne::SetNewPlayerQuestsSettings(
   const std::string& newPlayerQuestsJson)
 {
-  (void)newPlayerQuestsJson;
+  std::vector<std::pair<FormDesc, uint16_t>> list;
+  for (const auto& e : skymp::rules::new_player_quests(newPlayerQuestsJson)) {
+    list.emplace_back(FormDesc(e.short_id, std::string(e.file)), e.stage);
+  }
+  pImpl->newPlayerQuests = std::move(list);
+  spdlog::info("PartOne::SetNewPlayerQuestsSettings - {}",
+               newPlayerQuestsJson);
 }
 
 size_t PartOne::TellNewPlayerQuests(MpActor& player)
 {
-  (void)player;
-  return 0;
+  using Arg = std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+  size_t told = 0;
+  for (const auto& [quest, stage] : pImpl->newPlayerQuests) {
+    uint32_t questId = 0;
+    try {
+      questId = quest.ToFormId(worldState.espmFiles);
+    } catch (std::exception& e) {
+      spdlog::warn("PartOne::TellNewPlayerQuests {:x} - quest {} left out "
+                   "({})",
+                   player.GetFormId(), quest.ToString(), e.what());
+      continue;
+    }
+    const std::vector<Arg> args{ static_cast<double>(stage) };
+    SpSnippet("Quest", "SetStage", args, questId)
+      .Execute(&player, SpSnippetMode::kNoReturnResult);
+    ++told;
+    spdlog::info("PartOne::TellNewPlayerQuests {:x} - quest {:x} set to "
+                 "stage {} in its own game",
+                 player.GetFormId(), questId, stage);
+  }
+  return told;
 }
 
 void PartOne::SetStartingKitSettings(const std::string& startingKitJson)

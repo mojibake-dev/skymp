@@ -1622,6 +1622,16 @@ mod ffi {
         daedra: u32,
     }
 
+    /// ADR-077: a minion row as the core reads it (wire-rules cells::MinionRow).
+    struct CellMinionRow {
+        /// 0 none, 1 a summon, 2 a thrall.
+        kind: u8,
+        /// The actor whose effect made it: the runner for its own, or an NPC.
+        caster: u32,
+        /// The player whose game runs it.
+        runner: u32,
+    }
+
     /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
     /// simulates `actor` in `cell`, a cell nobody hosts, for the lab's reading;
     /// or a margin hold, or a claim with its purposes (ADR-052, thuum ADR-073
@@ -3563,7 +3573,9 @@ mod ffi {
         /// 2026-11-15); `effect_s` the record's duration of the Reanimate
         /// effect, seconds, read by no rule since that amendment: the same
         /// codes as claim_actor.
-        fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8;
+        /// `caster`: the actor whose Reanimate made the thrall, `player`
+        /// for its own raise, or an NPC `player`'s game runs.
+        fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, caster: u32, effect_s: u32, now_ms: u64) -> u8;
         /// ADR-060's return (thuum docs/verbs/npc-fate.md C4): `player`'s
         /// game has a cell loaded; each thrall record there that is alive, a
         /// full thrall's and names `player` its caster, under no live
@@ -3577,12 +3589,14 @@ mod ffi {
         fn release_any_claim(self: &mut Cells, actor: u32) -> u32;
         /// ADR-060: the player commanding `actor`, 0 when none.
         fn commander_of(self: &Cells, actor: u32) -> u32;
+        /// ADR-077: `actor`'s minion row, a kind of 0 when none names it.
+        fn minion_of(self: &Cells, actor: u32) -> CellMinionRow;
         /// thuum tracker #84 (docs/verbs/summon.md): `player`'s engine
         /// placed `actor` standing in `cell` (a summon the server
         /// accepted): the caster simulates it in any cell until its
         /// dispel, the row refusing every claim and command on the actor
         /// meanwhile.
-        fn summon_row(self: &mut Cells, actor: u32, player: u32, cell: u32, now_ms: u64);
+        fn summon_row(self: &mut Cells, actor: u32, player: u32, cell: u32, caster: u32, now_ms: u64);
         /// The summon `actor`'s dispel ends its row, its caster returned, 0
         /// when no summon row names one.
         fn summon_row_end(self: &mut Cells, actor: u32) -> u32;
@@ -4172,7 +4186,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
+pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMinionRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5362,8 +5376,8 @@ impl Cells {
         }
     }
 
-    fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8 {
-        match self.0.claim_commanded(actor, player, cell, effect_s, now_ms) {
+    fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, caster: u32, effect_s: u32, now_ms: u64) -> u8 {
+        match self.0.claim_commanded(actor, player, cell, caster, effect_s, now_ms) {
             cells::ClaimVerdict::Granted => 0,
             cells::ClaimVerdict::Held => 1,
             cells::ClaimVerdict::Unloaded => 2,
@@ -5431,6 +5445,17 @@ impl Cells {
         self.0.commander_of(actor)
     }
 
+    fn minion_of(&self, actor: u32) -> CellMinionRow {
+        self.0.minion_of(actor).map_or(CellMinionRow { kind: 0, caster: 0, runner: 0 }, |m| CellMinionRow {
+            kind: match m.kind {
+                cells::MinionKind::Summon => 1,
+                cells::MinionKind::Thrall => 2,
+            },
+            caster: m.caster,
+            runner: m.runner,
+        })
+    }
+
     fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
         self.0.simulator_of(actor, cell)
     }
@@ -5455,8 +5480,8 @@ impl Cells {
             .collect()
     }
 
-    fn summon_row(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) {
-        self.0.summon_row(actor, player, cell, now_ms);
+    fn summon_row(&mut self, actor: u32, player: u32, cell: u32, caster: u32, now_ms: u64) {
+        self.0.summon_row(actor, player, cell, caster, now_ms);
     }
 
     fn summon_row_end(&mut self, actor: u32) -> u32 {
@@ -7525,8 +7550,8 @@ mod tests {
         assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
         assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
         // Reanimate Corpse's 60 s on Hilde, Dead Thrall's 86,313,600 s on Sven
-        assert_eq!(k.claim_commanded(0x35534, 0xff00_0003, 0x9731, 60, 1_500), 0);
-        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
+        assert_eq!(k.claim_commanded(0x35534, 0xff00_0003, 0x9731, 0xff00_0003, 60, 1_500), 0);
+        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 0xff00_0003, 86_313_600, 1_500), 0);
         assert_eq!(k.commander_of(0x35534), 0xff00_0003);
         assert_eq!(
             k.gone(0xff00_0003, 2_000),
@@ -7556,7 +7581,7 @@ mod tests {
         assert!(k.reach(0xff00_0003, &[0x9731], 0).is_empty());
         assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
         assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
-        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
+        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 0xff00_0003, 86_313_600, 1_500), 0);
         assert_eq!(k.gone(0xff00_0003, 2_000).len(), 2);
         assert_eq!(k.commander_of(0x13491), 0);
         assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0002);

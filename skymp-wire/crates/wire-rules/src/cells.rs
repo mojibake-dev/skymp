@@ -361,23 +361,51 @@ pub enum FollowKind {
     /// A player's claim, its purposes on the row (ADR-052, ADR-073 decision
     /// 6): it travels with its actor and outlives a grant into its cell.
     Claim,
-    /// A commanded actor's commander (ADR-060): the player whose spell
-    /// reanimated it simulates it until its engine ends the effect, the
-    /// thrall's death on that engine's own timer (Eli, 2026-11-12: "summons
-    /// and resurrections should obey the timers the level of spell"); no
-    /// lease. The row follows the thrall, not a cell ("leaving a cell should
-    /// not kill the thrall"): it names the commander in any cell and outlives
-    /// a door, an unload and a grant, ending at the thrall's death, the
-    /// commander's departure or a newer command.
-    Commanded,
-    /// A summon's caster (thuum tracker #84, ADR-052 decision 3 as amended
-    /// 2026-11-16, ADR-063: the caster's row owns its summon): the player
-    /// whose engine placed the summon simulates it in any cell until one of
-    /// its four ends (the effect's own end, its death, the caster's
-    /// departure, a restart), each the core's dispel except the restart. No
-    /// lease, no claim: a dialogue's or a command's claim on the actor is
-    /// refused while the summon lives (the row stands as it is).
+    /// A minion (ADR-077: a player and its summons and thralls are one
+    /// side; ADR-060, ADR-052 decision 3 as amended): the player whose game
+    /// runs it, the row's player, simulates it in any cell until it ends. No
+    /// lease. The row follows the minion, not a cell: it outlives a door, an
+    /// unload and a grant. `caster` is the actor whose effect made it: the
+    /// row's player for a player's own, or an NPC that player's game runs.
+    /// Each kind ends by its own events: a thrall at its death, a newer
+    /// command or its runner's departure (where it dies); a summon at its
+    /// effect's end, its death or its runner's departure (where it
+    /// dispels).
+    Minion {
+        /// How it ends.
+        kind: MinionKind,
+        /// The actor whose effect made it.
+        caster: u32,
+    },
+}
+
+/// A minion's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinionKind {
+    /// A summon (a SummonCreature effect's actor): its runner's departure
+    /// dispels it, and a dialogue or a command on it is refused while it
+    /// lives.
     Summon,
+    /// A thrall (a Reanimate effect's actor): its runner's departure kills
+    /// it, and a newer command takes it.
+    Thrall,
+}
+
+/// A minion row as the core reads it: its kind, its caster and the player
+/// whose game runs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MinionRow {
+    /// How it ends.
+    pub kind: MinionKind,
+    /// The actor whose effect made it.
+    pub caster: u32,
+    /// The player whose game runs it.
+    pub runner: u32,
+}
+
+/// Whether a row is a minion of kind `of`.
+fn is_minion(kind: FollowKind, of: MinionKind) -> bool {
+    matches!(kind, FollowKind::Minion { kind, .. } if kind == of)
 }
 
 /// A claim in either shape: a dialogue's (ADR-052), a commander's (ADR-060)
@@ -385,7 +413,7 @@ pub enum FollowKind {
 /// dialogue's ends by its lease, a command by its thrall's death, a
 /// summon's by its dispel.
 const fn is_claim(kind: FollowKind) -> bool {
-    matches!(kind, FollowKind::Claim | FollowKind::Commanded | FollowKind::Summon)
+    matches!(kind, FollowKind::Claim | FollowKind::Minion { .. })
 }
 
 /// A host simulating an actor in a cell nobody hosts (ADR-047 D6), or, within
@@ -677,7 +705,7 @@ impl Cells {
         let mut commands: Vec<(u32, u32)> = self
             .follows
             .iter()
-            .filter(|(_, f)| f.kind == FollowKind::Commanded && f.player == player)
+            .filter(|(_, f)| is_minion(f.kind, MinionKind::Thrall) && f.player == player)
             .map(|(&actor, f)| (actor, f.cell))
             .collect();
         commands.sort_unstable();
@@ -693,7 +721,7 @@ impl Cells {
         let mut summons: Vec<(u32, u32)> = self
             .follows
             .iter()
-            .filter(|(_, f)| f.kind == FollowKind::Summon && f.player == player)
+            .filter(|(_, f)| is_minion(f.kind, MinionKind::Summon) && f.player == player)
             .map(|(&actor, f)| (actor, f.cell))
             .collect();
         summons.sort_unstable();
@@ -841,7 +869,7 @@ impl Cells {
         // thrall stands (ADR-060); or a summon's row, which names its caster
         // wherever it stands (tracker #84)
         if let Some(f) = self.follows.get(&actor) {
-            if f.cell == cell || matches!(f.kind, FollowKind::Commanded | FollowKind::Summon) {
+            if f.cell == cell || matches!(f.kind, FollowKind::Minion { .. }) {
                 return f.player;
             }
         }
@@ -1000,11 +1028,11 @@ impl Cells {
             Some(f) if is_claim(f.kind) && f.player != player => return ClaimVerdict::Held,
             // the commander's own dialogue with its thrall: the commanded row
             // stands as it is, nothing to renew (ADR-060)
-            Some(f) if f.kind == FollowKind::Commanded => return ClaimVerdict::Reclaimed,
+            Some(f) if is_minion(f.kind, MinionKind::Thrall) => return ClaimVerdict::Reclaimed,
             // a summon's row stands as it is for its caster too: a dialogue
             // or a lead never takes the summon its caster's engine placed
             // (tracker #84, the design's "refused by claim()")
-            Some(f) if f.kind == FollowKind::Summon => return ClaimVerdict::Held,
+            Some(f) if is_minion(f.kind, MinionKind::Summon) => return ClaimVerdict::Held,
             Some(f) if f.kind == FollowKind::Claim => {
                 let verdict = f.join(purpose, now_ms);
                 if verdict != ClaimVerdict::Full {
@@ -1037,19 +1065,20 @@ impl Cells {
     /// The newest commander wins; a dialogue's claim gives way. Unloaded
     /// when the player has not loaded the cell; Reclaimed when it commanded
     /// the actor already.
-    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, _effect_s: u32, now_ms: u64) -> ClaimVerdict {
+    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, caster: u32, _effect_s: u32, now_ms: u64) -> ClaimVerdict {
         if !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
             return ClaimVerdict::Unloaded;
         }
         let verdict = match self.follows.get(&actor) {
-            Some(f) if f.kind == FollowKind::Commanded && f.player == player => ClaimVerdict::Reclaimed,
+            Some(f) if is_minion(f.kind, MinionKind::Thrall) && f.player == player => ClaimVerdict::Reclaimed,
             // a summon lives as its caster's: a command never replaces the
-            // row (tracker #84; the engine refuses a reanimate on a living
-            // actor, and the rule holds the same line)
-            Some(f) if f.kind == FollowKind::Summon => return ClaimVerdict::Held,
+            // row (the engine refuses a reanimate on a living actor, and the
+            // rule holds the same line)
+            Some(f) if is_minion(f.kind, MinionKind::Summon) => return ClaimVerdict::Held,
             _ => ClaimVerdict::Granted,
         };
-        self.follows.insert(actor, Follow::moved(player, cell, now_ms, FollowKind::Commanded));
+        let kind = FollowKind::Minion { kind: MinionKind::Thrall, caster };
+        self.follows.insert(actor, Follow::moved(player, cell, now_ms, kind));
         verdict
     }
 
@@ -1058,8 +1087,9 @@ impl Cells {
     /// cell until its dispel, the row refusing every claim and command on
     /// the actor meanwhile. The server's actor is fresh, so the row replaces
     /// nothing; the summons table holds its ends.
-    pub fn summon_row(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) {
-        self.follows.insert(actor, Follow::moved(player, cell, now_ms, FollowKind::Summon));
+    pub fn summon_row(&mut self, actor: u32, player: u32, cell: u32, caster: u32, now_ms: u64) {
+        let kind = FollowKind::Minion { kind: MinionKind::Summon, caster };
+        self.follows.insert(actor, Follow::moved(player, cell, now_ms, kind));
     }
 
     /// The summon `actor`'s dispel ends its row, its caster returned, 0 when
@@ -1067,7 +1097,7 @@ impl Cells {
     /// the table's dispel, so no row outlives the actor it names.
     pub fn summon_row_end(&mut self, actor: u32) -> u32 {
         match self.follows.get(&actor) {
-            Some(f) if f.kind == FollowKind::Summon => {
+            Some(f) if is_minion(f.kind, MinionKind::Summon) => {
                 let player = f.player;
                 self.follows.remove(&actor);
                 player
@@ -1096,7 +1126,7 @@ impl Cells {
             if player == 0 || t.caster != player || !t.alive || !full || self.commander_of(t.actor) != 0 {
                 continue;
             }
-            if self.claim_commanded(t.actor, player, t.cell, t.record_s, now_ms) == ClaimVerdict::Granted {
+            if self.claim_commanded(t.actor, player, t.cell, player, t.record_s, now_ms) == ClaimVerdict::Granted {
                 claimed.push(t.actor);
             }
         }
@@ -1252,7 +1282,16 @@ impl Cells {
     /// engine's.
     #[must_use]
     pub fn commander_of(&self, actor: u32) -> u32 {
-        self.follows.get(&actor).filter(|f| f.kind == FollowKind::Commanded).map_or(0, |f| f.player)
+        self.follows.get(&actor).filter(|f| is_minion(f.kind, MinionKind::Thrall)).map_or(0, |f| f.player)
+    }
+
+    /// `actor`'s minion row (ADR-077), none when no minion row names it.
+    #[must_use]
+    pub fn minion_of(&self, actor: u32) -> Option<MinionRow> {
+        self.follows.get(&actor).and_then(|f| match f.kind {
+            FollowKind::Minion { kind, caster } => Some(MinionRow { kind, caster, runner: f.player }),
+            _ => None,
+        })
     }
 
     /// Every claim, by actor id: the actor, its claimant and the cell (a
@@ -2314,6 +2353,29 @@ mod tests {
     }
 
     #[test]
+    fn a_minion_row_names_its_kind_its_caster_and_its_runner() {
+        // ADR-077: a thrall and a summon are one row shape; a player's own
+        // names that player its caster, an NPC's names the NPC, its host's
+        // player running it
+        const SVEN: u32 = 0x13491;
+        const ATRONACH: u32 = 0xff00_0e01;
+        const NECROMANCER: u32 = 0x85547;
+        const EAST: u32 = 0x9733;
+        let mut c = both_in_reach();
+        c.loaded(C2, RIVERWOOD, 1_000);
+        assert_eq!(c.minion_of(SVEN), None);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, NECROMANCER, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.minion_of(SVEN), Some(MinionRow { kind: MinionKind::Thrall, caster: NECROMANCER, runner: C2 }));
+        assert_eq!(c.commander_of(SVEN), C2);
+        c.summon_row(ATRONACH, C2, RIVERWOOD, C2, 2_100);
+        assert_eq!(c.minion_of(ATRONACH), Some(MinionRow { kind: MinionKind::Summon, caster: C2, runner: C2 }));
+        assert_eq!(c.commander_of(ATRONACH), 0);
+        assert_eq!(c.simulator_of(ATRONACH, EAST), C2, "a minion's row names its runner in any cell");
+        assert_eq!(c.summon_row_end(ATRONACH), C2);
+        assert_eq!(c.minion_of(ATRONACH), None);
+    }
+
+    #[test]
     fn an_unload_ends_a_talk_and_keeps_a_lead() {
         // ADR-052 decision 2: the claimant leaving the cell ends its talk; a
         // lead stays (R-C2), and a row holding both loses the talk alone
@@ -2634,7 +2696,7 @@ mod tests {
         c.tick(1_200);
         assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
         // c2's reanimate: c2 simulates Sven, the host stands aside
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
         assert_eq!(c.commander_of(SVEN), C2);
         assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
@@ -2671,8 +2733,8 @@ mod tests {
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // a second command is a new row; a second hit before the stand-up
         // changes nothing
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 80_000), ClaimVerdict::Granted);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 80_500), ClaimVerdict::Reclaimed);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, REANIMATE_CORPSE_S, 80_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, REANIMATE_CORPSE_S, 80_500), ClaimVerdict::Reclaimed);
         assert_eq!(c.release_any_claim(SVEN), C2);
         // a dialogue's claim is no command
         assert_eq!(c.claim(SVEN, C1, RIVERWOOD, Purpose::Talk, 85_000), ClaimVerdict::Granted);
@@ -2680,7 +2742,7 @@ mod tests {
         assert!(matches!(c.release_claim(SVEN, C1, Purpose::Talk), Release::Ended(_)));
         // the commander's departure kills a full thrall too, the server's
         // word ahead of the claim's (ADR-060 as amended 2026-11-15)
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, DEAD_THRALL_S, 90_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, DEAD_THRALL_S, 90_000), ClaimVerdict::Granted);
         assert_eq!(
             c.gone(C2, 2_000_000),
             vec![Decision::ThrallExpired { actor: SVEN, cell: RIVERWOOD, player: C2 }, Decision::ClaimGone { actor: SVEN, cell: RIVERWOOD, player: C2 }]
@@ -2688,7 +2750,7 @@ mod tests {
         assert_eq!(c.claims(), vec![]);
         assert_eq!(c.commander_of(SVEN), 0);
         // a commander who has not loaded the cell commands nothing
-        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, REANIMATE_CORPSE_S, 2_000_100), ClaimVerdict::Unloaded);
+        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, 0xff000009, REANIMATE_CORPSE_S, 2_000_100), ClaimVerdict::Unloaded);
     }
 
     // ADR-060, Eli 2026-11-12: "leaving a cell should not kill the thrall":
@@ -2704,7 +2766,7 @@ mod tests {
         c.reach(C2, &[RIVERWOOD], 1_100);
         c.loaded(C2, RIVERWOOD, 1_100);
         c.tick(1_200);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
         // the commander's game unloads the thrall's cell (its walk away, a
         // load door's far side) before the thrall's own report: the command
         // stands, with no word
@@ -2755,8 +2817,8 @@ mod tests {
         c.reach(C2, &[RIVERWOOD], 1_100);
         c.loaded(C2, RIVERWOOD, 1_100);
         c.tick(1_200);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
-        assert_eq!(c.claim_commanded(HILDE, C2, RIVERWOOD, DEAD_THRALL_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(HILDE, C2, RIVERWOOD, C2, DEAD_THRALL_S, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.claim(HOD, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
         // the departure: one word per claim, a dialogue's included, and each
         // thrall's end ahead of its word; the host simulates all three.
@@ -2789,8 +2851,8 @@ mod tests {
         d.reach(C2, &[RIVERWOOD], 1_100);
         d.loaded(C2, RIVERWOOD, 1_100);
         d.tick(1_200);
-        assert_eq!(d.claim_commanded(SVEN, C2, RIVERWOOD, 86_399, 2_000), ClaimVerdict::Granted);
-        assert_eq!(d.claim_commanded(HILDE, C2, RIVERWOOD, 86_400, 2_000), ClaimVerdict::Granted);
+        assert_eq!(d.claim_commanded(SVEN, C2, RIVERWOOD, C2, 86_399, 2_000), ClaimVerdict::Granted);
+        assert_eq!(d.claim_commanded(HILDE, C2, RIVERWOOD, C2, 86_400, 2_000), ClaimVerdict::Granted);
         assert_eq!(
             d.gone(C2, 3_000),
             vec![
@@ -2822,7 +2884,7 @@ mod tests {
         c.loaded(C2, RIVERWOOD, 1_100);
         c.tick(1_200);
         assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, DEAD_THRALL_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, C2, DEAD_THRALL_S, 2_000), ClaimVerdict::Granted);
         // the caster leaves: the thrall dies by the server's word ahead of the word, the cell's host simulates the body
         assert_eq!(c.gone(C2, 3_000), vec![Decision::ThrallExpired { actor: SVEN, cell: RIVERWOOD, player: C2 }, Decision::ClaimGone { actor: SVEN, cell: RIVERWOOD, player: C2 }]);
         assert_eq!(c.commander_of(SVEN), 0);
@@ -2885,7 +2947,7 @@ mod tests {
         // the line: 86,399 s is a timed thrall's, 86,400 a full one's
         assert_eq!(c.returning(C2, &[rec(SVEN, C2, 86_399, true), rec(HILDE, C2, 86_400, true)], 2_000), vec![HILDE]);
         // a live command by another stands: C3 commands Sven, and C2's record of him claims nothing
-        assert_eq!(c.claim_commanded(SVEN, C3, RIVERWOOD, DEAD_THRALL_S, 3_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C3, RIVERWOOD, C3, DEAD_THRALL_S, 3_000), ClaimVerdict::Granted);
         assert!(c.returning(C2, &[rec(SVEN, C2, DEAD_THRALL_S, true)], 3_000).is_empty());
         assert_eq!(c.commander_of(SVEN), C3);
         // and its own: Hilde is C2's already

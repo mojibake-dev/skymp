@@ -446,7 +446,6 @@ struct PartOne::Impl
   // NPC's summon, which OnSummonStart's `npc` names) and the bridge's
   // SummonRow, reads OwnerOf from the live row, and deletes this table and
   // its two erases
-  std::unordered_map<uint32_t, uint32_t> minionOwners;
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
   // reference by its base (an ALUA container, noted at its attach), and the
@@ -4324,57 +4323,57 @@ void PartOne::TickBodies(uint64_t nowMs)
 
 void PartOne::EndLostNpcThralls()
 {
-  // thuum tracker #106 (docs/verbs/npc-fate.md, ADR-063: one engine owns
-  // each piece of the world): an NPC's raise names its caster's host the
-  // commander (ClaimReanimated), the game whose engine ran the spell, and
-  // the command row outlives a grant and an unload (wire-rules cells.rs
-  // FollowKind::Commanded). Once another game runs the caster, the record
-  // names two owners for one raise (the thrall's commander, the caster's
-  // host), and the new host's engine holds no Reanimate effect of the
-  // commander's (HYPOTHESIS: x-npc-raise-handoff-rec 20261116-233629 ran
-  // with this rule, which ended the thrall 8 ms after the grant, before the
-  // new host's engine first reported it, so it stays unread), so the
-  // thrall dies by the server's word, as at its commander's departure
-  // (ThrallExpired): Dead Thrall's body stays, an ash raise turns to ash on
-  // every game but the commander's, whose own engine ends the effect
-  // (MpActor::KillThrall). The summon's rule is the same, ended by its
-  // reporting game (SummonService.releaseLostOwners). A player's own
-  // thrall names its caster as its commander and is never this rule's; a
-  // caster in a cell nobody hosts keeps its thrall, the cell frozen
+  // An NPC's minion, its raise or its summon, names the NPC its caster and
+  // its host's player its runner (the cells rule's minion row, ADR-077), and
+  // the row outlives a grant and an unload. Once another game runs the
+  // caster, the record names two owners for one minion (its runner, the
+  // caster's host), and the new host's engine holds none of the runner's
+  // effects (ADR-063: one engine owns each piece of the world), so the
+  // minion ends by the server's word, as at its runner's departure: a
+  // thrall dies (MpActor::KillThrall: Dead Thrall's body stays, an ash raise
+  // turns to ash on every game but the runner's, whose own engine ends the
+  // effect), a summon is dispelled. A player's own minion names that player
+  // its caster and is never this rule's; a caster in a cell nobody hosts
+  // keeps its minions, the cell frozen
   for (const auto& row : GetFollows()) {
-    if (row.player == 0 ||
-        pImpl->cells->commander_of(row.actor) != row.player) {
+    const auto minion = pImpl->cells->minion_of(row.actor);
+    if (minion.kind == 0 || minion.caster == minion.runner) {
       continue;
     }
     auto& form = worldState.LookupFormByIdNoLoad(row.actor);
-    MpActor* thrall = form ? form->AsActor() : nullptr;
-    if (!thrall || thrall->IsDead()) {
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor || actor->IsDead()) {
       continue;
     }
-    const uint32_t casterId = thrall->ReanimateAcceptedCaster();
-    if (casterId == 0 || casterId == row.player) {
-      continue;
-    }
-    auto& casterForm = worldState.LookupFormByIdNoLoad(casterId);
+    auto& casterForm = worldState.LookupFormByIdNoLoad(minion.caster);
     MpActor* caster = casterForm ? casterForm->AsActor() : nullptr;
     if (!caster ||
         serverState.UserByActor(caster) != Networking::InvalidUserId) {
       continue;
     }
     const MpActor* host = worldState.HostOf(*caster);
-    if (!host || host->GetFormId() == row.player) {
+    if (!host || host->GetFormId() == minion.runner) {
+      continue;
+    }
+    if (actor->IsSummon()) {
+      spdlog::info("[verb:summon] {:x} ends at its caster {:x}'s host "
+                   "change: {:x}'s engine runs the caster now, not its "
+                   "runner {:x}'s (ADR-063)",
+                   row.actor, minion.caster, host->GetFormId(),
+                   minion.runner);
+      DispelSummon(*actor, "its caster's host change");
       continue;
     }
     spdlog::info("[verb:npc-fate] {:x} dies at its caster {:x}'s host "
                  "change: {:x}'s engine runs the caster now, not its "
-                 "commander {:x}'s (tracker #106, ADR-063)",
-                 row.actor, casterId, host->GetFormId(), row.player);
-    thrall->KillThrall(row.player);
-    // thuum #52: the looks its commander's engine drew on it end with it,
-    // as at the departure (ThrallExpired)
+                 "commander {:x}'s (ADR-063)",
+                 row.actor, minion.caster, host->GetFormId(), minion.runner);
+    actor->KillThrall(minion.runner);
+    // the looks its runner's engine drew on it end with it, as at the
+    // departure (ThrallExpired)
     if (const size_t forgotten = ForgetActorLooks(row.actor)) {
       spdlog::info("[verb:npc-fate] {:x}'s {} kept look(s) forgotten at its "
-                   "death: no engine draws them now (#52, tracker #106)",
+                   "death: no engine draws them now",
                    row.actor, forgotten);
     }
   }
@@ -4867,9 +4866,13 @@ PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
   if (!cell) {
     return ClaimVerdict::Unloaded;
   }
-  const auto code =
-    pImpl->cells->claim_commanded(actor.GetFormId(), commander.GetFormId(),
-                                  *cell, recordSeconds, SteadyNowMs());
+  // the actor whose Reanimate made the thrall: the raise's stamp (an NPC's
+  // raise names the NPC), else the commander's own
+  const uint32_t stamped = actor.ReanimateAcceptedCaster();
+  const uint32_t caster = stamped != 0 ? stamped : commander.GetFormId();
+  const auto code = pImpl->cells->claim_commanded(
+    actor.GetFormId(), commander.GetFormId(), *cell, caster, recordSeconds,
+    SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
     // the word to every listening game: the commander simulates it now
@@ -4918,20 +4921,14 @@ uint32_t PartOne::OwnerOf(const MpActor& minion) const
   if (minion.IsDead()) {
     return 0;
   }
-  // a summon: the minions table, a player's own summons alone
-  const auto summon = pImpl->minionOwners.find(minion.GetFormId());
-  if (summon != pImpl->minionOwners.end()) {
-    return summon->second;
-  }
-  // a thrall: its commander, unless its raise was an NPC's (tracker #106,
-  // TakeThrallsThroughDoor's test: the accepted caster 0 for a command no
-  // hit stamped)
-  const uint32_t commander = CommanderOf(minion);
-  const uint32_t caster = minion.ReanimateAcceptedCaster();
-  if (commander == 0 || (caster != 0 && caster != commander)) {
+  // its minion row (ADR-077, the cells rule's one minion shape): a player's
+  // own names that player its caster and its runner; an NPC's names the NPC
+  // its caster, its host's player running it, and is no player's
+  const auto row = pImpl->cells->minion_of(minion.GetFormId());
+  if (row.kind == 0 || row.caster != row.runner) {
     return 0;
   }
-  return commander;
+  return row.caster;
 }
 
 MpActor* PartOne::SideOf(MpActor& actor)
@@ -5125,14 +5122,8 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg,
     FormDesc::FromFormId(caster.GetFormId(), worldState.espmFiles),
     FormDesc::FromFormId(msg.baseId, worldState.espmFiles));
   pImpl->cells->summon_row(summon->GetFormId(), caster.GetFormId(),
-                           worldState.CellOf(*summon).value_or(0), nowMs);
-  // thuum tracker #160 (ADR-077): a player's own summon is its player's
-  // minion; an NPC's is no player's (tracker #106), its host's player only
-  // simulating it, so the minions table leaves it out (the live sprint's
-  // stopgap; tracker #167 moves the owner onto the summon row)
-  if (!npc) {
-    pImpl->minionOwners[summon->GetFormId()] = caster.GetFormId();
-  }
+                           worldState.CellOf(*summon).value_or(0),
+                           npc ? npc->GetFormId() : caster.GetFormId(), nowMs);
   // the word now, with the bind on it (the record held, the row placed)
   summon->ForceSubscriptionsUpdate();
   spdlog::info("[verb:summon] {} stands for {:.1f} s, its owner {:x}'s game "
@@ -5171,9 +5162,6 @@ void PartOne::DispelSummon(MpActor& summon, const char* reason)
   const auto row = pImpl->summons->summon_row(id);
   const uint32_t caster = row.caster;
   const uint64_t nowMs = SteadyNowMs();
-  // a dispel ends the minion whatever its fade does (tracker #160): a hit
-  // on a fading summon starts no fight with its owner
-  pImpl->minionOwners.erase(id);
   // the engine's own fade, the GMST read from the records (never from
   // memory): fSummonedCreatureFadeOutSeconds (Skyrim.esm, lab/esm.py on
   // sky-srv, 2026-11-16), 1.5 s
@@ -5216,7 +5204,6 @@ void PartOne::ForgetSummon(uint32_t actor)
 {
   pImpl->summons->summon_forget(actor);
   pImpl->cells->summon_row_end(actor);
-  pImpl->minionOwners.erase(actor);
 }
 
 uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)

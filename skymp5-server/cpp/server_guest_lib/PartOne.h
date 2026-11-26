@@ -1333,18 +1333,13 @@ public:
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;
-  // thuum tracker #160 (ADR-077: a player, their summons and their thralls
-  // are one side): the player who owns `minion`, 0 when no player does or
-  // the minion is dead. A minion is a player's summon (the minions table,
-  // written at OnSummonStart for a player's own report alone and gone at
-  // its dispel) or a player's thrall (CommanderOf, unless its raise's stamp
-  // names another caster: an NPC's raise, its host's command). An NPC's
-  // summon or thrall is no player's (tracker #106): the summon row and
-  // HostOf name its host's player, who simulates it and owns nothing of it.
-  // The one question every rule asks of a summon or thrall's owner
-  // (NotifyHostility first). The minions table is the live sprint's
-  // stopgap: tracker #167 reads a summon's owner from its row in the
-  // summon rule (wire-rules summons.rs) and deletes the table
+  // ADR-077 (a player, its summons and its thralls are one side): the
+  // player who owns `minion`, 0 when no player does or the minion is dead.
+  // Read from its minion row (wire-rules cells.rs FollowKind::Minion), one
+  // shape for a summon and a thrall: a player's own names that player its
+  // caster and its runner. An NPC's summon or thrall names the NPC its
+  // caster, its host's player running it, and is no player's. The one
+  // question every rule asks of a minion's owner (NotifyHostility first)
   uint32_t OwnerOf(const MpActor& minion) const;
   // thuum ADR-077 decision 4 (tracker #113, #131): the player on whose side
   // `actor` fights: itself when a user plays it, its owner (OwnerOf) when a

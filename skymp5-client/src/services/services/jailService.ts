@@ -44,6 +44,15 @@ const kTimeScaleId = 0x3a;
 //   released by this game's own engine once this connection's login spawn has
 //   settled (releaseIfServed); the server gives the prisoner's own belongings
 //   back when the move out leaves the jail's cell.
+interface JailTerm {
+    faction: number;
+    releaseAt: number;
+    served: boolean;
+}
+
+const TERM_KEY = "jailService.term";
+const SPAWN_SETTLED_KEY = "jailService.spawnSettled";
+
 export class JailService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -57,7 +66,13 @@ export class JailService extends ClientListener {
             logTrace(this, `the jail's events are unavailable on this platform (${e}); no arrest or bounty is reported (#97)`);
         }
         this.controller.emitter.on("jailTermMessage", (e) => this.onJailTermMessage(e));
-        this.controller.emitter.on("connectionAccepted", () => { this.spawnSettled = false; });
+        // a new connection (a reconnect, or another character in this game)
+        // is told its own term after its login; the stored one was the
+        // earlier connection's, and its spawn settles again
+        this.controller.emitter.on("connectionAccepted", () => {
+            this.term = undefined;
+            this.spawnSettled = false;
+        });
         this.controller.emitter.on("ownSpawnSettled", () => { this.spawnSettled = true; });
         this.controller.on("update", () => this.releaseIfServed());
     }
@@ -89,17 +104,35 @@ export class JailService extends ClientListener {
         if (this.sp.Ui.isMenuOpen("Dialogue Menu")) {
             return;
         }
-        this.term = undefined;
+        // the term is kept until its release has run: a faction this game
+        // does not find, or a fine call that throws, is asked again at the
+        // next update (the calls are safe to repeat: two set the bounty to 0,
+        // and the fine path's own runs last), its reason said once per term
         const hex = term.faction.toString(16);
         const faction = Faction.from(this.sp.Game.getFormEx(term.faction));
         if (!faction) {
-            logLab(TAG, `the served term by ${hex}: no such faction in this game; not released`);
+            this.sayOnce(term, `the served term by ${hex}: no such faction in this game yet; kept, asked again each update`);
             return;
         }
-        faction.setCrimeGold(0);
-        faction.setCrimeGoldViolent(0);
-        faction.playerPayCrimeGold(false, true);
+        try {
+            faction.setCrimeGold(0);
+            faction.setCrimeGoldViolent(0);
+            faction.playerPayCrimeGold(false, true);
+        } catch (e) {
+            this.sayOnce(term, `the served term by ${hex}: its release threw (${e}); kept, asked again each update`);
+            return;
+        }
+        this.term = undefined;
         logLab(TAG, `the term by ${hex} served at day ${term.releaseAt.toFixed(3)} of the shared clock: released through the engine's own fine path, its bounty cleared first`);
+    }
+
+    // a release's held reason, said once per term and reason
+    private sayOnce(term: JailTerm, line: string): void {
+        const key = `${term.faction}:${term.releaseAt}:${line}`;
+        if (this.said !== key) {
+            this.said = key;
+            logLab(TAG, line);
+        }
     }
 
     private onArrest(e: ArrestEvent): void {
@@ -165,13 +198,28 @@ export class JailService extends ClientListener {
         return minutes >= 120 ? ` (about ${Math.round(minutes / 60)} real hours)` : ` (about ${minutes} real minute(s))`;
     }
 
+    // the last held reason releaseIfServed said (sayOnce)
+    private said: string | undefined = undefined;
     // the bounty per faction last sent, so each change goes once
     private sent = new Map<number, { violent: number; nonViolent: number }>();
     // this game's player's jail term as the server's record holds it (the
     // newest JailTerm), whole; none before the first word or once the term's
-    // release has run here
-    term: { faction: number; releaseAt: number; served: boolean } | undefined = undefined;
+    // release has run here. Kept in the platform's storage, which a hot reload
+    // of the client keeps: the connection stays, so the server's one tell of
+    // it per connection does not come again
+    get term(): JailTerm | undefined {
+        return this.sp.storage[TERM_KEY] as JailTerm | undefined;
+    }
+    set term(term: JailTerm | undefined) {
+        this.sp.storage[TERM_KEY] = term;
+    }
     // this connection's own login spawn has put the player at the record's
-    // spot (RemoteServer's ownSpawnSettled)
-    private spawnSettled = false;
+    // spot (RemoteServer's ownSpawnSettled); in the storage too, since a
+    // reload runs no login spawn again
+    private get spawnSettled(): boolean {
+        return this.sp.storage[SPAWN_SETTLED_KEY] === true;
+    }
+    private set spawnSettled(settled: boolean) {
+        this.sp.storage[SPAWN_SETTLED_KEY] = settled;
+    }
 }

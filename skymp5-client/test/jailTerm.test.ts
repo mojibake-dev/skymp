@@ -30,6 +30,8 @@ const sp: any = stub({
   // Skyrim.esm's TimeScale 20: a game hour is three real minutes
   GlobalVariable: stub({ from: () => ({ getValue: () => 20 }) }),
   Game: stub({ getFormEx: () => ({}) }),
+  // the platform's storage, where the service keeps the told term; each service below starts with its own
+  storage: {},
 });
 const platform = stub({ storage: {}, settings: {} });
 
@@ -52,6 +54,7 @@ const service = () => {
     once: () => {},
     emitter: { on: (name: string, fn: (e: any) => void) => { messages[name] = fn; }, emit: () => {} },
   };
+  sp.storage = {};
   const s: any = new JailService(sp, controller);
   const told = (faction: number, releaseAt: number, served: boolean) =>
     messages["jailTermMessage"]?.({ message: { t: 88, faction, releaseAt, served } });

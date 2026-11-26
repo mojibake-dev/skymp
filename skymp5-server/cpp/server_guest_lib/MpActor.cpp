@@ -3623,6 +3623,15 @@ void MpActor::NoteReanimateAccepted(std::chrono::steady_clock::time_point at,
   pImpl->reanimateAcceptedAt = at;
   pImpl->reanimateSpell = spell;
   pImpl->reanimateCaster = caster;
+  // the held change-form record describes the corpse this raise ends, as a
+  // stand-up's does: served to a later arrival or at a cell's load it would
+  // lay a corpse over the raised body, and a watching game whose lay is
+  // refused takes each serve as a fresh try
+  if (ChangeForm().changeFormRecord.has_value()) {
+    SetChangeFormRecord(std::nullopt);
+    spdlog::info("[verb:npc-fate] {:x} raised: the body's record dropped",
+                 GetFormId());
+  }
 }
 
 uint32_t MpActor::ReanimateAcceptedSpell() const

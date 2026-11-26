@@ -1,6 +1,7 @@
 import { Actor, ContainerChangedEvent, DeathEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logLab, logTrace } from "../../logging";
+import { corpseCopyWait } from "../../sync/corpseCopy";
 import { NiPoint3 } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -205,6 +206,7 @@ type HeldRecord = {
     heldLogged: boolean;
     followLogged?: boolean; // physics rung 5: "held until this seat's follow of its stream rests" said
     menuHeld?: boolean;    // the last attempt waited for this seat's open ContainerMenu (said once; holdMs paused)
+    loadHeld?: boolean;    // the last attempt waited for the dead copy's 3D here (said once; holdMs paused)
     killedHereAt: number;  // deathService's kill of the copy, in flight (the task queue) or landed
     bindKill: boolean;     // that kill was the bind's (applies on the owner's own seat too)
     queuedAt: number;      // the apply queued to the main thread's task (ApplyChangeForm answered {queued}); 0 when none
@@ -604,7 +606,8 @@ export class ChangeFormService extends ClientListener {
             logTrace(this, `changeform ${hex}: no actor form here, the record waits`);
             return;
         }
-        if (!ac.isDead()) {
+        const wait = corpseCopyWait({ dead: ac.isDead(), loaded3D: refr.is3DLoaded() });
+        if (wait === "kill") {
             if (!rec.heldLogged && rec.killedHereAt === 0) {
                 rec.heldLogged = true;
                 logLab("verb:npc-fate", `corpse ${hex} record held until the kill`);
@@ -628,6 +631,17 @@ export class ChangeFormService extends ClientListener {
             }
             return;
         }
+        // the native lays a record only on a copy with its 3D: a dead copy
+        // out of range waits for its 3D rather than spend a try the native
+        // refuses (five refused tries gave a record up until its next serve)
+        if (wait === "3d") {
+            if (!rec.loadHeld) {
+                rec.loadHeld = true;
+                logLab("verb:npc-fate", `corpse ${hex} record held until its copy's 3D loads here`);
+            }
+            return;
+        }
+        rec.loadHeld = false;
         const now = Date.now();
         rec.attempts += 1;
         rec.lastAttemptAt = now;
@@ -778,7 +792,7 @@ export class ChangeFormService extends ClientListener {
                 if (rec.applied || rec.queuedAt > 0) {
                     return;
                 }
-                if (now - rec.receivedAt >= ChangeFormService.holdMs && !rec.menuHeld) {
+                if (now - rec.receivedAt >= ChangeFormService.holdMs && !rec.menuHeld && !rec.loadHeld) {
                     this.records.delete(formId);
                     logLab("verb:npc-fate", `corpse ${formId.toString(16)} record dropped: held ${now - rec.receivedAt} ms, the copy never died here`);
                     return;

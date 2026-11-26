@@ -845,6 +845,42 @@ TEST_CASE("A fated respawn drops the body's held change-form record",
   Leave(p, 0, kHost);
 }
 
+TEST_CASE("An accepted raise drops the body's held change-form record, so a "
+          "later arrival hears none",
+          "[ChangeForm][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& host = Arrive(p, 0, kHost);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  actor.SetChangeFormRecord(std::nullopt);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  const auto cellHost = p.GetCellHost(kForestCell);
+  REQUIRE(cellHost.hosted);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  Report(p, 0, Record(cellHost.epoch, kPredator, kRecordHex));
+  REQUIRE(actor.GetChangeFormRecord().has_value());
+
+  // the host's raise of the body is accepted: the record describes the
+  // corpse the raise ended
+  actor.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0, kHost);
+  REQUIRE_FALSE(actor.GetChangeFormRecord().has_value());
+
+  // a game that arrives later hears the actor's create word and no record
+  p.Messages().clear();
+  Arrive(p, 2, kLate);
+  REQUIRE(IndexOf<CreateActorMessage>(p, 2, [](const CreateActorMessage& m) {
+            return m.refrId == kPredator;
+          }) >= 0);
+  REQUIRE(SentTo<ChangeFormApplyMessage>(p, 2).empty());
+
+  Leave(p, 0, kHost);
+  Leave(p, 2, kLate);
+}
+
 // physics rung 5a (ADR-071 decision 5): a body is a row of the prop table,
 // its death's simulator's, while the change-form rule stays the cell's (Eli's
 // D-PH11 A moves a body's record to the word the sender holds with rung 5's

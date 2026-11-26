@@ -1919,3 +1919,49 @@ TEST_CASE("A player's own overlay head parts are held in memory and sent to "
   REQUIRE(LooksTo(p, 0).empty());
   Leave(p);
 }
+
+// MQ101 0x3372b's MQ101QuestScript grants a new character's race power by
+// AddRaceSpells (Sparks 0x2dd2a for a Dark Elf among its Spell properties);
+// an alternate start calls it while the quest never runs and its stages are
+// denied the world. Classed the player's by its start (playerStartedQuests,
+// whatever its aliases), its script's call on the player counts, and none of
+// its stages becomes the world's or is replayed at a login.
+TEST_CASE("Chargen classed the player's by its start keeps its script's race "
+          "power, and none of its stages is the world's or replayed at a "
+          "login",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kChargen = 0x3372b;
+  constexpr uint32_t kSparks = 0x2dd2a;
+  const FormDesc chargen = FormDesc::FromString("3372b:Skyrim.esm");
+  PartOne& p = GetPartOne();
+  Enter(p, false);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  p.SetSharedQuestsSettings(
+    R"({"mode": "all", "denied": ["3372b:Skyrim.esm"]})");
+  p.SetQuestScopeSettings(R"("derived")", "[]", R"(["3372b:Skyrim.esm"])");
+
+  REQUIRE(p.QuestAttachmentLive(kChargen));
+  Own(p, "AddSpell", { FormArg(kSparks, "Spell") }, "MQ101QuestScript",
+      "AddRaceSpells");
+  const auto learned = turned.GetSpellList();
+  REQUIRE(std::find(learned.begin(), learned.end(), kSparks) != learned.end());
+
+  // a stage of it, even one the world's record held, is never the world's
+  // and a login neither replays it nor starts the quest
+  REQUIRE(p.CheckSharedQuest(chargen) != 0);
+  REQUIRE(p.SetQuestStages({ { chargen, 10 } }));
+  for (const auto& done : p.SharedQuestsAtLogin()) {
+    REQUIRE_FALSE(done.quest == chargen);
+  }
+  const auto runs = p.QuestRunsAtLogin();
+  for (const auto& quest : runs.first) {
+    REQUIRE_FALSE(quest == chargen);
+  }
+
+  p.SetQuestStages({});
+  p.SetQuestScopeSettings(R"("off")", "[]", "[]");
+  p.SetSharedQuestsSettings("[]");
+  Leave(p);
+}

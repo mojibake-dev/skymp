@@ -890,3 +890,85 @@ TEST_CASE("Two prisoners of one hold share its belongings chest, and each "
   p.DestroyActor(kSecondPrisoner);
   Leave(p);
 }
+
+// Each player's confiscated items go back to that player alone, a prisoner's
+// own take from the belongings chest included: what a prisoner takes back
+// from the chest before its release comes off its own belongings first, so
+// its release gives back what is still its own and the other prisoner's
+// stays that one's.
+TEST_CASE("A prisoner's own take from its hold's belongings chest comes off "
+          "its own belongings, so the other prisoner's release still gives "
+          "back that one's whole stack",
+          "[Jail][espm]")
+{
+  constexpr uint32_t kGold = 0x0000000f;
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 20.f);
+  auto& first = Arrive(p);
+  DoConnect(p, 1);
+  p.CreateActor(kSecondPrisoner, kInFalkreath, 0, kTamriel);
+  p.SetUserActor(1, kSecondPrisoner);
+  auto& second = p.worldState.GetFormAt<MpActor>(kSecondPrisoner);
+  p.Messages().clear();
+
+  first.AddItem(kGold, 100);
+  second.AddItem(kGold, 100);
+  const uint32_t firstHeld = first.GetInventory().GetItemCount(kGold);
+  const uint32_t secondHeld = second.GetInventory().GetItemCount(kGold);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
+  const uint32_t inChestBefore = chest.GetInventory().GetItemCount(kGold);
+
+  // both arrested by Falkreath, each stripping its 100 gold into the one
+  // chest, one stack of 200 there
+  REQUIRE(p.OnCrimeGold(first, kFalkreath, 100, 0));
+  REQUIRE(p.OnCrimeGold(second, kFalkreath, 100, 0));
+  Arrest(p, kFalkreath, 1);
+  DoMessage(p, 1,
+            nlohmann::json{ { "t", MsgType::Arrest },
+                            { "faction", kFalkreath },
+                            { "days", 1 } });
+  Put(p, kGold, 100, kBelongings);
+  PutAs(p, 1, kGold, 100, kBelongings);
+  REQUIRE(chest.GetInventory().GetItemCount(kGold) == inChestBefore + 200);
+  ServeInCell(p, first, *jail);
+  ReportAs(p, 1, second, jail->landingWorldOrCell, jail->landingPos);
+  CloseWindow(second);
+  REQUIRE(!p.EndTermIfEscaped(second));
+
+  // the first picks its cell's lock, opens the chest and takes 100 gold
+  // back, still inside the jail's cell
+  const auto oldLock = chest.GetLock();
+  chest.SetLock(MpChangeFormREFR::Lock{});
+  Report(p, first, jail->landingWorldOrCell,
+         chest.GetPos() + NiPoint3{ 50.f, 0.f, 0.f });
+  REQUIRE(!p.EndTermIfEscaped(first));
+  chest.Activate(first);
+  REQUIRE(chest.IsContainerOccupant(&first));
+  Take(p, kGold, 100, kBelongings);
+  REQUIRE(first.GetInventory().GetItemCount(kGold) == firstHeld);
+  REQUIRE(chest.GetInventory().GetItemCount(kGold) == inChestBefore + 100);
+  chest.Activate(first);
+
+  // both served and moved out by their own games: the first had its own
+  // back already and gets nothing more, the second gets its own 100
+  clock.Set(21.01f);
+  REQUIRE(p.ReleaseIfServed(first));
+  REQUIRE(p.ReleaseIfServed(second));
+  const NiPoint3 outside = jail->releasePos + NiPoint3{ 40.f, 0.f, 0.f };
+  Report(p, first, jail->releaseWorldOrCell, outside);
+  REQUIRE(p.ReleaseIfServed(first));
+  ReportAs(p, 1, second, jail->releaseWorldOrCell, outside);
+  REQUIRE(p.ReleaseIfServed(second));
+  REQUIRE(first.GetInventory().GetItemCount(kGold) == firstHeld);
+  REQUIRE(second.GetInventory().GetItemCount(kGold) == secondHeld);
+  REQUIRE(chest.GetInventory().GetItemCount(kGold) == inChestBefore);
+
+  if (oldLock) {
+    chest.SetLock(*oldLock);
+  }
+  DoDisconnect(p, 1);
+  p.DestroyActor(kSecondPrisoner);
+  Leave(p);
+}

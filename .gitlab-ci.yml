@@ -59,7 +59,9 @@ rust-image:
         paths: [skymp-wire/**/*]
         compare_to: refs/heads/canon
   script:
-    - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
+    # the base image's registry: the project's SKY_REGISTRY, or Docker Hub's
+    # library with none set (skymp-wire/ci/Dockerfile's BASE_REGISTRY)
+    - docker build --build-arg "BASE_REGISTRY=${SKY_REGISTRY:-docker.io/library}" -t "$RUST_CI_IMAGE" skymp-wire/ci
 
 .wire:
   tags: [sky]
@@ -252,7 +254,8 @@ server-build:
     - TAG="$CI_COMMIT_REF_SLUG"
     - ci/net-retry.sh docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" .
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "skymp-server:$TAG"
-    # Ship to the sky-ci registry sky-srv pulls from (10.10.70.12:5000).
+    # Ship to the registry on the CI host (its localhost:5000), which the
+    # server host pulls from.
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG"
     - docker push "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"

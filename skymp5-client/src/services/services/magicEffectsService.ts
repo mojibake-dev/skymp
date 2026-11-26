@@ -373,6 +373,22 @@ export class MagicEffectsService extends ClientListener {
     // the caster each actor's Reanimate state names, by the actor's server
     // id (noteThrall), and the thralls the upkeep asked to command, by
     // server id, each with the local id it was asked of
+    // the server ids of the thralls whose Reanimate state names `me`, this
+    // seat's player by its server id, their caster: this seat's side, beside
+    // its player
+    ownThrallIds(me: number): number[] {
+        const out: number[] = [];
+        if (me === 0) {
+            return out;
+        }
+        this.thralls.forEach((caster, remote) => {
+            if (caster === me) {
+                out.push(remote);
+            }
+        });
+        return out;
+    }
+
     private thralls = new Map<number, number>();
     private commanded = new Map<number, number>();
     private commandTick = 0;

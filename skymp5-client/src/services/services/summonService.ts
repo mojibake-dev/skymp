@@ -131,6 +131,20 @@ export class SummonService extends ClientListener {
     // report that named the same id is answered and the refusal fallback is
     // disarmed for it. A bind for no live report (a rebind after a cell
     // change, a word the report never named) changes nothing
+    // the server ids of the summons this seat's own player cast and its
+    // engine runs, bound to the server's actors: this seat's side, beside its
+    // player (PuppetService's combat of another game's NPC that attacks them)
+    ownSummonIds(): number[] {
+        const out: number[] = [];
+        this.live.forEach((live, localId) => {
+            const remoteId = live.bound && live.casterLocal === 0x14 ? localIdToRemoteId(localId) : 0;
+            if (remoteId) {
+                out.push(remoteId);
+            }
+        });
+        return out;
+    }
+
     noteBound(localId: number): void {
         const live = this.live.get(localId);
         if (live && !live.bound) {

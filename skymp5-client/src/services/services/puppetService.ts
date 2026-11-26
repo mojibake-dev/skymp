@@ -13,6 +13,9 @@ import { placesAtPromote, runsActorHere } from "../../sync/hostPuppet";
 import { SEAT_WAIT_MS, seatVerdict, seated } from "../../sync/seatWait";
 import { RemoteServer } from "./remoteServer";
 import { levelFor } from "../../sync/detectionRelay";
+import { fightsThisSide } from "../../sync/sideTarget";
+import { SummonService } from "./summonService";
+import { MagicEffectsService } from "./magicEffectsService";
 import { SceneClaimService } from "./sceneClaimService";
 
 // thuum docs/verbs/npc-puppet.md (ADR-045): every NPC this game does not host
@@ -551,8 +554,12 @@ export class PuppetService extends ClientListener {
             return;
         }
         const me = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
+        const own = new Set<number>([
+            ...this.controller.lookupListener(SummonService).ownSummonIds(),
+            ...this.controller.lookupListener(MagicEffectsService).ownThrallIds(me),
+        ]);
         let why = "";
-        if (me === 0 || target !== me) {
+        if (!fightsThisSide(target, me, own)) {
             why = `its host's target is ${target ? target.toString(16) : "none"} now`;
         } else if (!host.isOthersLocal(localId)) {
             // no game's state of it reaches this seat now, so the last one is
@@ -596,7 +603,8 @@ export class PuppetService extends ClientListener {
         }
         ac.startCombat(player);
         this.aggro.set(localId, this.tick);
-        logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} starts combat on this seat's player: its host's target is ${me.toString(16)}, this seat's own (tracker #130)`);
+        const whose = target === me ? "this seat's own player" : "a summon or thrall of this seat's player";
+        logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} starts combat on this seat's player: its host's target is ${target.toString(16)}, ${whose}`);
     }
 
     // tracker #130: the aggro mark off and the puppet's combat stopped, one

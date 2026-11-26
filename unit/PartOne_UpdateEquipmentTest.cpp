@@ -250,7 +250,7 @@ void WearRace(MpActor& actor, uint32_t raceId)
 }
 
 // the owner's report of one power in its voice slot
-void ReportPower(PartOne& p, const MpActor& owner, uint32_t power,
+void ReportPower(PartOne& p, MpActor& owner, uint32_t power,
                  uint32_t numChanges)
 {
   UpdateEquipmentMessage msg;
@@ -288,9 +288,8 @@ void CastPower(PartOne& p, uint32_t power)
 }
 }
 
-TEST_CASE("A player of a race other than its base record's keeps its race's "
-          "power equipped and casts it, and a power only the base record's "
-          "race lists is dropped",
+TEST_CASE("A Khajiit player keeps Night Eye, its race's power, equipped and "
+          "casts it, and Battle Cry, NordRace's alone, is dropped",
           "[PartOne][UpdateEquipment][espm]")
 {
   PartOne& p = GetPartOne();
@@ -322,7 +321,8 @@ TEST_CASE("A player of a race other than its base record's keeps its race's "
   Part(p);
 }
 
-TEST_CASE("A vampire player keeps a power its vampire race lists equipped",
+TEST_CASE("A Nord vampire player keeps Vampire's Sight, a power its vampire "
+          "race lists, equipped",
           "[PartOne][UpdateEquipment][espm]")
 {
   PartOne& p = GetPartOne();

@@ -2198,13 +2198,13 @@ TEST_CASE("A thrall whose commander fights two players is told into one "
   LeaveThrall(p, predator);
 }
 
-// ADR-077 decision 2: an attack on a minion is an attack on its owner,
-// whichever game runs the attacker. The predator, an NPC the host's game
-// runs, strikes the other player's summon, which the other player's game
-// runs: the fight is recorded between the predator and the summon's owner,
-// as a strike on the owner would be (no notice: a game's copy of an NPC
-// another game runs has its AI off; that copy's own combat is the client's,
-// from the predator's hosted target)
+// A player and its minions are one side: an attack on a minion is an
+// attack on its owner, whichever game runs the attacker. The predator, an NPC
+// the host's game runs, strikes the other player's summon, which the other
+// player's game runs: the fight is recorded between the predator and the
+// summon's owner, as a strike on the owner would be (no notice: a game's copy
+// of an NPC another game runs has its AI off; that copy's own combat is the
+// client's, from the predator's hosted target)
 TEST_CASE("An NPC one game runs that strikes another player's summon is in a "
           "fight with the summon's owner (ADR-077 decision 2)",
           "[NpcCast][espm]")

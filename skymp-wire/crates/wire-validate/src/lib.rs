@@ -1093,7 +1093,7 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
     }
-    // docs/verbs/difficulty.md (SCHEMA_VERSION 74): the server's difficulty,
+    // docs/verbs/difficulty.md (SCHEMA_VERSION 75): the server's difficulty,
     // Novice (0) to Legendary (5), on the player's own create word alone
     if let Some(difficulty) = m.props.difficulty {
         if difficulty > 5 || !m.is_me {
@@ -4808,7 +4808,7 @@ mod tests {
 
     #[test]
     fn the_servers_difficulty_rides_the_players_own_create_word_alone_novice_to_legendary() {
-        // docs/verbs/difficulty.md (SCHEMA_VERSION 74)
+        // docs/verbs/difficulty.md (SCHEMA_VERSION 75)
         let own = |difficulty: Option<u8>, is_me: bool| {
             Message::CreateActor(skymp::CreateActor {
                 idx: 7,

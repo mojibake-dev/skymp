@@ -991,7 +991,7 @@ mod tests {
             ),
             other => panic!("{other:?}"),
         }
-        // SCHEMA_VERSION 74 (docs/verbs/difficulty.md): 33-7 is a player's
+        // SCHEMA_VERSION 75 (docs/verbs/difficulty.md): 33-7 is a player's
         // own create word at a Legendary server; the same word to another
         // game is refused
         let own = recognize(&read("33-CreateActor-7.json")).unwrap_or_else(|e| panic!("33-CreateActor-7.json: {e}"));

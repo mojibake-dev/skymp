@@ -116,7 +116,7 @@ export interface CreateActorMessageAdditionalProps {
     // same art on the caster's game). Absent on the caster's word, which
     // binds instead, and on a later loader's
     summonEffect?: number;
-    // docs/verbs/difficulty.md (SCHEMA_VERSION 74): the server's difficulty,
+    // docs/verbs/difficulty.md (SCHEMA_VERSION 75): the server's difficulty,
     // 0 (Novice) to 5 (Legendary), on the player's own create word alone:
     // DisableDifficultySelectionService writes it to the player's own
     // difficulty field, which the engine's DamageActor indexes

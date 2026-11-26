@@ -684,11 +684,12 @@ export const applyInventory = (
       // ammunition lands in one call either way, a removal as an addition
       if (Math.abs(e.count) > 1 && Ammo.from(Game.getFormEx(e.baseId))) {
         absCount = worn && e.count < -1000 ? 0 : 1;
-        oneStepCount = e.count;
         if (e.count > 60000) {
           // Why would actor have 60k arrows?
           e.count = 1;
         }
+        // the step is the count as the guard above left it
+        oneStepCount = e.count;
       }
     }
 

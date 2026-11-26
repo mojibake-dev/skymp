@@ -30,6 +30,13 @@ export class ContainerApplyQueue {
     }
   }
 
+  // a newer record of the container on its way (UpdateProperty's own apply,
+  // on the next update): its queued older one is dropped, so the older never
+  // lands after it
+  static supersede(refrId: number): void {
+    ContainerApplyQueue.pending.delete(refrId);
+  }
+
   private static drain(): void {
     if (isBadMenuShown()) {
       once("update", () => ContainerApplyQueue.drain());

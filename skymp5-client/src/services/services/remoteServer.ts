@@ -1552,6 +1552,10 @@ export class RemoteServer extends ClientListener {
       // a burst of one container's records within a tick lands as its newest,
       // in one apply (sync/latestPerKey.ts: each apply reads the container
       // before the one before it has landed)
+      if (msg.propName === 'inventory') {
+        // a record queued at the cell's load is older: this one supersedes it
+        ContainerApplyQueue.supersede(refrId);
+      }
       if (msg.propName === 'inventory' && !this.pendingContainerInventory.put(refrId, msgData as Inventory)) {
         return;
       }

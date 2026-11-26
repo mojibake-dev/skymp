@@ -80,3 +80,7 @@ test("a deficit of more than a thousand of a weapon lands whole in one call", ()
 test("a deficit of arrows lands in one call, as before", () => {
   assert.deepEqual(apply([[DWARVEN_ARROW, 20]], [[DWARVEN_ARROW, 80]]), [[DWARVEN_ARROW, 60]]);
 });
+
+test("a record more than 60000 arrows past the game's lands as one arrow, the crash guard's", () => {
+  assert.deepEqual(apply([[DWARVEN_ARROW, 0]], [[DWARVEN_ARROW, 70000]]), [[DWARVEN_ARROW, 1]]);
+});

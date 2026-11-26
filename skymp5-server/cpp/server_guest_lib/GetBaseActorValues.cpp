@@ -1,6 +1,11 @@
 #include "GetBaseActorValues.h"
 #include "EvaluateTemplate.h"
 #include "WorldState.h"
+#include "libespm/CLAS.h"
+#include "libespm/GMST.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <spdlog/spdlog.h>
 
 void BaseActorValues::VisitBaseActorValuesAndPercentages(
@@ -21,7 +26,88 @@ void BaseActorValues::VisitBaseActorValuesAndPercentages(
   message.props.magickaPercentage = changeForm.actorValues.magickaPercentage;
 }
 
-// TODO: implement auto-calc flag
+namespace {
+// a setting the game files hold, or `fallback` where none is read
+float SettingOf(WorldState* worldState, uint32_t id, float fallback)
+{
+  try {
+    return espm::GetData<espm::GMST>(id, worldState).value;
+  } catch (...) {
+    return fallback;
+  }
+}
+
+int32_t IntSettingOf(WorldState* worldState, uint32_t id, int32_t fallback)
+{
+  try {
+    return espm::GetData<espm::GMST>(id, worldState).intValue;
+  } catch (...) {
+    return fallback;
+  }
+}
+
+// An auto-calc NPC's level as the engine reads it (TESActorBaseData's level,
+// id 14384): its ACBS level, or with the PC level mult the player's level
+// times the mult, clamped to its calc levels; the server holds no player's
+// level for it, so the lowest player level stands in (1, then the clamp)
+int32_t AutoCalcLevel(const espm::NPC_::Data& npc)
+{
+  int32_t level = npc.level;
+  if (npc.pcLevelMult) {
+    level = static_cast<int32_t>(1 * npc.level * 0.001);
+    if (npc.calcLevelMin) {
+      level = std::max(level, static_cast<int32_t>(npc.calcLevelMin));
+    }
+    if (npc.calcLevelMax) {
+      level = std::min(level, static_cast<int32_t>(npc.calcLevelMax));
+    }
+  }
+  return std::max(level, 1);
+}
+
+// the level's points shared out by the class's weights (the engine's 24899):
+// (level - 1) * per-level points P over the weights' sum W, each attribute
+// taking its weight times floor(P / W), then the remainder one point at a
+// time in the order of descending weight, the later attribute first on a tie
+// (stamina, magicka, health), each at most its weight in remainder points.
+// Indices: 0 health, 1 magicka, 2 stamina
+std::array<int32_t, 3> LevelShare(int32_t levelsPast, int32_t perLevel,
+                                  const std::array<int32_t, 3>& weights)
+{
+  std::array<int32_t, 3> share{ 0, 0, 0 };
+  const int32_t total = weights[0] + weights[1] + weights[2];
+  const int32_t points = std::max(levelsPast, 0) * std::max(perLevel, 0);
+  if (total <= 0 || points <= 0) {
+    return share;
+  }
+  const int32_t each = points / total;
+  for (size_t i = 0; i < 3; ++i) {
+    share[i] = weights[i] * each;
+  }
+  int32_t left = points - each * total;
+  std::array<size_t, 3> order{ 2, 1, 0 };
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return weights[a] > weights[b];
+  });
+  std::array<int32_t, 3> given{ 0, 0, 0 };
+  while (left > 0) {
+    bool gave = false;
+    for (size_t i : order) {
+      if (left > 0 && given[i] < weights[i]) {
+        ++given[i];
+        ++share[i];
+        --left;
+        gave = true;
+      }
+    }
+    if (!gave) {
+      break;
+    }
+  }
+  return share;
+}
+}
+
 BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
                                    uint32_t raceIdOverride,
                                    const std::vector<FormDesc>& templateChain)
@@ -44,8 +130,39 @@ BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
 
   BaseActorValues actorValues;
 
-  actorValues.health =
-    raceData.startingHealth + attributesNpcData.healthOffset;
+  // an auto-calc NPC's values as the engine computes them (its autocalc,
+  // id 24765, read back by the actor value owner at 24774): the race's
+  // start and the offset, the health's level bonus, and the class's share of
+  // the level's points; any other NPC's are the race's start and the offset
+  int32_t healthBonus = 0;
+  std::array<int32_t, 3> share{ 0, 0, 0 };
+  if (attributesNpcData.autoCalcStats) {
+    const uint32_t classId = EvaluateTemplate<espm::NPC_::UseStats>(
+      worldState, baseId, templateChain,
+      [](const auto& npcLookupResult, const auto& npcData) {
+        return npcData.classId ? npcLookupResult.ToGlobalId(npcData.classId)
+                               : 0u;
+      });
+    const auto classLookup = classId
+      ? worldState->GetEspm().GetBrowser().LookupById(classId)
+      : espm::LookupResult{};
+    const auto* clas = espm::Convert<espm::CLAS>(classLookup.rec);
+    if (clas && raceId) {
+      const auto classData = clas->GetData(worldState->GetEspmCache());
+      const int32_t levelsPast = AutoCalcLevel(attributesNpcData) - 1;
+      const float bonus = baseId == 0x7
+        ? SettingOf(worldState, espm::GMST::kFPCHealthLevelBonus, 0.f)
+        : SettingOf(worldState, espm::GMST::kFNPCHealthLevelBonus, 5.f);
+      healthBonus = static_cast<int32_t>(levelsPast * bonus);
+      share = LevelShare(
+        levelsPast, IntSettingOf(worldState, espm::GMST::kIAVDhmsLevelUp, 10),
+        { classData.healthWeight, classData.magickaWeight,
+          classData.staminaWeight });
+    }
+  }
+
+  actorValues.health = static_cast<int32_t>(raceData.startingHealth) +
+    attributesNpcData.healthOffset + healthBonus + share[0];
   if (actorValues.health <= 0) {
     spdlog::warn("GetBaseActorValues {:x} {:x} - Negative Health found: "
                  "startingHealth={}, healthOffset={}, defaulting to 100",
@@ -54,8 +171,8 @@ BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
     actorValues.health = 100.f;
   }
 
-  actorValues.magicka =
-    raceData.startingMagicka + attributesNpcData.magickaOffset;
+  actorValues.magicka = static_cast<int32_t>(raceData.startingMagicka) +
+    attributesNpcData.magickaOffset + share[1];
   if (actorValues.magicka < 0) { // zero magicka is ok, negative isn't
     spdlog::warn("GetBaseActorValues {:x} {:x} - Negative Magicka found: "
                  "startingMagicka={}, magickaOffset={}, defaulting to 100",
@@ -64,8 +181,8 @@ BaseActorValues GetBaseActorValues(WorldState* worldState, uint32_t baseId,
     actorValues.magicka = 100.f;
   }
 
-  actorValues.stamina =
-    raceData.startingStamina + attributesNpcData.staminaOffset;
+  actorValues.stamina = static_cast<int32_t>(raceData.startingStamina) +
+    attributesNpcData.staminaOffset + share[2];
   if (actorValues.stamina <= 0) {
     spdlog::warn("GetBaseActorValues {:x} {:x} - Negative Stamina found: "
                  "startingStamina={}, staminaOffset={}, defaulting to 100",

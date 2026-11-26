@@ -79,6 +79,16 @@ public:
     uint32_t baseTemplate = 0;
     uint16_t templateDataFlags = 0;
     uint32_t deathItem = 0;
+    // ACBS (CommonLibSSE-NG include/RE/T/TESActorBaseData.h:16-78, the
+    // engine's ACTOR_BASE_DATA): the auto-calc and the PC level mult flags
+    // (1 << 4 and 1 << 7), the level (the mult times 1000 with the PC level
+    // mult) and its clamps; CNAM, the class (a file-local form id)
+    bool autoCalcStats = false;
+    bool pcLevelMult = false;
+    uint16_t level = 0;
+    uint16_t calcLevelMin = 0;
+    uint16_t calcLevelMax = 0;
+    uint32_t classId = 0;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

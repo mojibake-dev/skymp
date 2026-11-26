@@ -4,7 +4,7 @@ import { MsgType } from "../../messages";
 import { getPcInventory } from "./remoteServer";
 import { getInventory, getDiff, hasExtras, removeSimpleItemsAsManyAsPossible, sumInventories } from "../../sync/inventory";
 import { LastInvService } from "./lastInvService";
-import { toWireInventory } from "../../sync/createdForms";
+import { sameCreated, toWireEntry, toWireInventory } from "../../sync/createdForms";
 
 import { PutItemMessage } from "../messages/putItemMessage";
 import { TakeItemMessage } from "../messages/takeItemMessage";
@@ -67,7 +67,17 @@ export class ContainersService extends ClientListener {
         const diff = lastInvService.lastInv && player
             ? getDiff(lastInvService.lastInv, toWireInventory(getInventory(player as Actor)), false).entries
             : [];
-        const take = pickupTake(diff, e);
+        // the taken stack in the wire's shape, as the difference is (a created
+        // potion by its template and definition, sync/createdForms.ts), so it
+        // meets its own gain there and the take names no session id; a
+        // session form with no definition cannot cross and is not reported
+        const taken = toWireEntry({ baseId: e.baseId, count: e.count });
+        if (!taken) {
+            logLab("verb:pickup", `reference ${e.refId.toString(16)} taken by this game's engine: ${e.baseId.toString(16)} is a session form with no definition this game reads; not reported`);
+            return;
+        }
+        const take = pickupTake(diff, { ...taken, ownerId: e.ownerId },
+            (x) => x.baseId === taken.baseId && sameCreated(x.createdBase, taken.createdBase));
         const msg: TakeItemMessage = {
             ...JSON.parse(JSON.stringify(take)) as typeof take,
             t: MsgType.TakeItem,

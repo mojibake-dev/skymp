@@ -99,10 +99,16 @@ export const grantPickup = (localId: number, now: number): boolean => {
 
 // the one entry a pickup reports out of the player's inventory difference
 // (the record less the game: a gain is a negative count): the gain of the
-// base the engine added, counted as that add at most; undefined for none.
-// Every other difference is left to its own path
-export const pickupTakeEntry = <E extends { baseId: number; count: number }>(diff: E[], baseId: number, numItems: number): E | undefined => {
-  const entry = diff.find((e) => e.baseId === baseId && e.count < 0);
+// stack the engine added (its base, or `same`, the caller's match of that
+// stack: a created form's definition too), counted as that add at most;
+// undefined for none. Every other difference is left to its own path
+export const pickupTakeEntry = <E extends { baseId: number; count: number }>(
+  diff: E[],
+  baseId: number,
+  numItems: number,
+  same: (e: E) => boolean = (e) => e.baseId === baseId,
+): E | undefined => {
+  const entry = diff.find((e) => same(e) && e.count < 0);
   if (entry === undefined) {
     return undefined;
   }
@@ -117,10 +123,16 @@ export const pickupTakeEntry = <E extends { baseId: number; count: number }>(dif
 // that base (pickupTakeEntry); a positive count, the event's
 export const pickupTake = <E extends { baseId: number; count: number; ownerId?: number }>(
   diff: E[],
-  e: { baseId: number; count: number; ownerId: number },
+  e: Partial<E> & { baseId: number; count: number; ownerId: number },
+  same?: (x: E) => boolean,
 ): E | { baseId: number; count: number; ownerId?: number } => {
-  const gain = pickupTakeEntry(diff, e.baseId, e.count);
-  const take: { baseId: number; count: number; ownerId?: number } = gain !== undefined ? { ...gain, count: e.count } : { baseId: e.baseId, count: e.count };
+  const gain = pickupTakeEntry(diff, e.baseId, e.count, same);
+  // with no gain to take its extras from, the stack as the caller named it
+  // (a created form's definition kept), its owner set below
+  const { ownerId: _owner, ...named } = e;
+  const take: { baseId: number; count: number; ownerId?: number } = gain !== undefined
+    ? { ...gain, count: e.count }
+    : { ...named, count: e.count };
   if (e.ownerId) {
     take.ownerId = e.ownerId;
   }

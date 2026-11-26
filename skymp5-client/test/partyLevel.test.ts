@@ -5,6 +5,7 @@
 // under its name, as in test/jailTerm.test.ts.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import type { PartyLevelService as PartyLevelServiceClass } from "../src/services/services/partyLevelService";
 
 const anything: any = new Proxy(function () {
   return anything;
@@ -34,7 +35,7 @@ Module._resolveFilename = function (request: string, ...rest: unknown[]) {
   return PLATFORM_NAMES.includes(request) ? "skyrimPlatform" : resolve.call(this, request, ...rest);
 };
 require.cache["skyrimPlatform"] = { id: "skyrimPlatform", filename: "skyrimPlatform", loaded: true, exports: platform } as any;
-const { PartyLevelService } = require("../src/services/services/partyLevelService");
+const { PartyLevelService } = require("../src/services/services/partyLevelService") as { PartyLevelService: typeof PartyLevelServiceClass };
 
 // a PartyLevelService on a fake controller; tell(level) delivers the
 // server's PartyLevel to the handler it registered

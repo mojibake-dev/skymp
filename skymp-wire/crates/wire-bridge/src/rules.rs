@@ -306,6 +306,17 @@ mod ffi {
         ranged: f32,
     }
 
+    /// The difficulty settings the master files hold, Novice to Legendary
+    /// (fDiffMultHPToPC* and fDiffMultHPByPC*), as the core read them; 0 for
+    /// one no record sets, which keeps the executable's.
+    #[derive(Debug)]
+    struct DifficultyMults {
+        /// fDiffMultHPToPC*: the damage a player takes.
+        to_pc: [f32; 6],
+        /// fDiffMultHPByPC*: the damage any other actor takes.
+        by_pc: [f32; 6],
+    }
+
     /// What the core knows about a player's last bed (thuum
     /// docs/verbs/sleep.md).
     #[derive(Debug)]
@@ -2875,6 +2886,14 @@ mod ffi {
         /// A kept sneak attack's damage multiplier for a weapon of
         /// `anim_type` (the WEAP record's DNAM animation type).
         fn sneak_mult(anim_type: u8, mults: &SneakMults) -> f32;
+        /// The multiplier on the damage an actor takes at `difficulty` (0
+        /// Novice to 5 Legendary): a player's by fDiffMultHPToPC*, any other
+        /// actor's by fDiffMultHPByPC*; 1 past Legendary.
+        fn difficulty_mult(difficulty: u8, victim_is_player: bool, files: &DifficultyMults) -> f32;
+        /// The multiplier on an effect's damage to an actor at `difficulty`:
+        /// `difficulty_mult`'s for a Health loss that is no Recover effect, 1
+        /// for any other effect.
+        fn effect_difficulty_mult(facts: &EffectFacts, difficulty: u8, victim_is_player: bool, files: &DifficultyMults) -> f32;
         /// thuum docs/verbs/blocking.md: the share of a hit's damage the
         /// target's block stops (0 when it is not blocked).
         fn blocked_share(settings: &BlockSettings, facts: &BlockFacts) -> f32;
@@ -4172,7 +4191,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
+pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, DifficultyMults, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4295,6 +4314,18 @@ fn sneak_mult(anim_type: u8, m: &SneakMults) -> f32 {
             ranged: m.ranged,
         },
     )
+}
+
+fn difficulty_mult(difficulty: u8, victim_is_player: bool, files: &DifficultyMults) -> f32 {
+    damage::difficulty_mult(difficulty, victim_is_player, &damage::DifficultyMults { to_pc: files.to_pc, by_pc: files.by_pc })
+}
+
+fn effect_difficulty_mult(facts: &EffectFacts, difficulty: u8, victim_is_player: bool, files: &DifficultyMults) -> f32 {
+    if damage::effect_takes_difficulty(&to_magic_facts(*facts)) {
+        difficulty_mult(difficulty, victim_is_player, files)
+    } else {
+        1.0
+    }
 }
 
 fn blocked_share(s: &BlockSettings, f: &BlockFacts) -> f32 {
@@ -7836,6 +7867,27 @@ mod tests {
         assert!((sneak_mult(7, &skyrim) - 1.3).abs() < 1e-6);
         let measured = SneakMults { ranged: 2.0, ..skyrim };
         assert!((sneak_mult(7, &measured) - 2.0).abs() < 1e-6);
+        // Update.esm's fDiffMultHPToPCL 3, the executable's other eleven
+        let files = DifficultyMults { to_pc: [0.0, 0.0, 0.0, 0.0, 0.0, 3.0], by_pc: [0.0; 6] };
+        assert!((difficulty_mult(5, true, &files) - 3.0).abs() < 1e-6);
+        assert!((difficulty_mult(5, false, &files) - 0.25).abs() < 1e-6);
+        assert!((difficulty_mult(2, true, &files) - 1.0).abs() < 1e-6);
+        let fire = EffectFacts {
+            effect: 0x12f03,
+            source: 0x12fd0,
+            kind: EffectKind::Value,
+            av: 24,
+            second_av: u32::MAX,
+            second_weight: 0.0,
+            magnitude: 25.0,
+            duration_s: 0.0,
+            recover: false,
+            detrimental: true,
+            no_duration: false,
+        };
+        assert!((effect_difficulty_mult(&fire, 5, true, &files) - 3.0).abs() < 1e-6);
+        let heal = EffectFacts { detrimental: false, ..fire };
+        assert!((effect_difficulty_mult(&heal, 5, true, &files) - 1.0).abs() < 1e-6);
         let mut b = new_movement_budgets();
         assert!(b.spend(7, 2048.0, 0));
         assert!(!b.spend(7, 1.0, 0));

@@ -515,6 +515,53 @@ TEST_CASE("A prisoner whose sentence ended while it was away is told so at "
   Leave(p);
 }
 
+// A served term is its prisoner's own game's to release, and that release
+// clears the hold's bounty in its engine (the fine path, PayFine 40659). The
+// login tells the term at once and each hold's bounty a tick later (an
+// SpSnippet), so a game whose spawn had settled could release before the
+// served hold's bounty landed, and the bounty would come back. The login
+// tells every other hold's bounty and never the served hold's
+TEST_CASE("A served prisoner's login tells its other holds' bounties and "
+          "never the served hold's, which its own game's release clears",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 20.f);
+  auto& prisoner = Arrive(p);
+  Arrest(p, kFalkreath, 1);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  ServeInCell(p, prisoner, *jail);
+  const auto& files = p.worldState.espmFiles;
+  prisoner.SetCrimeGold(FormDesc::FromFormId(kFalkreath, files), 1000, 25);
+  prisoner.SetCrimeGold(FormDesc::FromFormId(kPlayerFaction, files), 0, 40);
+
+  // away past the end; the login's first report from the cell
+  clock.Set(21.01f);
+  prisoner.SetMapMarkersPending(true);
+  p.Messages().clear();
+  Report(p, prisoner, jail->landingWorldOrCell, jail->landingPos);
+  const auto told = JailTermsTold(p);
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0]["served"] == true);
+  p.Tick(); // snippets are deferred
+  std::vector<uint32_t> boundTo;
+  for (const auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == MsgType::SpSnippet &&
+        (m.j["function"] == "SetCrimeGold" ||
+         m.j["function"] == "SetCrimeGoldViolent")) {
+      boundTo.push_back(m.j["selfId"].get<uint32_t>());
+    }
+  }
+  REQUIRE(std::count(boundTo.begin(), boundTo.end(), kPlayerFaction) == 2);
+  REQUIRE(std::count(boundTo.begin(), boundTo.end(), kFalkreath) == 0);
+  // the record keeps the served hold's bounty until the release clears it
+  REQUIRE(prisoner.GetCrimeRecord().Find(
+            FormDesc::FromFormId(kFalkreath, files)) != nullptr);
+  Leave(p);
+}
+
 TEST_CASE("A prisoner out of its jail before its end escaped: the term ends, "
           "its belongings stay in the chest",
           "[Jail][espm]")

@@ -2549,7 +2549,17 @@ std::vector<uint32_t> MpActor::KnownBaseSpells() const
   const auto npcData = espm::GetData<espm::NPC_>(GetBaseId(), GetParent());
   const auto npc = GetParent()->GetEspm().GetBrowser().LookupById(GetBaseId());
 
-  const uint32_t raceId = npc.ToGlobalId(npcData.race);
+  // the race the actor wears: the one its appearance records (a player's
+  // race menu choice, the vampire race a turn records in its place) where
+  // the load order holds that race, else its base record's
+  uint32_t raceId = npc.ToGlobalId(npcData.race);
+  if (const auto appearance = GetAppearance()) {
+    const auto worn =
+      GetParent()->GetEspm().GetBrowser().LookupById(appearance->raceId);
+    if (espm::Convert<espm::RACE>(worn.rec)) {
+      raceId = appearance->raceId;
+    }
+  }
 
   const auto raceData = espm::GetData<espm::RACE>(raceId, GetParent());
   const auto race = GetParent()->GetEspm().GetBrowser().LookupById(raceId);

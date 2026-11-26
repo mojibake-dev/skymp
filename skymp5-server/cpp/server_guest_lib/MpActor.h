@@ -55,9 +55,10 @@ public:
   bool IsSpellLearnedFromBase(uint32_t spellId) const;
   // thuum docs/verbs/npc-stream.md (train 53; playtest 37's flame atronach):
   // the record's own spell set as global ids: the base's SPLO list, the
-  // template the chain names for spells (NPC_'s UseSpelllist) and the race's
-  // list. The abilities a creature bears from its birth (its cloak) are
-  // among them, which no cast event ever names
+  // template the chain names for spells (NPC_'s UseSpelllist) and the list of
+  // the race it wears (its appearance's, else its base's). The abilities a
+  // creature bears from its birth (its cloak) are among them, which no cast
+  // event ever names
   std::vector<uint32_t> KnownBaseSpells() const;
   std::vector<uint32_t> GetSpellList() const;
 

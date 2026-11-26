@@ -53,14 +53,20 @@ Module._resolveFilename = function (request: string, ...rest: unknown[]) {
 require.cache["skyrimPlatform"] = { id: "skyrimPlatform", filename: "skyrimPlatform", loaded: true, exports: platform } as any;
 const { JailService } = require("../src/services/services/jailService") as { JailService: typeof JailServiceClass };
 
+// the platform's storage, which a hot reload of the client keeps (a new JailService on the same game) and a new test
+// does not
 const sp: any = new Proxy({
   Game: platform.Game,
   Ui: platform.Ui,
+  storage: {} as Record<string, unknown>,
 }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
 
-const seat = () => {
+const seat = (reload = false) => {
   calls.length = 0;
-  menus.clear();
+  if (!reload) {
+    menus.clear();
+    sp.storage = {};
+  }
   const handlers: Record<string, Array<(e?: unknown) => void>> = {};
   const messages: Record<string, Array<(e?: unknown) => void>> = {};
   const controller: any = {
@@ -124,4 +130,29 @@ test("a served term waits while a Dialogue Menu is open, so the move out never l
   menus.delete("Dialogue Menu");
   update();
   assert.deepEqual(calls, RELEASE);
+});
+
+test("a served term told before a hot reload of the client is released after it, with no new tell or spawn", () => {
+  const before = seat();
+  before.raise("ownSpawnSettled", { how: "moved" });
+  menus.add("Dialogue Menu");
+  before.served(true);
+  before.update();
+  assert.deepEqual(calls, []);
+  // the client reloads mid-term: the connection stays, so no connectionAccepted, no login spawn and no JailTerm again
+  const after = seat(true);
+  menus.delete("Dialogue Menu");
+  after.update();
+  assert.deepEqual(calls, RELEASE);
+});
+
+test("a term released before a hot reload is not released again after it", () => {
+  const before = seat();
+  before.raise("ownSpawnSettled", { how: "moved" });
+  before.served(true);
+  before.update();
+  assert.deepEqual(calls, RELEASE);
+  const after = seat(true);
+  after.update();
+  assert.deepEqual(calls, []);
 });

@@ -137,7 +137,8 @@ const seat = (busyReads: number) => {
   };
   const override = handlers["scriptStateOverrideMessage"];
   const entry = handlers["relayedActivationMessage"];
-  return { calls, tick, override, entry };
+  const record = handlers["scriptStateApplyMessage"];
+  return { calls, tick, override, entry, record, state };
 };
 
 const OVERRIDE = {
@@ -186,3 +187,27 @@ test("a read the wall's scripts keep busy holds the guest's entry until the over
   }
   assert.deepEqual(calls, ["read", "read", APPLIED, `OnTriggerEnter by ${GUEST_FIGURE.toString(16)}`]);
 });
+
+// the trigger's record as a grant serves it ahead of the grant's word: the
+// wall's script and its listener in "done"
+const SERVED = [
+  { type: "WordWallTriggerScript", state: "done", flags: 11, vars: [{ k: 5, b: true }, { k: 3, i: 60 }] },
+  { type: "WordWallTriggerBleakFallsScript", state: "done", flags: 11, vars: [] },
+];
+
+test("at a new host's grant the served record applies first and the override goes back over it, never the record over the put-back", () => {
+  const { calls, tick, override, record, state } = seat(0);
+  assert.equal(typeof override, "function", "the owner's game takes the override");
+  // the record served ahead of the grant, the grant's pass, then the override
+  record({ message: { t: 77, formId: TRIGGER, fnv1a: 1, seq: 0, scripts: SERVED } });
+  state.beforeHosting(SANCTUM, () => calls.push("gate"));
+  override({ message: OVERRIDE });
+  for (let i = 0; i < 4; i++) {
+    tick();
+  }
+  const servedApply = `apply ${JSON.stringify(SERVED)}`;
+  assert.ok(calls.includes(servedApply), "the grant's pass applies the served record");
+  assert.ok(calls.includes(APPLIED), "the override is applied");
+  assert.ok(calls.indexOf(servedApply) < calls.indexOf(APPLIED), `the served record first, the put-back over it: ${calls.join(" | ")}`);
+});
+

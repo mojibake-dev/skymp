@@ -223,6 +223,7 @@ server-build:
           - unit/**/*
           - skyrim-platform/src/platform_se/skyrim_platform/assets/template.ess
           - skyrim-platform/src/platform_se/skyrim_platform/CauseOwner.h
+          - skyrim-platform/src/platform_se/skyrim_platform/PartyLevelRule.h
           - skyrim-platform/src/platform_se/skyrim_platform/PlatformCall.h
           - skyrim-platform/src/platform_se/skyrim_platform/HookPairing.h
           - skyrim-platform/src/platform_se/skyrim_platform/HandOff.h

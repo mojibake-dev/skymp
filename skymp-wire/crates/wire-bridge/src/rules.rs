@@ -3414,6 +3414,12 @@ mod ffi {
         fn forget(self: &mut WeatherSync, user: u32);
         /// The size of the pool in force for `world`, 0 for none.
         fn pool_len(self: &WeatherSync, world: u32) -> usize;
+        /// `world`'s own slot from its climate's TNAM volatility (wire-rules
+        /// weather climate_slot_minutes), in place of `changeGameMinutes`
+        /// for it; the slot's game minutes.
+        fn set_climate_slot(self: &mut WeatherSync, world: u32, volatility: u8) -> u32;
+        /// The slot's length in game minutes for `world`.
+        fn slot_minutes(self: &WeatherSync, world: u32) -> u32;
 
         /// thuum docs/verbs/perks.md (M5): every perk of the load order and
         /// its own conditions (wire-rules perks).
@@ -6311,6 +6317,18 @@ impl WeatherSync {
 
     fn pool_len(&self, world: u32) -> usize {
         self.0.pool(world).map_or(0, <[weather::Entry]>::len)
+    }
+
+    fn set_climate_slot(&mut self, world: u32, volatility: u8) -> u32 {
+        let minutes = weather::climate_slot_minutes(volatility);
+        match self.0.set_world_minutes(world, minutes) {
+            Ok(()) => minutes,
+            Err(_) => self.0.slot_minutes(world),
+        }
+    }
+
+    fn slot_minutes(&self, world: u32) -> u32 {
+        self.0.slot_minutes(world)
     }
 }
 

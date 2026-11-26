@@ -851,6 +851,24 @@ TEST_CASE("REGN names its worldspace and its weather list", "[espm]")
   REQUIRE(sovngarde.weathers[0].global == 0);
 }
 
+TEST_CASE("CLMT names its timing's volatility, which sets how long a weather "
+          "holds",
+          "[espm]")
+{
+  // thuum docs/verbs/weather.md: TNAM is TESClimate::timing (CommonLibSSE-NG
+  // include/RE/T/TESClimate.h:41-46), the volatility its fifth byte; lab/
+  // esm.py's read of Skyrim.esm gives SkyrimClimate 50 and Sovngarde's 0
+  MyEspmProvider provider;
+  auto skyrim = espm::GetData<espm::CLMT>(0x812, &provider);
+  REQUIRE(std::string(skyrim.editorId) == "SkyrimClimate");
+  REQUIRE(skyrim.hasTiming);
+  REQUIRE(skyrim.volatility == 50);
+  auto sovngarde = espm::GetData<espm::CLMT>(0x90a91, &provider);
+  REQUIRE(std::string(sovngarde.editorId) == "SovngardeClimate");
+  REQUIRE(sovngarde.hasTiming);
+  REQUIRE(sovngarde.volatility == 0);
+}
+
 TEST_CASE("SMQN names the quests a Story Manager quest node starts, and the "
           "Browser indexes the type",
           "[espm]")

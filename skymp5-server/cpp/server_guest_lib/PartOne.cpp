@@ -54,6 +54,7 @@
 #include "libespm/ARMO.h"
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
+#include "libespm/CLMT.h"
 #include "libespm/DIAL.h"
 #include "libespm/ENCH.h"
 #include "libespm/FACT.h"
@@ -303,6 +304,9 @@ struct PartOne::Impl
   bool weatherEnabled = false;
   nlohmann::json weatherPools = nlohmann::json::object();
   bool weatherPoolsApplied = true;
+  // the settings named changeGameMinutes: it holds every worldspace, and no
+  // climate's own slot is set
+  bool weatherMinutesPinned = false;
   std::chrono::steady_clock::time_point lastWeatherTick{};
 
   // the perks' rule (thuum docs/verbs/perks.md; Rust's, wire-rules perks):
@@ -9728,6 +9732,7 @@ void PartOne::SetWeatherSettings(const std::string& weatherSettingsJson)
     }
   }
   pImpl->weatherSync = skymp::rules::new_weather_sync(changeGameMinutes, seed);
+  pImpl->weatherMinutesPinned = j.contains("changeGameMinutes");
   pImpl->weatherPools = pools;
   pImpl->weatherPoolsApplied = false;
   const bool applied = ApplySettingsWeatherPools();
@@ -9809,6 +9814,60 @@ void PartOne::LoadWeatherPools()
     "[verb:weather] pools from the game files: {} weather "
     "region(s) over {} worldspace(s); Tamriel's holds {} weather(s)",
     regions, worlds.size(), pImpl->weatherSync->pool_len(0x3c));
+  // each worldspace's slot is its climate's weather time (wire-rules weather
+  // climate_slot_minutes, from the climate's TNAM volatility), unless the
+  // settings name changeGameMinutes, which then holds every worldspace. A
+  // worldspace whose PNAM takes its parent's climate (UseClimateData) uses
+  // its parent's CNAM
+  size_t climates = 0;
+  if (!pImpl->weatherMinutesPinned) {
+    auto& browser = GetEspm().GetBrowser();
+    auto& cache = worldState.GetEspmCache();
+    const auto climateOf = [&](const espm::LookupResult& lookup) -> uint32_t {
+      const auto* wrld = espm::Convert<espm::WRLD>(lookup.rec);
+      if (!wrld) {
+        return 0;
+      }
+      const auto data = wrld->GetData(cache);
+      constexpr uint16_t kUseClimateData = 0x20;
+      if ((static_cast<uint16_t>(data.useFlags) & kUseClimateData) &&
+          data.parentWorldspaceId) {
+        const auto parent =
+          browser.LookupById(lookup.ToGlobalId(data.parentWorldspaceId));
+        const auto* parentWrld = espm::Convert<espm::WRLD>(parent.rec);
+        const auto parentData =
+          parentWrld ? parentWrld->GetData(cache) : espm::WRLD::Data{};
+        return parentData.climateId ? parent.ToGlobalId(parentData.climateId)
+                                    : 0;
+      }
+      return data.climateId ? lookup.ToGlobalId(data.climateId) : 0;
+    };
+    for (const auto& lookup : browser.GetDistinctRecordsByType("WRLD")) {
+      if (!lookup.rec) {
+        continue;
+      }
+      const uint32_t climate = climateOf(lookup);
+      const auto* clmt = climate
+        ? espm::Convert<espm::CLMT>(browser.LookupById(climate).rec)
+        : nullptr;
+      if (!clmt) {
+        continue;
+      }
+      const auto data = clmt->GetData(cache);
+      if (!data.hasTiming) {
+        continue;
+      }
+      pImpl->weatherSync->set_climate_slot(
+        lookup.ToGlobalId(lookup.rec->GetId()), data.volatility);
+      ++climates;
+    }
+  }
+  spdlog::info("[verb:weather] slots from the game files' climates: {} "
+               "worldspace(s); Tamriel's {} game minutes{}",
+               climates, pImpl->weatherSync->slot_minutes(0x3c),
+               pImpl->weatherMinutesPinned
+                 ? " (the settings' changeGameMinutes holds every worldspace)"
+                 : "");
   if (!ApplySettingsWeatherPools()) {
     spdlog::warn("[verb:weather] the settings' pools did not resolve against "
                  "the load order");

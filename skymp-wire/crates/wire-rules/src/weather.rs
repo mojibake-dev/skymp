@@ -6,8 +6,10 @@
 //! libespm: Skyrim's climate record names one weather, SkyrimCloudy, and the
 //! forty weather regions carry the variety; UESP, "Skyrim Mod:Mod File
 //! Format/REGN" and "/CLMT") unless server-settings.json's `weather.pools`
-//! pins one for that worldspace. Time is cut into slots of `changeGameMinutes`
-//! from day 0 of the clock; slot k's weather is a chance-weighted draw from the
+//! pins one for that worldspace. Time is cut into slots from day 0 of the
+//! clock: a worldspace's own, its climate's weather time (`climate_slot_minutes`,
+//! from the game files), else `changeGameMinutes` (the settings' value, which
+//! the server sets for every worldspace when the settings name one); slot k's weather is a chance-weighted draw from the
 //! pool by a hash of (seed, worldspace, k), and never its predecessor's when
 //! the pool has two or more entries (so a two-entry pool alternates, which the
 //! lab's pool relies on). A player hears a word once per place it enters (a
@@ -23,6 +25,21 @@ use std::fmt;
 pub const DEFAULT_CHANGE_GAME_MINUTES: u32 = 120;
 /// The longest slot: a game day.
 pub const MAX_CHANGE_GAME_MINUTES: u32 = 1440;
+/// A worldspace's slot from its climate (TNAM's volatility, CommonLibSSE-NG
+/// include/RE/T/TESClimate.h:43): the engine holds a weather for
+/// `(255 - volatility) * 22 / 255 + 1` game hours before its weather update
+/// (id 26231) draws the next, and releases a forced weather once that time
+/// has passed since the weather last changed; the slot is that time in whole
+/// game minutes less one, so the server's next word reaches a game before its
+/// engine's own release. SkyrimClimate (volatility 50): 18.686 hours, a slot
+/// of 1120 game minutes; a climate of volatility 0: 23 hours, 1379.
+pub fn climate_slot_minutes(volatility: u8) -> u32 {
+    let held = u32::from(u8::MAX.saturating_sub(volatility)).saturating_mul(22);
+    // whole game minutes of the engine's hours, (held / 255 + 1) * 60
+    let minutes = held.saturating_mul(60) / 255 + 60;
+    minutes.saturating_sub(1).clamp(1, MAX_CHANGE_GAME_MINUTES)
+}
+
 /// The most weathers one pool holds (Skyrim's longest regional list, the
 /// tundra's, has six; a mod's may be longer).
 pub const MAX_POOL: usize = 64;
@@ -82,6 +99,9 @@ pub struct Weather {
     file_pools: HashMap<u32, Vec<Entry>>,
     /// From the settings; outranks the files'.
     pinned_pools: HashMap<u32, Vec<Entry>>,
+    /// A worldspace's own slot in game minutes (its climate's); others take
+    /// `change_game_minutes`.
+    world_minutes: HashMap<u32, u32>,
     /// The last computed (slot, weather) per worldspace.
     chains: HashMap<u32, (u64, u32)>,
     /// What each player last heard.
@@ -135,16 +155,39 @@ impl Weather {
         Ok(n)
     }
 
+    /// `world`'s own slot (1 to 1440 game minutes, its climate's), in place of
+    /// `changeGameMinutes` for it; the chain restarts under it.
+    pub fn set_world_minutes(&mut self, world: u32, minutes: u32) -> Result<(), SettingsError> {
+        if minutes == 0 || minutes > MAX_CHANGE_GAME_MINUTES {
+            return Err(SettingsError(format!(
+                "worldspace {world:x}: a slot must be 1 to {MAX_CHANGE_GAME_MINUTES} game minutes, got {minutes}"
+            )));
+        }
+        self.world_minutes.insert(world, minutes);
+        self.chains.remove(&world);
+        Ok(())
+    }
+
+    /// The slot's length in game minutes for `world`: its own, else
+    /// `changeGameMinutes`.
+    pub fn slot_minutes(&self, world: u32) -> u32 {
+        self.world_minutes.get(&world).copied().unwrap_or(self.change_game_minutes)
+    }
+
     /// The pool in force for `world`: the pinned one, else the files'.
     pub fn pool(&self, world: u32) -> Option<&[Entry]> {
         self.pinned_pools.get(&world).or_else(|| self.file_pools.get(&world)).map(Vec::as_slice)
     }
 
-    /// The slot at `game_minutes` of the clock (days passed times 1440); a
-    /// negative or absent time is slot 0.
+    /// The slot of `changeGameMinutes` at `game_minutes` of the clock (days
+    /// passed times 1440); a negative or absent time is slot 0.
     pub fn slot(&self, game_minutes: f64) -> u64 {
-        let minutes = if game_minutes.is_finite() && game_minutes > 0.0 { game_minutes } else { 0.0 };
-        to_u64(minutes / f64::from(self.change_game_minutes))
+        slot_of(game_minutes, self.change_game_minutes)
+    }
+
+    /// `world`'s slot at `game_minutes` of the clock, by its own length.
+    pub fn slot_in(&self, world: u32, game_minutes: f64) -> u64 {
+        slot_of(game_minutes, self.slot_minutes(world))
     }
 
     /// The weather of `world` at `slot`, by the chain from slot 0; none for a
@@ -194,7 +237,7 @@ impl Weather {
             self.heard.insert(user, Heard { place, slot: 0, weather: 0 });
             return Some(Word { place, weather: 0, slot: 0, transition: false });
         }
-        let slot = self.slot(game_minutes);
+        let slot = self.slot_in(place, game_minutes);
         let weather = self.weather_at(place, slot)?;
         let transition = match last {
             Some(h) if h.place == place && h.weather == weather => {
@@ -212,6 +255,12 @@ impl Weather {
     pub fn forget(&mut self, user: u32) {
         self.heard.remove(&user);
     }
+}
+
+/// The slot of `minutes`-long slots at `game_minutes` of the clock.
+fn slot_of(game_minutes: f64, minutes: u32) -> u64 {
+    let clock = if game_minutes.is_finite() && game_minutes > 0.0 { game_minutes } else { 0.0 };
+    to_u64(clock / f64::from(minutes.max(1)))
 }
 
 /// A weighted index into `pool`: the hash modulo the chances' sum, walked.
@@ -259,6 +308,37 @@ mod tests {
 
     fn e(weather: u32, chance: u32) -> Entry {
         Entry { weather, chance }
+    }
+
+    #[test]
+    fn a_climates_slot_is_its_weather_time_less_a_game_minute() {
+        // SkyrimClimate 0x812's volatility 50: 18.686 game hours
+        assert_eq!(climate_slot_minutes(50), 1120);
+        // Sovngarde, Blackreach, DefaultClimate: 23 game hours
+        assert_eq!(climate_slot_minutes(0), 1379);
+        // the most volatile: one game hour
+        assert_eq!(climate_slot_minutes(255), 59);
+    }
+
+    #[test]
+    fn a_worldspace_with_its_own_slot_keeps_a_weather_for_it_and_others_keep_the_default() {
+        let mut w = three(1);
+        w.set_pool(SOVNGARDE, &[e(CLEAR, 50), e(CLOUDY, 50)], false).unwrap();
+        w.set_world_minutes(TAMRIEL, 1120).unwrap();
+        assert_eq!(w.slot_minutes(TAMRIEL), 1120);
+        assert_eq!(w.slot_minutes(SOVNGARDE), 120);
+        assert_eq!(w.slot_in(TAMRIEL, 1119.0), 0);
+        assert_eq!(w.slot_in(TAMRIEL, 1120.0), 1);
+        assert_eq!(w.slot_in(SOVNGARDE, 1120.0), 9);
+        // one word for the whole of Tamriel's first slot, a blend at its end
+        assert_eq!(w.due(1, TAMRIEL, true, 10.0).map(|x| (x.slot, x.transition)), Some((0, false)));
+        assert_eq!(w.due(1, TAMRIEL, true, 130.0), None);
+        assert_eq!(w.due(1, TAMRIEL, true, 1110.0), None);
+        let next = w.due(1, TAMRIEL, true, 1130.0).unwrap();
+        assert_eq!((next.slot, next.transition), (1, true));
+        assert!(w.set_world_minutes(TAMRIEL, 0).is_err());
+        assert!(w.set_world_minutes(TAMRIEL, 1441).is_err());
+        assert_eq!(w.slot_minutes(TAMRIEL), 1120);
     }
 
     fn lab() -> Weather {

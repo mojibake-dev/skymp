@@ -8819,13 +8819,17 @@ mod tests {
         assert_eq!(overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &PlayerOwnFacts { count: 2.5, ..gold }).name, "E_SCRIPTCALL_ARGS");
         assert_eq!(overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0x10_bf6a, &[], &PlayerOwnFacts { leveled: true, kind: false, ..gold }).name, "E_SCRIPTCALL_LEVELED");
         assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "AddItem", 0xf, &[], &gold).name, "E_SCRIPTCALL_ROW");
-        // the seven's verdicts carry no count
+        // the seven's verdicts carry no count (an EquipItem's gain, below, is
+        // an AddItem's)
         assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).count, 0);
-        // a form of another kind than the row's, named or not (the fresh
-        // review's note 3), and an item outside an overlay that the record
-        // lacks (note 4)
+        // a form of another kind than the row's, named or not, is refused;
+        // outside an overlay an EquipItem of an item the record lacks is the
+        // player's own gain, one item with no bound (ADR-091), and one the
+        // record holds folds
         assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &PlayerOwnFacts { kind: false, ..khajiit }).name, "E_SCRIPTCALL_ARGS");
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &[], &PlayerOwnFacts { kind: false, ..khajiit }).name, "E_SCRIPTCALL_ARGS");
+        let gain = overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &[], &khajiit);
+        assert_eq!((gain.code, gain.count, gain.name.as_str()), (0, 1, ""));
         assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).code, 3);
         // the seventh row (Eli's D-E1 A): a head part the recorded race may
         // wear is recorded, one its list lacks refused

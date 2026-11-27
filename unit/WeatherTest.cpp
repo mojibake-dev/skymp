@@ -135,16 +135,21 @@ TEST_CASE("Bad weather settings stop the server, named", "[Weather]")
 extern espm::Loader& GetEspmLoader();
 
 namespace {
-// the Tamriel weather a fresh server's login word names, its clock started at
-// `gameMinutes` of the game files' clock, under `weatherSettings`
+// the Tamriel weather a fresh server's login word names, its clock held at
+// `gameMinutes` of the game files' clock, under `weatherSettings`. The clock
+// counts from its epoch at the time scale and reads its start before the
+// epoch (wire-rules clock.rs), so an epoch after now holds it at the start,
+// and a start hour of 0 adds nothing to daysPassed
 uint32_t TamrielWeatherAt(double gameMinutes, const char* weatherSettings)
 {
   static std::vector<std::shared_ptr<PartOne>> keep;
   auto partOne = std::make_shared<PartOne>();
   keep.push_back(partOne);
-  partOne->SetGameTimeSettings(
-    nlohmann::json{ { "start", { { "daysPassed", gameMinutes / 1440.0 } } } }
-      .dump());
+  const nlohmann::json timeSettings{
+    { "epoch", "2999-01-01T00:00:00Z" },
+    { "start", { { "hour", 0.0 }, { "daysPassed", gameMinutes / 1440.0 } } }
+  };
+  partOne->SetGameTimeSettings(timeSettings.dump());
   partOne->SetWeatherSettings(weatherSettings);
   partOne->SetWeatherEnabled(true);
   partOne->AttachEspm(&GetEspmLoader());
